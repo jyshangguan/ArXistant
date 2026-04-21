@@ -84,7 +84,7 @@ def scan_paper(
     tree_prompt = format_tree_for_prompt(db_conn)
 
     # 3. Build user prompt
-    authors_str = ", ".join(entry.authors[:3])
+    authors_str = ", ".join(str(a) for a in entry.authors[:3])
     if len(entry.authors) > 3:
         authors_str += f" et al. ({len(entry.authors)} authors)"
 
