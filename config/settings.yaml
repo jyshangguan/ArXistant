@@ -1,0 +1,20 @@
+# Runtime settings for ArXistant
+
+llm:
+  # Provider: "openai_compatible" for any OpenAI-compatible API (Zhipu, Qwen, etc.)
+  provider: openai_compatible
+  model: glm-4-flash
+  base_url: https://open.bigmodel.cn/api/paas/v4
+  # API key is read from GLM_API_KEY in .env
+  temperature: 0.1
+
+arxiv:
+  max_results: 100          # max papers to fetch per category
+  days_back: 3              # only consider papers published in the last N days
+
+filter:
+  batch_size: 6             # papers per LLM call
+  relevance_threshold: 3    # minimum score (1-5) to include in report
+
+report:
+  output_dir: reports       # directory for generated reports
