@@ -52,18 +52,56 @@ def sample_paper():
 
 @pytest.fixture
 def sample_papers(sample_paper):
-    paper2 = RawPaper(
-        arxiv_id="2504.67890",
-        title="GRB 2504A: A Nearby Long Gamma-Ray Burst with Late-time Radio Emission",
-        authors=["Eve Zhang", "Frank Li"],
-        abstract="We report observations of GRB 2504A, a nearby long-duration gamma-ray burst detected by Swift. Radio observations at 5 and 8 GHz reveal a late-time rebrightening, suggesting energy injection from a central engine.",
-        published=datetime(2025, 4, 19, tzinfo=timezone.utc),
-        categories=["astro-ph.HE"],
-        primary_category="astro-ph.HE",
-        pdf_url="https://arxiv.org/pdf/2504.67890",
-        entry_url="https://arxiv.org/abs/2504.67890",
-    )
-    return [sample_paper, paper2]
+    """Return 12 papers (2 batches × batch_size=6) for integration-style tests."""
+    papers = [sample_paper]
+    extra = [
+        ("2504.67890", "GRB 2504A: A Nearby Long Gamma-Ray Burst with Late-time Radio Emission",
+         ["Eve Zhang", "Frank Li"], "astro-ph.HE",
+         "We report observations of GRB 2504A, a nearby long-duration gamma-ray burst detected by Swift. Radio observations at 5 and 8 GHz reveal a late-time rebrightening, suggesting energy injection from a central engine."),
+        ("2504.11111", "Tidal Disruption Events in Nearby Galaxies: A Statistical Study",
+         ["Grace Chen", "Henry Wu", "Ivan Petrov"], "astro-ph.HE",
+         "We present a systematic survey of TDE candidates in galaxies within 50 Mpc using optical spectroscopy from SDSS and X-ray data from eROSITA."),
+        ("2504.22222", "Bar-driven Secular Evolution in Disk Galaxies",
+         ["Julia Martinez", "Kevin Park"], "astro-ph.GA",
+         "Using N-body simulations we show that bar-driven perturbations can drive significant gas inflows to the central kiloparsec of disk galaxies."),
+        ("2504.33333", "Spiral Arm Pattern Speeds in the Milky Way Using Gaia DR4",
+         ["Liam O'Brien", "Maya Singh", "Noah Tanaka", "Olivia Wang"], "astro-ph.GA",
+         "We measure pattern speeds of the Milky Way spiral arms using Gaia DR4 proper motions of young stars. Our results favor a two-arm spiral with a pattern speed of 28 km/s/kpc."),
+        ("2504.44444", "Fast Radio Burst 202404A: Localization and Host Galaxy Properties",
+         ["Paul Kim", "Rosa Liu"], "astro-ph.HE",
+         "We report the localization of FRB 202404A to a star-forming spiral galaxy at z=0.12. The host galaxy has a stellar mass of 10^10 solar masses and a star formation rate of 3 M_sun/yr."),
+        ("2504.55555", "Molecular Gas Kinematics in the Central Molecular Zone",
+         ["Quinn Davis", "Rachel Edwards", "Sam Foster", "Tina Garcia"], "astro-ph.GA",
+         "ALMA observations of the Central Molecular Zone reveal non-circular gas motions consistent with a combination of bar-driven streaming and gravitational torques from the nuclear stellar disk."),
+        ("2504.66666", "Type Ia Supernova Rates in Galaxy Clusters at z < 0.1",
+         ["Uma Patel"], "astro-ph.HE",
+         "We measure the Type Ia supernova rate in low-redshift galaxy clusters using a 10-year survey from the Zwicky Transient Facility. The rate scales with cluster richness."),
+        ("2504.77777", "Vertical Oscillations of the Milky Way Disk Using K Giants",
+         ["Victor Huang", "Wendy Zhao", "Xavier Brown"], "astro-ph.GA",
+         "Analysis of LAMOST K giants reveals vertical oscillations of the Milky Way disk with an amplitude of 0.3 kpc, consistent with perturbations from the Sagittarius dwarf galaxy."),
+        ("2504.88888", "Polarization of Gamma-Ray Burst Afterglows: Evidence for Ordered Magnetic Fields",
+         ["Yuki Sato", "Zara Ahmed"], "astro-ph.HE",
+         "Polarimetric observations of GRB afterglows with ALMA reveal high linear polarization fractions, suggesting ordered magnetic fields in the jet emission region."),
+        ("2504.99999", "The Dark Matter Halo of M31 from Rotational Curve Modeling",
+         ["Brian Lee", "Clara Nguyen", "David Schmidt", "Emily Taylor"], "astro-ph.GA",
+         "We fit the rotation curve of M31 using a multi-component model including a NFW dark matter halo. The best-fit halo concentration is c=12, consistent with LCDM predictions."),
+        ("2504.00001", "Coronal Mass Ejection-driven Shock Acceleration of Solar Energetic Particles",
+         ["Frank Miller", "Grace Nakamura"], "astro-ph.HE",
+         "We model the acceleration of solar energetic particles at CME-driven shocks using a diffusive shock acceleration framework and compare predictions with Parker Solar Probe observations."),
+    ]
+    for i, (aid, title, authors, cat, abstract) in enumerate(extra):
+        papers.append(RawPaper(
+            arxiv_id=aid,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            published=datetime(2025, 4, 19 - i % 3, tzinfo=timezone.utc),
+            categories=[cat],
+            primary_category=cat,
+            pdf_url=f"https://arxiv.org/pdf/{aid}",
+            entry_url=f"https://arxiv.org/abs/{aid}",
+        ))
+    return papers
 
 
 @pytest.fixture

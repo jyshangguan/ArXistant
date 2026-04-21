@@ -116,6 +116,7 @@ class TestFilterPapers:
     @patch("src.filter.chat_completion")
     def test_threshold_filtering(self, mock_chat, mock_create, sample_papers, sample_topics, sample_settings):
         """Papers below threshold should be excluded."""
+        sample_settings.batch_size = 12  # all papers in one batch
         mock_chat.return_value = (
             '[{"index": 0, "score": 5, "matched_topic": "Galactic Dynamics", "reason": "Great"}, '
             '{"index": 1, "score": 2, "matched_topic": "none", "reason": "Irrelevant"}]'
@@ -172,6 +173,7 @@ class TestFilterPapers:
     @patch("src.filter.chat_completion")
     def test_malformed_items_skipped(self, mock_chat, mock_create, sample_papers, sample_topics, sample_settings):
         """Malformed score items should be skipped gracefully."""
+        sample_settings.batch_size = 12  # all papers in one batch
         mock_chat.return_value = (
             '[{"index": 0, "score": 4, "matched_topic": "Galactic Dynamics", "reason": "good"},'
             ' {"bad_key": 0},'
@@ -192,6 +194,7 @@ class TestFilterPapers:
     @patch("src.filter.chat_completion")
     def test_sorted_by_score_descending(self, mock_chat, mock_create, sample_papers, sample_topics, sample_settings):
         """Results should be sorted by score descending."""
+        sample_settings.batch_size = 12  # all papers in one batch
         mock_chat.return_value = (
             '[{"index": 0, "score": 4, "matched_topic": "Galactic Dynamics", "reason": "ok"},'
             ' {"index": 1, "score": 5, "matched_topic": "High-Energy Transients", "reason": "perfect"}]'

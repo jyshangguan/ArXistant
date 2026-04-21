@@ -110,7 +110,7 @@ class TestLoadSettings:
         monkeypatch.delenv("LLM_BASE_URL", raising=False)
         f = self._write_settings(tmp_path, {"llm": {}})
         s = load_settings(f)
-        assert s.llm_model == "glm-4-flash"
+        assert s.llm_model == "glm-4.7-flash"
         assert s.max_results == 100
         assert s.days_back == 3
         assert s.relevance_threshold == 4

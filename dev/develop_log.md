@@ -1,5 +1,27 @@
 # Development Log
 
+## 2026-04-21 — LLM Model Upgrade: GLM-4-flash → GLM-4.7-flash
+
+### What was done
+- Upgraded default LLM model from `glm-4-flash` to `glm-4.7-flash`
+- Updated in 3 locations: `src/config.py` (default + fallback), `config/settings.yaml`, `.env.example`
+
+### Motivation
+- GLM-4-flash consistently fails to produce valid JSON for ~14% of batches (batch 2/7 failed in both e2e runs, dropping 6 papers each time)
+- GLM-4.7-flash is the newest free model from Zhipu AI with better instruction-following, 200K context (up from 128K), 128K max output (up from 16K), same API endpoint
+
+### Files changed
+- `src/config.py` — default `llm_model` and env fallback
+- `config/settings.yaml` — `model` value
+- `.env.example` — comment showing new default
+
+### Verification needed
+- Delete `data/arxistant.db` and re-run `python -m src.main`
+- Confirm no "Could not parse analysis response as JSON" warnings
+- Confirm 42/42 papers analyzed (not 36/42)
+
+---
+
 ## 2026-04-21 — Phase 2: SQLite Storage + Knowledge Tree
 
 ### What was done

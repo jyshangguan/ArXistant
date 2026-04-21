@@ -115,7 +115,9 @@ OK, I want you to plan the next major step.
 
 The general plan looks okay. However, I think we do not need a "score" in the code. A papers cannot be just labeled by a score. Instead, we need a knowledge tree that connect to each paper. One paper can be connected by different subjects/concepts/questions. We do not have a knowledge tree from the beginning. I would suggest that we build one gradually during reading the paper. This is similar to a student's learning. I guess the config/topics.yaml can serve for this knowledge tree. Please think carefully and give me a plan.
 
-A minor point, I also want you to use GLM-5 or the equivalent newer model. I think it will be much faster.
+To fix the GLM problem, I want you to use GLM-5 or the equivalent newer model. I think it will be much faster and hopefully also solve the problem. Please investigate which model you should use in plan mode first.
+
+It takes too long to test the full paper sets. Let's limit the paper list in the unit test. Let's just use 2 batches which should be enough to test all the features in the future.
 
 
 # Refine the reading tool

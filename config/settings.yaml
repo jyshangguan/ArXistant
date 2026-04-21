@@ -3,7 +3,7 @@
 llm:
   # Provider: "openai_compatible" for any OpenAI-compatible API (Zhipu, Qwen, etc.)
   provider: openai_compatible
-  model: glm-4-flash
+  model: glm-4.7-flash
   base_url: https://open.bigmodel.cn/api/paas/v4
   # API key is read from GLM_API_KEY in .env
   temperature: 0.1
@@ -14,6 +14,7 @@ arxiv:
 
 filter:
   batch_size: 6             # papers per LLM call
+  batch_delay: 5            # seconds to wait between batches (to avoid rate limits)
   relevance_threshold: 4    # minimum score (1-5) to include in report
 
 report:

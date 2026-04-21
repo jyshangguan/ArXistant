@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
+
+from openai import RateLimitError
 
 from .collector import RawPaper
 from .config import Settings
@@ -166,18 +169,41 @@ def analyze_papers(
             f"## Papers to Analyze\n\n{papers_block}"
         )
 
-        try:
-            response_text = chat_completion(
-                client=client,
-                model=settings.llm_model,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                temperature=settings.llm_temperature,
-            )
-            parsed = _parse_analysis_response(response_text)
-        except Exception:
-            logger.exception("LLM call failed for analysis batch %d, skipping", batch_num + 1)
+        # Retry with exponential backoff on rate-limit errors
+        max_retries = 3
+        base_delay = 15
+        response_text = None
+        for attempt in range(max_retries + 1):
+            try:
+                response_text = chat_completion(
+                    client=client,
+                    model=settings.llm_model,
+                    system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    temperature=settings.llm_temperature,
+                )
+                break
+            except RateLimitError:
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Rate limited on batch %d/%d, retrying in %ds (attempt %d/%d)",
+                        batch_num + 1, total_batches, delay, attempt + 1, max_retries,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.exception(
+                        "Rate limited on batch %d/%d, all %d retries exhausted, skipping",
+                        batch_num + 1, total_batches, max_retries,
+                    )
+            except Exception:
+                logger.exception("LLM call failed for analysis batch %d, skipping", batch_num + 1)
+                break
+
+        if response_text is None:
             continue
+
+        parsed = _parse_analysis_response(response_text)
 
         for item in parsed:
             try:
@@ -211,6 +237,11 @@ def analyze_papers(
                 ))
             except (KeyError, ValueError, TypeError):
                 logger.warning("Malformed analysis item in batch %d: %s", batch_num + 1, item)
+
+        # Inter-batch delay to avoid rate limiting
+        if batch_num < total_batches - 1 and settings.batch_delay > 0:
+            logger.info("Waiting %ds before next batch...", settings.batch_delay)
+            time.sleep(settings.batch_delay)
 
     logger.info("Analysis complete: %d/%d papers analyzed", len(results), len(papers))
     return results

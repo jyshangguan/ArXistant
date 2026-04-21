@@ -34,7 +34,7 @@ class Topic:
 class Settings:
     # LLM
     llm_provider: str = "openai_compatible"
-    llm_model: str = "glm-4-flash"
+    llm_model: str = "glm-4.7-flash"
     llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     llm_api_key: str = ""
     llm_temperature: float = 0.1
@@ -45,6 +45,7 @@ class Settings:
 
     # Filter
     batch_size: int = 6
+    batch_delay: float = 5
     relevance_threshold: int = 4
 
     # Report
@@ -82,7 +83,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
 
     # Allow env-var overrides for secrets and model
     api_key = os.getenv("GLM_API_KEY", "")
-    model = os.getenv("LLM_MODEL", llm.get("model", "glm-4-flash"))
+    model = os.getenv("LLM_MODEL", llm.get("model", "glm-4.7-flash"))
     base_url = os.getenv("LLM_BASE_URL", llm.get("base_url", "https://open.bigmodel.cn/api/paas/v4"))
 
     return Settings(
@@ -94,6 +95,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         max_results=arxiv.get("max_results", 100),
         days_back=arxiv.get("days_back", 3),
         batch_size=filt.get("batch_size", 6),
+        batch_delay=filt.get("batch_delay", 5),
         relevance_threshold=filt.get("relevance_threshold", 4),
         report_output_dir=report.get("output_dir", "reports"),
         db_path=database.get("path", "data/arxistant.db"),
