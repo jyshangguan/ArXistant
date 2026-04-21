@@ -1,15 +1,20 @@
-"""Generate Markdown daily report for relevant papers."""
+"""Generate Markdown daily report with tree-aware sections."""
 
 from __future__ import annotations
 
 import logging
-from collections import Counter
+import sqlite3
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Settings, Topic
 from .collector import RawPaper
 from .filter import RelevantPaper
+from .analyze import AnalysisResult
+from .storage import (
+    StoredPaper, get_analyzed_papers, get_links_for_paper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +31,19 @@ def _first_author(paper: RawPaper) -> str:
     return paper.authors[0] if paper.authors else "Unknown"
 
 
+def _first_author_from_stored(paper: StoredPaper) -> str:
+    authors = paper.authors.split("\n") if paper.authors else []
+    return authors[0] if authors else "Unknown"
+
+
 def _author_count(paper: RawPaper) -> int:
     return len(paper.authors)
+
+
+def _author_count_from_stored(paper: StoredPaper) -> int:
+    if not paper.authors:
+        return 0
+    return len(paper.authors.split("\n"))
 
 
 def generate_report(
@@ -37,14 +53,13 @@ def generate_report(
     all_categories: list[str],
     settings: Settings,
 ) -> Path:
-    """Generate a Markdown report file and return its path."""
+    """Generate a Markdown report file and return its path (legacy format)."""
     output_dir = Path(settings.report_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     filepath = output_dir / f"{today}.md"
 
-    # Build summary stats
     score_dist = Counter(r.score for r in relevant)
     topic_dist = Counter(r.matched_topic for r in relevant)
     cat_dist = Counter(
@@ -53,11 +68,8 @@ def generate_report(
 
     lines: list[str] = []
 
-    # Header
     lines.append(f"# ArXistant Daily Report — {today}")
     lines.append("")
-
-    # Summary
     lines.append("## Summary")
     lines.append("")
     lines.append(f"- **Papers scanned:** {total_scanned}")
@@ -87,7 +99,6 @@ def generate_report(
             lines.append(f"- Score {score}: {score_dist[score]} papers")
         lines.append("")
 
-    # Paper list
     lines.append("---")
     lines.append("")
     lines.append("## Relevant Papers")
@@ -120,4 +131,208 @@ def generate_report(
     report_text = "\n".join(lines)
     filepath.write_text(report_text, encoding="utf-8")
     logger.info("Report saved to %s (%d papers, %d lines)", filepath, len(relevant), len(lines))
+    return filepath
+
+
+def generate_tree_report(
+    conn: sqlite3.Connection,
+    total_scanned: int,
+    topics: list[Topic],
+    all_categories: list[str],
+    settings: Settings,
+    analysis_results: list[AnalysisResult] | None = None,
+) -> Path:
+    """Generate a tree-aware Markdown report and return its path.
+
+    Uses stored data from the database for previously analyzed papers plus
+    any new analysis_results from this run.
+    """
+    from .storage import (
+        get_all_tree_nodes, count_papers, get_pending_candidates,
+        get_tree_node_by_name,
+    )
+
+    output_dir = Path(settings.report_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filepath = output_dir / f"{today}.md"
+
+    # Get analyzed papers from DB (sorted by quality desc)
+    papers = get_analyzed_papers(conn)
+    quality_dist = Counter(p.quality_score for p in papers if p.quality_score)
+
+    # Build paper→links mapping from DB
+    paper_links: dict[str, list[dict]] = {}
+    for p in papers:
+        links = get_links_for_paper(conn, p.arxiv_id)
+        if links:
+            paper_links[p.arxiv_id] = links
+
+    # Merge in any new analysis results that haven't been stored yet
+    new_results: list[AnalysisResult] = analysis_results or []
+
+    # Build tree node → papers mapping
+    node_papers: dict[int, list[dict]] = defaultdict(list)
+    for p in papers:
+        links = paper_links.get(p.arxiv_id, [])
+        for link in links:
+            node_papers[link["tree_node_id"]].append({
+                "paper": p,
+                "relevance_score": link["relevance_score"],
+                "relevance_reason": link["relevance_reason"],
+            })
+
+    # Also map from new results
+    for ar in new_results:
+        for tl in ar.tree_links:
+            node = get_tree_node_by_name(conn, tl["node_name"])
+            if node:
+                stored_p = StoredPaper(
+                    arxiv_id=ar.paper.arxiv_id,
+                    title=ar.paper.title,
+                    authors="\n".join(ar.paper.authors),
+                    abstract=ar.paper.abstract,
+                    published=ar.paper.published.isoformat(),
+                    categories=",".join(ar.paper.categories),
+                    primary_category=ar.paper.primary_category,
+                    pdf_url=ar.paper.pdf_url,
+                    entry_url=ar.paper.entry_url,
+                    quality_score=ar.quality_score,
+                    quality_reason=ar.quality_reason,
+                )
+                node_papers[node.id].append({
+                    "paper": stored_p,
+                    "relevance_score": tl["relevance_score"],
+                    "relevance_reason": tl["relevance_reason"],
+                })
+
+    # Get tree structure for report
+    all_nodes = get_all_tree_nodes(conn)
+    node_map: dict[int, dict] = {n.id: {"node": n, "children": []} for n in all_nodes}
+    roots: list[int] = []
+    for n in all_nodes:
+        if n.parent_id is None:
+            roots.append(n.id)
+        elif n.parent_id in node_map:
+            node_map[n.parent_id]["children"].append(n.id)
+
+    # Get pending candidates
+    candidates = get_pending_candidates(conn)
+
+    # Build report
+    lines: list[str] = []
+
+    lines.append(f"# ArXistant Daily Report — {today}")
+    lines.append("")
+
+    # Summary
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- **Total papers in database:** {count_papers(conn)}")
+    lines.append(f"- **Papers analyzed:** {len(papers) + len(new_results)}")
+    lines.append(f"- **Papers scanned this run:** {total_scanned}")
+    lines.append(f"- **Categories monitored:** {', '.join(sorted(set(all_categories)))}")
+    lines.append(f"- **Tree nodes:** {len(all_nodes)}")
+    lines.append("")
+
+    # Quality distribution
+    if quality_dist:
+        lines.append("### Quality distribution")
+        lines.append("")
+        for score in sorted(quality_dist.keys(), reverse=True):
+            lines.append(f"- Quality {score}: {quality_dist[score]} papers")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+
+    # Papers by tree node
+    lines.append("## Papers by Knowledge Tree")
+    lines.append("")
+
+    def _write_node(node_id: int, heading_level: int, prefix: str) -> None:
+        nd = node_map[node_id]["node"]
+        child_papers = node_papers.get(node_id, [])
+        lines.append(f"{'#' * heading_level} {nd.name}")
+        lines.append("")
+        if nd.description:
+            lines.append(f"*{nd.description}*")
+            lines.append("")
+
+        if child_papers:
+            child_papers.sort(key=lambda x: x["relevance_score"], reverse=True)
+            for cp in child_papers:
+                p = cp["paper"]
+                rel = cp["relevance_score"]
+                rel_reason = cp["relevance_reason"]
+                first = _first_author_from_stored(p)
+                n_authors = _author_count_from_stored(p)
+                author_str = f"{first} et al." if n_authors > 1 else first
+                qs = p.quality_score or 0
+
+                lines.append(f"#### {p.title}")
+                lines.append("")
+                lines.append(f"- **Authors:** {author_str} ({n_authors} total)")
+                lines.append(f"- **Quality:** {qs}/5")
+                lines.append(f"- **Relevance to this topic:** {rel}/5")
+                if rel_reason:
+                    lines.append(f"- **Relevance reason:** {rel_reason}")
+                lines.append(f"- **arXiv:** [{p.arxiv_id}]({p.entry_url})")
+                lines.append(f"- **PDF:** [Download]({p.pdf_url})")
+                lines.append("")
+
+        for child_id in node_map[node_id]["children"]:
+            _write_node(child_id, heading_level + 1, prefix + "  ")
+
+    for root_id in roots:
+        _write_node(root_id, 3, "")
+
+    # Papers with no tree links
+    all_linked_ids = set()
+    for link_list in paper_links.values():
+        for link in link_list:
+            all_linked_ids.add(link["paper_id"])
+    unlinked = [p for p in papers if p.arxiv_id not in all_linked_ids and p.quality_score and p.quality_score >= 3]
+
+    if unlinked:
+        lines.append("---")
+        lines.append("")
+        lines.append(f"## High-Quality Unlinked Papers ({len(unlinked)})")
+        lines.append("")
+        for p in unlinked[:10]:  # limit to 10
+            first = _first_author_from_stored(p)
+            n_authors = _author_count_from_stored(p)
+            author_str = f"{first} et al." if n_authors > 1 else first
+            lines.append(f"### {p.title}")
+            lines.append("")
+            lines.append(f"- **Authors:** {author_str} ({n_authors} total)")
+            lines.append(f"- **Quality:** {p.quality_score}/5")
+            lines.append(f"- **arXiv:** [{p.arxiv_id}]({p.entry_url})")
+            lines.append("")
+
+    # Candidate proposals
+    if candidates:
+        lines.append("---")
+        lines.append("")
+        lines.append(f"## New Concept Proposals ({len(candidates)} pending)")
+        lines.append("")
+        lines.append("*Edit `data/candidates.yaml` to confirm or reject these proposals.*")
+        lines.append("")
+        for c in candidates:
+            parent_name = c.get("parent_name", "Unknown")
+            lines.append(f"- **{c['name']}** (child of *{parent_name}*)")
+            if c["description"]:
+                lines.append(f"  - {c['description']}")
+            papers_str = c.get("source_paper_ids") or "none"
+            lines.append(f"  - Suggested by papers: {papers_str}")
+            lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append(f"*Generated by ArXistant on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}*")
+
+    report_text = "\n".join(lines)
+    filepath.write_text(report_text, encoding="utf-8")
+    logger.info("Tree report saved to %s (%d analyzed papers)", filepath, len(papers))
     return filepath

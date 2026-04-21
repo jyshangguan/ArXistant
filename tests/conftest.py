@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+import sqlite3
 
 from src.config import Settings, Topic
 from src.collector import RawPaper
+from src.storage import init_db
 
 
 @pytest.fixture
@@ -77,4 +79,43 @@ def sample_settings():
         batch_size=6,
         relevance_threshold=4,
         report_output_dir="reports",
+        db_path="data/arxistant.db",
+        candidates_path="data/candidates.yaml",
     )
+
+
+@pytest.fixture
+def db_conn():
+    """Create an in-memory SQLite database with full schema."""
+    conn = init_db(":memory:")
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def db_conn_with_tree(db_conn):
+    """Create an in-memory DB with a sample knowledge tree."""
+    from src.storage import insert_tree_node
+
+    # Root 1: Galactic Dynamics
+    ga_id = insert_tree_node(db_conn, "Galactic Dynamics",
+                             "Dynamics and structure of galaxies.",
+                             categories="astro-ph.GA")
+    # Child: Bar Formation
+    bar_id = insert_tree_node(db_conn, "Bar Formation",
+                              "Formation and dynamics of galactic bars.",
+                              parent_id=ga_id, level=1, categories="astro-ph.GA")
+    # Child: Spiral Structure
+    spiral_id = insert_tree_node(db_conn, "Spiral Structure",
+                                 "Density wave theory and spiral arms.",
+                                 parent_id=ga_id, level=1, categories="astro-ph.GA")
+    # Root 2: High-Energy Transients
+    he_id = insert_tree_node(db_conn, "High-Energy Astrophysical Transients",
+                             "GRBs, supernovae, TDEs, FRBs.",
+                             categories="astro-ph.HE")
+    # Child: GRBs
+    grb_id = insert_tree_node(db_conn, "Gamma-Ray Bursts",
+                              "Observations and theory of GRBs.",
+                              parent_id=he_id, level=1, categories="astro-ph.HE")
+
+    yield db_conn

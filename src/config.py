@@ -50,6 +50,12 @@ class Settings:
     # Report
     report_output_dir: str = "reports"
 
+    # Database
+    db_path: str = "data/arxistant.db"
+
+    # Candidates
+    candidates_path: str = "data/candidates.yaml"
+
 
 def load_topics(path: str | Path | None = None) -> list[Topic]:
     """Load topic definitions from YAML."""
@@ -71,6 +77,8 @@ def load_settings(path: str | Path | None = None) -> Settings:
     arxiv = data.get("arxiv", {})
     filt = data.get("filter", {})
     report = data.get("report", {})
+    database = data.get("database", {})
+    candidates = data.get("candidates", {})
 
     # Allow env-var overrides for secrets and model
     api_key = os.getenv("GLM_API_KEY", "")
@@ -88,4 +96,6 @@ def load_settings(path: str | Path | None = None) -> Settings:
         batch_size=filt.get("batch_size", 6),
         relevance_threshold=filt.get("relevance_threshold", 4),
         report_output_dir=report.get("output_dir", "reports"),
+        db_path=database.get("path", "data/arxistant.db"),
+        candidates_path=candidates.get("path", "data/candidates.yaml"),
     )

@@ -1,0 +1,43 @@
+# Knowledge tree for ArXistant
+# Hierarchical research interests — the LLM links papers to these nodes
+# and can propose new child nodes via candidate review.
+
+tree:
+  - name: Galactic Dynamics
+    description: Dynamics and structure of galaxies including spiral arms, bars, bulges, and dark matter halos.
+    categories: [astro-ph.GA]
+    children:
+      - name: Bar Formation
+        description: Formation and dynamics of galactic bars, bar fraction evolution.
+        categories: [astro-ph.GA]
+        children:
+          - name: Bar-driven Secular Evolution
+            description: Long-term structural changes driven by bars including box/peanut bulges and inner rings.
+            categories: [astro-ph.GA]
+      - name: Spiral Structure
+        description: Density wave theory, spiral arm formation and maintenance.
+        categories: [astro-ph.GA]
+      - name: Stellar Kinematics
+        description: Stellar velocities and velocity dispersions in galaxies.
+        categories: [astro-ph.GA]
+
+  - name: High-Energy Astrophysical Transients
+    description: GRBs, supernovae, TDEs, FRBs, and other transient high-energy phenomena.
+    categories: [astro-ph.HE]
+    children:
+      - name: Gamma-Ray Bursts
+        description: Observations and theory of gamma-ray bursts (long and short GRBs).
+        categories: [astro-ph.HE]
+        children:
+          - name: GRB Afterglows
+            description: Multi-wavelength afterglow emission and jet physics of GRBs.
+            categories: [astro-ph.HE]
+      - name: Supernovae
+        description: Core-collapse and thermonuclear supernovae, light curves and spectra.
+        categories: [astro-ph.HE]
+      - name: Tidal Disruption Events
+        description: Stars disrupted by supermassive black holes.
+        categories: [astro-ph.HE]
+      - name: Fast Radio Bursts
+        description: Millisecond-duration radio transients, cosmological origin.
+        categories: [astro-ph.HE]

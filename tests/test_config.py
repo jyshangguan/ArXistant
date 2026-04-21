@@ -83,6 +83,8 @@ class TestLoadSettings:
                 "arxiv": {"max_results": 50, "days_back": 7},
                 "filter": {"batch_size": 4, "relevance_threshold": 4},
                 "report": {"output_dir": "test_reports"},
+                "database": {"path": "data/test.db"},
+                "candidates": {"path": "data/test_candidates.yaml"},
             }
         f = tmp_path / "settings.yaml"
         f.write_text(yaml.dump(data))
@@ -99,6 +101,8 @@ class TestLoadSettings:
         assert s.batch_size == 4
         assert s.relevance_threshold == 4
         assert s.report_output_dir == "test_reports"
+        assert s.db_path == "data/test.db"
+        assert s.candidates_path == "data/test_candidates.yaml"
 
     def test_defaults_when_keys_missing(self, tmp_path, monkeypatch):
         monkeypatch.delenv("GLM_API_KEY", raising=False)
@@ -110,6 +114,8 @@ class TestLoadSettings:
         assert s.max_results == 100
         assert s.days_back == 3
         assert s.relevance_threshold == 4
+        assert s.db_path == "data/arxistant.db"
+        assert s.candidates_path == "data/candidates.yaml"
 
     def test_env_override_api_key(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "env-key-999")
@@ -132,3 +138,18 @@ class TestLoadSettings:
     def test_missing_file_raises(self):
         with pytest.raises(FileNotFoundError):
             load_settings("/nonexistent/path/settings.yaml")
+
+    def test_db_path_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GLM_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+        monkeypatch.delenv("LLM_BASE_URL", raising=False)
+        # No database section
+        f = self._write_settings(tmp_path, {
+            "llm": {},
+            "arxiv": {},
+            "filter": {},
+            "report": {},
+        })
+        s = load_settings(f)
+        assert s.db_path == "data/arxistant.db"
+        assert s.candidates_path == "data/candidates.yaml"

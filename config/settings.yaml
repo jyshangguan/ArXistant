@@ -18,3 +18,9 @@ filter:
 
 report:
   output_dir: reports       # directory for generated reports
+
+database:
+  path: data/arxistant.db   # SQLite database file (set to "" for legacy filter-only mode)
+
+candidates:
+  path: data/candidates.yaml  # file for candidate node review
