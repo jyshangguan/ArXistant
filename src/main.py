@@ -204,7 +204,6 @@ def _run_tree_pipeline(logger, topics, settings, all_categories) -> None:
         topics=topics,
         all_categories=all_categories,
         settings=settings,
-        analysis_results=analysis_results if unanalyzed else None,
     )
 
     conn.close()

@@ -11,9 +11,8 @@ from pathlib import Path
 from .config import Settings, Topic
 from .collector import RawPaper
 from .filter import RelevantPaper
-from .analyze import AnalysisResult
 from .storage import (
-    StoredPaper, get_analyzed_papers, get_links_for_paper,
+    get_analyzed_papers, get_links_for_paper,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,12 +139,10 @@ def generate_tree_report(
     topics: list[Topic],
     all_categories: list[str],
     settings: Settings,
-    analysis_results: list[AnalysisResult] | None = None,
 ) -> Path:
     """Generate a tree-aware Markdown report and return its path.
 
-    Uses stored data from the database for previously analyzed papers plus
-    any new analysis_results from this run.
+    Reads all analyzed papers and their tree links from the database.
     """
     from .storage import (
         get_all_tree_nodes, count_papers, get_pending_candidates,
@@ -169,9 +166,6 @@ def generate_tree_report(
         if links:
             paper_links[p.arxiv_id] = links
 
-    # Merge in any new analysis results that haven't been stored yet
-    new_results: list[AnalysisResult] = analysis_results or []
-
     # Build tree node → papers mapping
     node_papers: dict[int, list[dict]] = defaultdict(list)
     for p in papers:
@@ -182,30 +176,6 @@ def generate_tree_report(
                 "relevance_score": link["relevance_score"],
                 "relevance_reason": link["relevance_reason"],
             })
-
-    # Also map from new results
-    for ar in new_results:
-        for tl in ar.tree_links:
-            node = get_tree_node_by_name(conn, tl["node_name"])
-            if node:
-                stored_p = StoredPaper(
-                    arxiv_id=ar.paper.arxiv_id,
-                    title=ar.paper.title,
-                    authors="\n".join(ar.paper.authors),
-                    abstract=ar.paper.abstract,
-                    published=ar.paper.published.isoformat(),
-                    categories=",".join(ar.paper.categories),
-                    primary_category=ar.paper.primary_category,
-                    pdf_url=ar.paper.pdf_url,
-                    entry_url=ar.paper.entry_url,
-                    quality_score=ar.quality_score,
-                    quality_reason=ar.quality_reason,
-                )
-                node_papers[node.id].append({
-                    "paper": stored_p,
-                    "relevance_score": tl["relevance_score"],
-                    "relevance_reason": tl["relevance_reason"],
-                })
 
     # Get tree structure for report
     all_nodes = get_all_tree_nodes(conn)
@@ -230,7 +200,7 @@ def generate_tree_report(
     lines.append("## Summary")
     lines.append("")
     lines.append(f"- **Total papers in database:** {count_papers(conn)}")
-    lines.append(f"- **Papers analyzed:** {len(papers) + len(new_results)}")
+    lines.append(f"- **Papers analyzed:** {len(papers)}")
     lines.append(f"- **Papers scanned this run:** {total_scanned}")
     lines.append(f"- **Categories monitored:** {', '.join(sorted(set(all_categories)))}")
     lines.append(f"- **Tree nodes:** {len(all_nodes)}")

@@ -112,3 +112,12 @@ For future tests, switch the catagory to astro-ph.GA and astro-ph.HE.
 ## Next major step
 
 OK, I want you to plan the next major step.
+
+The general plan looks okay. However, I think we do not need a "score" in the code. A papers cannot be just labeled by a score. Instead, we need a knowledge tree that connect to each paper. One paper can be connected by different subjects/concepts/questions. We do not have a knowledge tree from the beginning. I would suggest that we build one gradually during reading the paper. This is similar to a student's learning. I guess the config/topics.yaml can serve for this knowledge tree. Please think carefully and give me a plan.
+
+A minor point, I also want you to use GLM-5 or the equivalent newer model. I think it will be much faster.
+
+
+# Refine the reading tool
+
+I want to have two tools (or functions) to read the paper. One simple reading, only to understand if the paper is relevant or not by reading the title, authors, and abstract. This tool helps to catagorize the paper and decide whether the detailed reading tool read it. Then, the detailed reading function will 
