@@ -45,7 +45,7 @@ class Settings:
 
     # Filter
     batch_size: int = 6
-    relevance_threshold: int = 3
+    relevance_threshold: int = 4
 
     # Report
     report_output_dir: str = "reports"
@@ -86,6 +86,6 @@ def load_settings(path: str | Path | None = None) -> Settings:
         max_results=arxiv.get("max_results", 100),
         days_back=arxiv.get("days_back", 3),
         batch_size=filt.get("batch_size", 6),
-        relevance_threshold=filt.get("relevance_threshold", 3),
+        relevance_threshold=filt.get("relevance_threshold", 4),
         report_output_dir=report.get("output_dir", "reports"),
     )

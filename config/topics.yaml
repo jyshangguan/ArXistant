@@ -2,43 +2,45 @@
 # Each topic defines a research area with keywords and arXiv categories to monitor.
 
 topics:
-  - name: Exoplanet Atmospheres and Characterization
+  - name: Galactic Structure and Dynamics
     description: >
-      Studies of exoplanetary atmospheres, including transmission spectroscopy,
-      emission spectroscopy, atmospheric composition, escape processes,
-      and techniques for characterizing exoplanet atmospheres (JWST, ARIEL, ground-based).
+      Dynamics and structure of the Milky Way and external galaxies, including
+      spiral arms, bars, bulges, dark matter halos, stellar kinematics,
+      galactic formation and evolution, and secular processes.
     keywords:
-      - exoplanet atmosphere
-      - transmission spectrum
-      - emission spectrum
-      - atmospheric escape
-      - JWST
-      - hot Jupiter atmosphere
-      - super-Earth atmosphere
-      - mini-Neptune atmosphere
-      - retrieval
-      - opacity
-      - cloud
-      - haze
+      - galactic dynamics
+      - Milky Way structure
+      - spiral arm
+      - bar formation
+      - stellar kinematics
+      - galactic rotation curve
+      - dark matter halo
+      - galactic evolution
+      - disk galaxy
+      - bulge
+      - thick disk
+      - tidal stream
     categories:
-      - astro-ph.EP
-      - astro-ph.SR
+      - astro-ph.GA
+      - astro-ph.HE
 
-  - name: Stellar Activity and Host Stars
+  - name: High-Energy Astrophysical Transients
     description: >
-      Stellar activity, starspots, flares, coronal mass ejections,
-      stellar rotation, and their impact on exoplanet detection and habitability.
+      Transient and variable high-energy phenomena including gamma-ray bursts,
+      supernovae, tidal disruption events, fast radio bursts, neutrino sources,
+      and multi-messenger observations of compact object mergers.
     keywords:
-      - stellar activity
-      - starspot
-      - stellar flare
-      - coronal mass ejection
-      - stellar rotation
-      - chromosphere
-      - stellar magnetic field
-      - photometric variability
-      - stellar irradiance
-      - habitable zone
+      - gamma-ray burst
+      - supernova
+      - tidal disruption event
+      - fast radio burst
+      - multi-messenger
+      - gravitational wave
+      - neutron star merger
+      - X-ray transient
+      - neutrino source
+      - relativistic jet
+      - compact object
     categories:
-      - astro-ph.SR
-      - astro-ph.EP
+      - astro-ph.HE
+      - astro-ph.GA

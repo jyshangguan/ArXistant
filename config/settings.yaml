@@ -14,7 +14,7 @@ arxiv:
 
 filter:
   batch_size: 6             # papers per LLM call
-  relevance_threshold: 3    # minimum score (1-5) to include in report
+  relevance_threshold: 4    # minimum score (1-5) to include in report
 
 report:
   output_dir: reports       # directory for generated reports

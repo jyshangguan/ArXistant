@@ -101,3 +101,14 @@ Help me build the smallest working prototype:
 You can find the development notes in `/home/shangguan/Softwares/my_modules/ArXistant/dev/dev_notes`, where the user will save his notes and prompts. Read the Claude_启动提示词_科研助手.md to better understand the project overall plan. You can use the `/home/shangguan/Softwares/my_modules/ArXistant/dev` folder to work on specific feature developments in the future. Write down this rule in the Claude.local.md as my personal habbit.
 
 I have added the Claude.md and Claude.local.md. Please read them carefully and suggest if revision is needed. Please also add the README file for this project.
+
+
+# Next step
+
+The MVP seems works. I want you to add the unit tests so that we can check if things work more easily. Then, work on the score inflation problem.
+
+For future tests, switch the catagory to astro-ph.GA and astro-ph.HE.
+
+## Next major step
+
+OK, I want you to plan the next major step.
