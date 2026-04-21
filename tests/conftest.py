@@ -125,6 +125,37 @@ def sample_settings():
 
 
 @pytest.fixture
+def bot_settings():
+    return Settings(
+        llm_provider="openai_compatible",
+        llm_model="glm-4-flash",
+        llm_base_url="https://open.bigmodel.cn/api/paas/v4",
+        llm_api_key="test-key-123",
+        llm_temperature=0.1,
+        max_results=100,
+        days_back=3,
+        batch_size=6,
+        relevance_threshold=4,
+        report_output_dir="reports",
+        db_path="data/arxistant.db",
+        candidates_path="data/candidates.yaml",
+        max_text_chars=80000,
+        html_timeout=30,
+        feishu_app_id="test_app_id",
+        feishu_app_secret="test_secret",
+        feishu_verification_token="test_token",
+        feishu_encrypt_key="",
+        feishu_bot_name="ArXistant",
+        bot_host="0.0.0.0",
+        bot_port=8000,
+        webhook_path="/feishu/webhook",
+        target_chat_id="test_chat_id",
+        session_max_messages=20,
+        report_cron="0 9 * * *",
+    )
+
+
+@pytest.fixture
 def db_conn():
     """Create an in-memory SQLite database with full schema."""
     conn = init_db(":memory:")

@@ -12,7 +12,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -94,6 +94,31 @@ CREATE TABLE IF NOT EXISTS reading_notes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reading_notes_arxiv ON reading_notes(arxiv_id);
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    chat_id     TEXT PRIMARY KEY,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS session_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     TEXT NOT NULL REFERENCES chat_sessions(chat_id) ON DELETE CASCADE,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_messages_chat ON session_messages(chat_id);
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    tree_node_id        INTEGER NOT NULL REFERENCES knowledge_tree(id),
+    weight              REAL NOT NULL DEFAULT 1.0,
+    interaction_count   INTEGER NOT NULL DEFAULT 0,
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(tree_node_id)
+);
 """
 
 
@@ -649,6 +674,31 @@ _MIGRATIONS: dict[int, str] = {
         UNIQUE(arxiv_id)
     );
     CREATE INDEX IF NOT EXISTS idx_reading_notes_arxiv ON reading_notes(arxiv_id);
+    """,
+    3: """
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+        chat_id     TEXT PRIMARY KEY,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS session_messages (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id     TEXT NOT NULL REFERENCES chat_sessions(chat_id) ON DELETE CASCADE,
+        role        TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_messages_chat ON session_messages(chat_id);
+
+    CREATE TABLE IF NOT EXISTS user_preferences (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        tree_node_id        INTEGER NOT NULL REFERENCES knowledge_tree(id),
+        weight              REAL NOT NULL DEFAULT 1.0,
+        interaction_count   INTEGER NOT NULL DEFAULT 0,
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(tree_node_id)
+    );
     """,
 }
 

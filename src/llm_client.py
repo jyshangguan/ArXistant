@@ -40,3 +40,24 @@ def chat_completion(
     content = response.choices[0].message.content or ""
     logger.debug("Received response (%d chars)", len(content))
     return content
+
+
+def chat_completion_messages(
+    client: OpenAI,
+    model: str,
+    messages: list[dict],
+    temperature: float = 0.1,
+) -> str:
+    """Send a chat completion request with a full message list and return the assistant's text.
+
+    Used by the conversation engine for multi-turn dialogue.
+    """
+    logger.debug("Sending chat completion request with %d messages (model=%s)", len(messages), model)
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+    )
+    content = response.choices[0].message.content or ""
+    logger.debug("Received response (%d chars)", len(content))
+    return content

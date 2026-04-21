@@ -42,7 +42,7 @@ class TestInitDb:
         db = tmp_path / "test.db"
         conn = init_db(db)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 2
+        assert row[0] == 3
         conn.close()
 
     def test_in_memory_db(self):
