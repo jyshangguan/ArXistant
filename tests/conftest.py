@@ -119,6 +119,8 @@ def sample_settings():
         report_output_dir="reports",
         db_path="data/arxistant.db",
         candidates_path="data/candidates.yaml",
+        max_text_chars=80000,
+        html_timeout=30,
     )
 
 
@@ -157,3 +159,33 @@ def db_conn_with_tree(db_conn):
                               parent_id=he_id, level=1, categories="astro-ph.HE")
 
     yield db_conn
+
+
+@pytest.fixture
+def sample_html():
+    """Sample arXiv HTML for testing the HTML parser."""
+    return """<!DOCTYPE html>
+<html>
+<head>
+  <title>Test Paper</title>
+  <base href="/html/2504.12345v1/">
+</head>
+<body>
+  <header class="ltx_page_header">
+    <h1 class="ltx_title ltx_title_document">Test Paper Title</h1>
+  </header>
+  <div class="ltx_abstract">
+    <h2 class="ltx_title ltx_title_abstract">Abstract</h2>
+    <p>This is a test abstract for testing purposes.</p>
+  </div>
+  <section class="ltx_section">
+    <h2 class="ltx_title ltx_title_section"><span class="ltx_tag">1</span> Introduction</h2>
+    <p>Introduction text here.</p>
+  </section>
+  <section class="ltx_bibliography">
+    <h2 class="ltx_title ltx_title_section">References</h2>
+    <p>[1] Reference here.</p>
+  </section>
+</body>
+</html>
+"""

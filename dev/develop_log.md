@@ -1,5 +1,63 @@
 # Development Log
 
+## 2026-04-21 — Phase 5: Multi-Level Paper Reading Tools
+
+### What was done
+- Implemented interactive paper reading tools at two depth levels, with stubs for two more
+- 10 new files, 5 modified files:
+  - `src/tools/__init__.py` — Package, exports all 4 tools
+  - `src/tools/types.py` — Shared dataclasses: `ScanResult`, `ReadingNote`, `ParsedPaper`, `FigureInfo`, `TreeLink`, `TreeConnection`
+  - `src/tools/prompts.py` — `SCAN_PAPER_PROMPT` (quick scan) and `READ_PAPER_PROMPT` (detailed reading)
+  - `src/tools/html_parser.py` — Fetch arXiv HTML (LaTeXML output), extract title, abstract, sections, figure captions. Strips nav/bibliography. Resolves relative image URLs via `<base>` tag. Computes SHA-256 hash for cache invalidation.
+  - `src/tools/scan_paper.py` — Tool 1: Quick relevance scan. Fetches metadata from arXiv API, formats title+abstract+tree, calls LLM, returns `ScanResult` with quality score, tree links, and reading recommendation.
+  - `src/tools/read_paper.py` — Tool 2: Full-text reading. Parses HTML, truncates to `max_text_chars`, calls LLM with structured prompt, stores `ReadingNote` in DB with cache invalidation via `full_text_hash`.
+  - `src/tools/analyze_figure.py` — Stub (NotImplementedError)
+  - `src/tools/search_references.py` — Stub (NotImplementedError)
+  - `src/config.py` — Added `max_text_chars` and `html_timeout` settings
+  - `config/settings.yaml` — Added `reading:` section
+  - `src/storage.py` — Schema V1→V2 migration, new `reading_notes` table, CRUD functions (`get_reading_note`, `upsert_reading_note`, `delete_reading_note`), migration framework (`_MIGRATIONS` dict)
+  - `requirements.txt` — Added `beautifulsoup4>=4.12.0`, `lxml>=5.0.0`, `requests>=2.31.0`
+  - `tests/conftest.py` — Added `max_text_chars`/`html_timeout` to `sample_settings`, added `sample_html` fixture
+  - `tests/test_html_parser.py` — 16 tests (fetch errors, parsing, sections, figures, nav stripping, hash stability)
+  - `tests/test_scan_paper.py` — 8 tests (JSON parsing, basic scan, score clamping, not-found error)
+  - `tests/test_read_paper.py` — 11 tests (JSON parsing, truncation, basic reading, DB caching, cache invalidation, LLM failure)
+
+### Key design decisions
+- HTML parsing uses arXiv's LaTeXML output (`https://arxiv.org/html/{id}`), not PDF parsing — avoids heavy PDF dependencies
+- `<base href>` tag used to resolve relative figure URLs; fallback to default arXiv URL
+- Section numbers extracted by decomposing `<span class="ltx_tag">` before reading heading text — avoids concatenation issues
+- `reading_notes` table has no FK to `papers` — a paper can be read without being in the pipeline
+- Schema migration framework: `_MIGRATIONS` dict maps version numbers to SQL; `init_db` runs them sequentially
+- Both scan and read tools follow the same pattern as `analyze.py`: LLM call → JSON parse with 3 fallback strategies → rate-limit retry
+- Cache invalidation: SHA-256 of full markdown text stored in DB; if hash matches, cached note is returned without LLM call
+
+### Test results
+- 161 tests pass (35 new, 126 existing), 0 failures
+- Fixed `test_sets_schema_version` to expect version 2 (was 1)
+
+### Files changed/created
+| File | Action |
+|------|--------|
+| `src/tools/__init__.py` | Created |
+| `src/tools/types.py` | Created |
+| `src/tools/prompts.py` | Created |
+| `src/tools/html_parser.py` | Created |
+| `src/tools/scan_paper.py` | Created |
+| `src/tools/read_paper.py` | Created |
+| `src/tools/analyze_figure.py` | Created |
+| `src/tools/search_references.py` | Created |
+| `src/config.py` | Modified — added `max_text_chars`, `html_timeout` |
+| `config/settings.yaml` | Modified — added `reading:` section |
+| `src/storage.py` | Modified — schema V2, reading_notes CRUD, migration framework |
+| `requirements.txt` | Modified — added beautifulsoup4, lxml, requests |
+| `tests/conftest.py` | Modified — added settings fields, sample_html fixture |
+| `tests/test_html_parser.py` | Created — 16 tests |
+| `tests/test_scan_paper.py` | Created — 8 tests |
+| `tests/test_read_paper.py` | Created — 11 tests |
+| `tests/test_storage.py` | Modified — schema version expectation 1→2 |
+
+---
+
 ## 2026-04-21 — LLM Model Upgrade: GLM-4-flash → GLM-4.7-flash
 
 ### What was done

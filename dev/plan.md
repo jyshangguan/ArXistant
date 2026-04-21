@@ -58,3 +58,32 @@
 - [ ] Feishu/WeChat report delivery
 - [ ] Vector database for semantic paper search
 - [ ] Multi-user support
+
+## Phase 5: Multi-Level Paper Reading Tools (in progress)
+
+### Phase 5A: Foundation (done)
+- [x] Create `src/tools/` package with shared types (`ScanResult`, `ReadingNote`, `ParsedPaper`, `FigureInfo`)
+- [x] Create `html_parser.py` — fetch arXiv HTML, extract structured text + figure metadata
+- [x] Add `beautifulsoup4`, `lxml`, `requests` to requirements.txt
+- [x] Write tests for HTML parser (16 tests)
+
+### Phase 5B: Tool 1 — scan_paper (done)
+- [x] Create `prompts.py` with `SCAN_PAPER_PROMPT` and `READ_PAPER_PROMPT`
+- [x] Create `scan_paper.py` — quick relevance scan using arXiv API + LLM
+- [x] Write tests for scan_paper (8 tests)
+
+### Phase 5C: Tool 2 — read_paper (done)
+- [x] Add reading settings (`max_text_chars`, `html_timeout`) to config
+- [x] Schema V2 migration: add `reading_notes` table to storage.py
+- [x] Add `reading_notes` CRUD (`get_reading_note`, `upsert_reading_note`, `delete_reading_note`)
+- [x] Create `read_paper.py` — full-text reading with structured notes + DB caching
+- [x] Write tests for read_paper (11 tests)
+
+### Phase 5D: Deferred tool stubs (done)
+- [x] Create `analyze_figure.py` stub (raises NotImplementedError)
+- [x] Create `search_references.py` stub (raises NotImplementedError)
+
+### Phase 5E: MCP integration (not started)
+- [ ] Create `src/mcp_server.py` wrapping all 4 tools
+- [ ] Wire up scan_paper and read_paper as MCP tools
+- [ ] Test end-to-end with real paper

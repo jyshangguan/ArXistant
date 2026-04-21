@@ -43,3 +43,17 @@
 ### Paper deduplication is per-node only in the report
 - A paper linked to 3 nodes (e.g., Galactic Dynamics, Bar Formation, Bar-driven Secular Evolution) appears 3 times in the report — once under each node. This is correct behavior but makes the report long.
 - **Future improvement**: Add a "see also" cross-reference instead of repeating the full entry.
+
+### arXiv HTML not available for all papers
+- Some arXiv papers (especially older ones or non-LaTeX submissions) do not have an HTML version at `https://arxiv.org/html/{id}`, returning 404.
+- **Handling**: `PaperHtmlUnavailableError` is raised by `fetch_arxiv_html()`. Callers (e.g., `read_paper`) should catch this and inform the user that the paper cannot be read in full-text mode.
+- **First encountered**: 2026-04-21 (Phase 5 HTML parser development)
+
+### Section heading numbers concatenate with titles in LaTeXML output
+- arXiv HTML uses `<span class="ltx_tag">1</span>` inside headings, which causes `get_text()` to produce "1Introduction" instead of "1 Introduction".
+- **Fix**: Decompose the number span before extracting heading text in `_extract_sections()`.
+- **First encountered**: 2026-04-21 (Phase 5 HTML parser test development)
+
+### `reading_notes` table intentionally has no FK to `papers`
+- The original plan had `REFERENCES papers(arxiv_id)` but this would prevent storing reading notes for papers that haven't been collected by the pipeline. Removed the FK constraint.
+- **Watch for**: If we ever need to enforce referential integrity, add a deferred FK or a cleanup step.

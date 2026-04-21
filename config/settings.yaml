@@ -25,3 +25,7 @@ database:
 
 candidates:
   path: data/candidates.yaml  # file for candidate node review
+
+reading:
+  max_text_chars: 80000       # max chars of full text sent to LLM
+  html_timeout: 30             # HTTP timeout for arXiv HTML fetch

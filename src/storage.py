@@ -12,7 +12,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -75,6 +75,25 @@ CREATE INDEX IF NOT EXISTS idx_papers_first_seen ON papers(first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_paper_tree_links_paper ON paper_tree_links(paper_id);
 CREATE INDEX IF NOT EXISTS idx_paper_tree_links_node ON paper_tree_links(tree_node_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_nodes_status ON candidate_nodes(status);
+
+CREATE TABLE IF NOT EXISTS reading_notes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    arxiv_id        TEXT NOT NULL,
+    title           TEXT NOT NULL DEFAULT '',
+    full_text_hash  TEXT NOT NULL DEFAULT '',
+    summary         TEXT NOT NULL DEFAULT '',
+    key_findings    TEXT NOT NULL DEFAULT '',
+    methodology     TEXT NOT NULL DEFAULT '',
+    results         TEXT NOT NULL DEFAULT '',
+    tree_connections TEXT NOT NULL DEFAULT '',
+    unfamiliar_concepts TEXT NOT NULL DEFAULT '',
+    raw_notes       TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(arxiv_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reading_notes_arxiv ON reading_notes(arxiv_id);
 """
 
 
@@ -158,7 +177,10 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
         )
         logger.info("Database created at %s (schema v%d)", db_path, SCHEMA_VERSION)
     else:
-        logger.info("Database opened at %s (schema v%d)", db_path, row["version"])
+        current_version = row["version"]
+        if current_version < SCHEMA_VERSION:
+            _run_migrations(conn, current_version, SCHEMA_VERSION)
+        logger.info("Database opened at %s (schema v%d)", db_path, SCHEMA_VERSION)
 
     conn.commit()
     return conn
@@ -603,3 +625,108 @@ def process_candidate_review(
                 stats["errors"] += 1
 
     return stats
+
+
+# ── Schema migrations ──────────────────────────────────────────────────
+
+
+_MIGRATIONS: dict[int, str] = {
+    2: """
+    CREATE TABLE IF NOT EXISTS reading_notes (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        arxiv_id        TEXT NOT NULL,
+        title           TEXT NOT NULL DEFAULT '',
+        full_text_hash  TEXT NOT NULL DEFAULT '',
+        summary         TEXT NOT NULL DEFAULT '',
+        key_findings    TEXT NOT NULL DEFAULT '',
+        methodology     TEXT NOT NULL DEFAULT '',
+        results         TEXT NOT NULL DEFAULT '',
+        tree_connections TEXT NOT NULL DEFAULT '',
+        unfamiliar_concepts TEXT NOT NULL DEFAULT '',
+        raw_notes       TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(arxiv_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_reading_notes_arxiv ON reading_notes(arxiv_id);
+    """,
+}
+
+
+def _run_migrations(
+    conn: sqlite3.Connection, from_version: int, to_version: int
+) -> None:
+    """Apply schema migrations sequentially from from_version to to_version."""
+    for version in range(from_version + 1, to_version + 1):
+        sql = _MIGRATIONS.get(version)
+        if sql is None:
+            logger.warning("No migration for schema v%d, skipping", version)
+            continue
+        logger.info("Migrating schema v%d → v%d", version - 1, version)
+        conn.executescript(sql)
+        conn.execute(
+            "UPDATE schema_version SET version = ?, applied_at = ?",
+            (version, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        logger.info("Migration to v%d complete", version)
+
+
+# ── Reading notes CRUD ─────────────────────────────────────────────────
+
+
+def get_reading_note(
+    conn: sqlite3.Connection, arxiv_id: str
+) -> dict | None:
+    """Get a reading note by arxiv_id. Returns None if not found."""
+    row = conn.execute(
+        "SELECT * FROM reading_notes WHERE arxiv_id = ?", (arxiv_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def upsert_reading_note(
+    conn: sqlite3.Connection,
+    arxiv_id: str,
+    title: str = "",
+    full_text_hash: str = "",
+    summary: str = "",
+    key_findings: str = "",
+    methodology: str = "",
+    results: str = "",
+    tree_connections: str = "",
+    unfamiliar_concepts: str = "",
+) -> None:
+    """Insert or update a reading note for a paper."""
+    conn.execute(
+        """INSERT INTO reading_notes
+           (arxiv_id, title, full_text_hash, summary, key_findings, methodology,
+            results, tree_connections, unfamiliar_concepts, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(arxiv_id) DO UPDATE SET
+             title = excluded.title,
+             full_text_hash = excluded.full_text_hash,
+             summary = excluded.summary,
+             key_findings = excluded.key_findings,
+             methodology = excluded.methodology,
+             results = excluded.results,
+             tree_connections = excluded.tree_connections,
+             unfamiliar_concepts = excluded.unfamiliar_concepts,
+             updated_at = datetime('now')""",
+        (arxiv_id, title, full_text_hash, summary, key_findings, methodology,
+         results, tree_connections, unfamiliar_concepts),
+    )
+    conn.commit()
+
+
+def delete_reading_note(
+    conn: sqlite3.Connection, arxiv_id: str
+) -> bool:
+    """Delete a reading note. Returns True if found and deleted."""
+    cur = conn.execute(
+        "DELETE FROM reading_notes WHERE arxiv_id = ?", (arxiv_id,)
+    )
+    conn.commit()
+    return cur.rowcount > 0

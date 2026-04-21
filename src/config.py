@@ -57,6 +57,10 @@ class Settings:
     # Candidates
     candidates_path: str = "data/candidates.yaml"
 
+    # Reading
+    max_text_chars: int = 80000
+    html_timeout: int = 30
+
 
 def load_topics(path: str | Path | None = None) -> list[Topic]:
     """Load topic definitions from YAML."""
@@ -80,6 +84,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
     report = data.get("report", {})
     database = data.get("database", {})
     candidates = data.get("candidates", {})
+    reading = data.get("reading", {})
 
     # Allow env-var overrides for secrets and model
     api_key = os.getenv("GLM_API_KEY", "")
@@ -100,4 +105,6 @@ def load_settings(path: str | Path | None = None) -> Settings:
         report_output_dir=report.get("output_dir", "reports"),
         db_path=database.get("path", "data/arxistant.db"),
         candidates_path=candidates.get("path", "data/candidates.yaml"),
+        max_text_chars=reading.get("max_text_chars", 80000),
+        html_timeout=reading.get("html_timeout", 30),
     )
