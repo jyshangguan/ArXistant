@@ -30,6 +30,29 @@
 
 ---
 
+## 2026-04-21 — Phase 2 end-to-end run + bug fixes
+
+### End-to-end results
+- 42 papers collected (27 from astro-ph.GA, 15 from astro-ph.HE)
+- 36/42 analyzed successfully (6 lost to 1 malformed LLM response in batch 2/7)
+- Quality distribution: 1 quality-5, 16 quality-4, 18 quality-3, 1 quality-2
+- 11 tree nodes imported, papers linked to multiple nodes as expected
+- 0 candidate nodes proposed by LLM
+- DB created at `data/arxistant.db`, report at `reports/2026-04-21.md`
+
+### Bugs found and fixed
+- **Paper duplication in report**: `generate_tree_report()` merged both DB data and in-memory `analysis_results`, doubling every paper. Fixed by removing the `analysis_results` parameter — by the time the report runs, all data is already stored in the DB.
+- **`Papers analyzed` count was inflated**: Was `len(papers) + len(new_results)` which double-counted. Fixed to `len(papers)`.
+
+### Open issues from this run
+- Batch 2/7 consistently returns malformed JSON from GLM-4-flash (reproducible across two runs). 6 papers lost per run. Needs investigation — possibly the response is too long or contains Unicode that breaks parsing.
+- No candidate nodes proposed. The LLM may need a nudge in the system prompt, or quality >= 3 + relevance links to existing nodes may be too strict a filter for proposals.
+
+### Commit
+- `460becf` Fix paper duplication in tree report and update dev docs
+
+---
+
 ## 2026-04-21 — Phase 1.5: Unit Tests + Score Inflation Fix
 
 ### What was done

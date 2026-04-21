@@ -27,4 +27,19 @@
 - The `analyze_papers()` module has been tested with mocked LLM responses but not with real GLM/Claude API calls.
 - **Risk**: The actual JSON format may differ from expectations, parsing could fail.
 - **Mitigation**: `_parse_analysis_response()` has three fallback strategies (direct JSON, code fence, brace extraction), same proven pattern as `filter.py`.
-- **Next step**: Run end-to-end with real data in Phase 3.
+- **Status**: Tested end-to-end. Batch 2/7 consistently fails to parse. See next item.
+
+### GLM-4-flash returns malformed JSON for ~14% of batches
+- Batch 2/7 fails to parse in both end-to-end runs (reproducible). 6 papers lost per run.
+- **Likely cause**: The response may be truncated (too long for the model's output limit), or may contain non-JSON preamble/postamble that the three fallback strategies don't catch.
+- **Impact**: ~14% of papers are silently dropped. They remain in the DB as `quality_score IS NULL` and will be re-analyzed on the next run — but only if we change the query to also include previously-failed papers.
+- **Fix needed**: (1) Log the raw LLM response when parsing fails for debugging. (2) Consider reducing batch size or truncating abstracts. (3) Add a retry mechanism for failed batches.
+
+### No candidate nodes proposed by the LLM
+- Across 36 analyzed papers (quality >= 3 for many), the LLM never proposed a new tree node.
+- **Possible cause**: The system prompt says "Only propose at most ONE candidate node per paper. Set to null if no proposal warranted." The LLM may be interpreting this too conservatively. Alternatively, the existing tree nodes may already cover the concepts well enough.
+- **Status**: Low priority — the feature works but needs tuning after more data.
+
+### Paper deduplication is per-node only in the report
+- A paper linked to 3 nodes (e.g., Galactic Dynamics, Bar Formation, Bar-driven Secular Evolution) appears 3 times in the report — once under each node. This is correct behavior but makes the report long.
+- **Future improvement**: Add a "see also" cross-reference instead of repeating the full entry.

@@ -30,12 +30,25 @@
 - [x] Write tests (67 new tests, 131 total)
 - [x] Verify: `pytest tests/ -v` all pass
 
-## Phase 3: Candidate Review Workflow (in progress)
+## Phase 3: Hardening and Candidate Review (in progress)
 
-- [ ] Run pipeline end-to-end with real arXiv data
-- [ ] Review and confirm/reject candidate nodes in `data/candidates.yaml`
-- [ ] Verify tree growth across multiple runs
-- [ ] Verify idempotency (second run skips already-analyzed papers)
+- [x] Run pipeline end-to-end with real arXiv data (36/42 analyzed, report generated)
+- [x] Fix paper duplication bug in tree report
+- [x] Verify idempotency (second run skips already-analyzed papers)
+- [ ] Fix GLM-4-flash batch parse failure (~14% papers dropped per run)
+  - [ ] Log raw LLM response on parse failure for debugging
+  - [ ] Add retry for failed batches (maybe 1-2 retries)
+  - [ ] Consider reducing batch size from 6 to 4 for longer abstracts
+- [ ] Tune candidate node proposal prompt (currently 0 proposals generated)
+- [ ] Run pipeline multiple days to verify tree growth and candidate review workflow
+- [ ] Verify re-analysis of papers that failed in previous runs
+
+## Phase 4: Quality Improvements
+
+- [ ] Paper cross-references in report (avoid repeating full entry under each node)
+- [ ] Upgrade LLM model (user requested GLM-5 or equivalent for speed)
+- [ ] Add abstract truncation in LLM prompt for very long abstracts (current prompt can get very large)
+- [ ] Score inflation check: quality distribution may still be top-heavy (1 quality-5, 16 quality-4 out of 36)
 
 ## Future Plans
 
