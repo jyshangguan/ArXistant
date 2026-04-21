@@ -35,25 +35,26 @@
 - [x] Run pipeline end-to-end with real arXiv data (36/42 analyzed, report generated)
 - [x] Fix paper duplication bug in tree report
 - [x] Verify idempotency (second run skips already-analyzed papers)
-- [ ] Fix GLM-4-flash batch parse failure (~14% papers dropped per run)
-  - [ ] Log raw LLM response on parse failure for debugging
-  - [ ] Add retry for failed batches (maybe 1-2 retries)
-  - [ ] Consider reducing batch size from 6 to 4 for longer abstracts
-- [ ] Tune candidate node proposal prompt (currently 0 proposals generated)
+- [x] Fix GLM-4-flash batch parse failure (~14% papers dropped per run)
+  - [x] Upgrade model to GLM-4.7-flash (better instruction-following, 200K context, 128K max output)
+  - [x] Add rate-limit retry with exponential backoff in `analyze_papers`
+  - [x] ~~Consider reducing batch size from 6 to 4 for longer abstracts~~ — unnecessary with GLM-4.7-flash
+  - [ ] Log raw LLM response on parse failure for debugging (minor, `_parse_analysis_response` returns `[]` silently)
+- [ ] Tune candidate node proposal prompt (currently 0 proposals generated) — low priority, revisit after 100+ papers analyzed with new model
 - [ ] Run pipeline multiple days to verify tree growth and candidate review workflow
-- [ ] Verify re-analysis of papers that failed in previous runs
+- [x] Verify re-analysis of papers that failed in previous runs — already works: `quality_score IS NULL` query picks up failed papers on next run
 
 ## Phase 4: Quality Improvements
 
 - [ ] Paper cross-references in report (avoid repeating full entry under each node)
-- [ ] Upgrade LLM model (user requested GLM-5 or equivalent for speed)
+- [x] Upgrade LLM model (user requested GLM-5 or equivalent for speed) — done: GLM-4.7-flash
 - [ ] Add abstract truncation in LLM prompt for very long abstracts (current prompt can get very large)
 - [ ] Score inflation check: quality distribution may still be top-heavy (1 quality-5, 16 quality-4 out of 36)
 
 ## Future Plans
 
-- [ ] Detailed paper reading (title/abstract → full text analysis)
-- [ ] Paper-level and topic-level knowledge notes
+- [x] Detailed paper reading (title/abstract → full text analysis) — done: scan_paper + read_paper in Phase 5
+- [x] Paper-level and topic-level knowledge notes — done: read_paper stores structured notes in DB (Phase 5)
 - [ ] User feedback loop (accept/reject papers → adapt scoring)
 - [ ] Feishu/WeChat report delivery
 - [ ] Vector database for semantic paper search
