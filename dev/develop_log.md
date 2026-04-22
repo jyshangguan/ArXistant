@@ -1,18 +1,20 @@
 # Development Log
 
-## 2026-04-22 — Add optional date argument to /fetch
+## 2026-04-22 — Rate limit investigation & GLM Coding Plan switch
 
 ### What was done
-- `/fetch` now accepts an optional `yyyy-mm-dd` date argument: `/fetch 2026-04-20` fetches papers from that specific date
-- Without a date, `/fetch` uses the existing `days_back` window as before (defaults to 3 days)
-- Added `target_date` parameter to `collect_papers()` and `collect_and_store()` — when set, collects papers from 00:00–23:59 UTC of that date instead of using `days_back`
-- Updated `_handle_fetch()` in command_handler to parse and validate the date, and compute appropriate `days_back` for `get_recent_papers()`
-- Updated `/fetch` help text in help card
+- Investigated "too many requests" errors on the Zhipu API
+- Switched `base_url` in `config/settings.yaml` from `api/paas/v4` to `api/coding/paas/v4` (Coding Plan endpoint)
+- Fixed graceful shutdown: replaced `loop.stop()` with `os._exit(0)` in signal handler
 
-### Key design decisions
-- Date validation uses regex + `datetime()` constructor — rejects malformed dates like `2026-13-01` with a clear error message
-- When fetching a specific past date, `get_recent_papers` uses `max(1, days_diff + 1)` as `days_back` so the target day is included in the query window
-- `collect_papers` applies both lower and upper bounds in target-date mode to avoid pulling future papers
+### Findings
+- Zhipu uses **concurrency-based** rate limiting (simultaneous requests), not per-minute quotas
+- Coding Plan and general API share the **same per-account concurrency quota** — the endpoint switch doesn't increase throughput
+- Error 1302 = user rate limit, Error 1305 = platform overload
+- Peak hours: weekdays 3–6 PM have dynamic throttling
+- Prompt-based quotas on Coding Plan refresh every 5 hours (Lite: ~120, Pro: ~600 per cycle)
+- GLM-5-Turbo is optimized for long-horizon agentic coding tasks (has thinking mode enabled by default) — **not suitable** for ArXistant's structured JSON extraction pattern
+- `glm-4.7-flash` remains the right model: fast, free, deterministic (temperature 0.1)
 
 ### Test results
 - 251 tests pass, 0 failures — no regressions
@@ -20,10 +22,37 @@
 ### Files changed
 | File | Change |
 |------|--------|
-| `src/collector.py` | Added `target_date` param to `collect_papers()`, dual-bound date filtering |
-| `src/main.py` | Threaded `target_date` through `collect_and_store()` |
-| `src/bot/command_handler.py` | Parse date arg in `_handle_fetch()`, compute `days_back` for filtering |
-| `src/bot/card_builder.py` | Updated `/fetch` help text to show date syntax |
+| `config/settings.yaml` | Switched `base_url` to coding plan endpoint |
+| `src/bot/server.py` | Fixed signal handler to use `os._exit(0)` |
+
+---
+
+## 2026-04-22 — Rewrite /fetch date support: arXiv listing pages
+
+### What was done
+- Replaced the broken `submittedDate` API query approach with arXiv listing page scraping
+- `/fetch` now accepts `yyyy-mm-dd` to fetch papers from a specific date (within last 7 days)
+- Date-specific fetch uses `_fetch_listing_ids()` to scrape paper IDs from the listing page section matching the target date, then batch-fetches metadata via the arXiv API `id_list` endpoint
+- Added input validation: reject future dates, weekends, and dates older than 7 days
+
+### Key design decisions
+- The arXiv API's `submittedDate` query parameter causes HTTP 429/500 — not usable for date filtering
+- arXiv listing pages use `DD Mon YYYY` format in `<h3>` headings (e.g. "Tue, 21 Apr 2026"), not `YYYY-MM-DD`
+- Listing pages are fetched with `show=2000` to get all recent dates; the target date's `<h3>` section is found, and `<dt>` siblings up to the next `<h3>` are parsed for paper IDs
+- The 7-day limit avoids the need to paginate through months of listings
+- Weekends are rejected outright (arXiv doesn't announce papers Sat/Sun) instead of just warning — prevents blocking the concurrency guard
+
+### Verification (live arXiv)
+- 2026-04-22 (Wednesday): 33 IDs from `astro-ph.GA`
+- 2026-04-21 (Tuesday): 38 IDs from `astro-ph.GA`
+- 2026-04-18 (Saturday): 0 IDs, correctly empty
+
+### Files changed
+| File | Change |
+|------|--------|
+| `src/collector.py` | Added `_fetch_listing_ids()`, `_collect_papers_by_date()`, rewrote `collect_papers()` to branch on `target_date` |
+| `src/bot/command_handler.py` | Parse date arg, validate (future/weekend/7-day), pass `target_date` through pipeline |
+| `src/bot/card_builder.py` | Updated `/fetch` help text with 7-day limit |
 
 ---
 
