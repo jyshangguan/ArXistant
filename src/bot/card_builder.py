@@ -720,13 +720,13 @@ def build_fetch_list_card(relevant_papers, stats: dict) -> dict:
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "Scan"},
                     "type": "primary",
-                    "value": {"type": "scan", "arxiv_id": p.arxiv_id},
+                    "value": {"type": "scan", "arxiv_id": p.paper.arxiv_id},
                 },
                 {
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "Read"},
                     "type": "default",
-                    "value": {"type": "read", "arxiv_id": p.arxiv_id},
+                    "value": {"type": "read", "arxiv_id": p.paper.arxiv_id},
                 },
                 {
                     "tag": "button",
