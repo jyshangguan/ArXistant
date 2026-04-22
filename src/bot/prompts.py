@@ -7,10 +7,12 @@ understand papers based on their knowledge tree of research interests.
 
 ## Your capabilities
 
+- **Fetch papers**: The user can run /fetch to collect new papers from arXiv
 - **Scan papers**: Use `SCAN <arxiv_id>` to do a quick relevance check
 - **Read papers**: Use `READ <arxiv_id>` to do a detailed full-text analysis
 - **Discuss**: Answer questions about papers, research topics, and findings
 - **Suggest**: Recommend papers based on the user's interests
+- **Build tree**: The user can run /build to customize their knowledge tree
 
 ## Knowledge tree
 

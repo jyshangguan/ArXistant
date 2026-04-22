@@ -12,7 +12,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -118,6 +118,15 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     interaction_count   INTEGER NOT NULL DEFAULT 0,
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(tree_node_id)
+);
+
+CREATE TABLE IF NOT EXISTS build_sessions (
+    chat_id     TEXT PRIMARY KEY,
+    stage       TEXT NOT NULL DEFAULT 'idle',
+    interests   TEXT NOT NULL DEFAULT '',
+    tree_yaml   TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -288,6 +297,18 @@ def count_tree_nodes(conn: sqlite3.Connection) -> int:
         "SELECT COUNT(*) FROM knowledge_tree WHERE status = 'active'"
     ).fetchone()
     return row[0]
+
+
+def clear_all_tree_nodes(conn: sqlite3.Connection) -> int:
+    """Soft-delete all active tree nodes by setting status='deleted'.
+
+    Returns the number of nodes cleared.
+    """
+    cur = conn.execute(
+        "UPDATE knowledge_tree SET status = 'deleted' WHERE status = 'active'"
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 # ── Paper CRUD ─────────────────────────────────────────────────────────
@@ -700,6 +721,16 @@ _MIGRATIONS: dict[int, str] = {
         UNIQUE(tree_node_id)
     );
     """,
+    4: """
+    CREATE TABLE IF NOT EXISTS build_sessions (
+        chat_id     TEXT PRIMARY KEY,
+        stage       TEXT NOT NULL DEFAULT 'idle',
+        interests   TEXT NOT NULL DEFAULT '',
+        tree_yaml   TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 }
 
 
@@ -777,6 +808,53 @@ def delete_reading_note(
     """Delete a reading note. Returns True if found and deleted."""
     cur = conn.execute(
         "DELETE FROM reading_notes WHERE arxiv_id = ?", (arxiv_id,)
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+# ── Build session CRUD ───────────────────────────────────────────────
+
+
+def get_build_session(
+    conn: sqlite3.Connection, chat_id: str
+) -> dict | None:
+    """Get a build session by chat_id. Returns None if not found."""
+    row = conn.execute(
+        "SELECT * FROM build_sessions WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def upsert_build_session(
+    conn: sqlite3.Connection,
+    chat_id: str,
+    stage: str = "idle",
+    interests: str = "",
+    tree_yaml: str = "",
+) -> None:
+    """Insert or update a build session."""
+    conn.execute(
+        """INSERT INTO build_sessions (chat_id, stage, interests, tree_yaml, updated_at)
+           VALUES (?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(chat_id) DO UPDATE SET
+             stage = excluded.stage,
+             interests = excluded.interests,
+             tree_yaml = excluded.tree_yaml,
+             updated_at = datetime('now')""",
+        (chat_id, stage, interests, tree_yaml),
+    )
+    conn.commit()
+
+
+def delete_build_session(
+    conn: sqlite3.Connection, chat_id: str
+) -> bool:
+    """Delete a build session. Returns True if found and deleted."""
+    cur = conn.execute(
+        "DELETE FROM build_sessions WHERE chat_id = ?", (chat_id,)
     )
     conn.commit()
     return cur.rowcount > 0

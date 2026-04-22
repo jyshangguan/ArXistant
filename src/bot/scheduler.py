@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _scheduler = None
 
+# Concurrency guard for scheduled fetch
+_scheduled_fetch_active = False
+
 
 def start_scheduler(
     settings: Settings,
@@ -83,9 +86,12 @@ async def _push_daily_report(
     db_conn: sqlite3.Connection,
     feishu_client,
 ) -> None:
-    """Generate and push the daily report to Feishu."""
+    """Fetch new papers, then generate and push the daily report to Feishu."""
+    global _scheduled_fetch_active
+
     from .card_builder import build_report_card
     from .preference_store import get_weighted_score, initialize_all_preferences
+    from ..tree import build_category_groups, get_root_categories
 
     chat_id = settings.target_chat_id
     if not chat_id:
@@ -95,6 +101,25 @@ async def _push_daily_report(
     logger.info("Generating scheduled daily report for %s", chat_id)
 
     try:
+        # Fetch new papers before reporting
+        if not _scheduled_fetch_active:
+            _scheduled_fetch_active = True
+            try:
+                from ..main import run_collect_and_analyze
+                loop = asyncio.get_event_loop()
+                stats = await loop.run_in_executor(
+                    None, lambda: run_collect_and_analyze(db_conn, settings)
+                )
+                logger.info("Scheduled fetch complete: %s", stats)
+            except Exception as e:
+                logger.exception("Scheduled fetch failed: %s", e)
+            finally:
+                _scheduled_fetch_active = False
+
+        # Build category mapping from tree root nodes
+        cat_groups = build_category_groups(db_conn)
+        root_categories = get_root_categories(db_conn)
+
         # Initialize preferences
         initialize_all_preferences(db_conn)
 
@@ -122,13 +147,12 @@ async def _push_daily_report(
             cats = [c.strip() for c in p.categories.split(",")] if p.categories else []
             weighted_score = get_weighted_score(db_conn, p.arxiv_id, p.quality_score or 0)
 
+            # Find primary category group from tree roots
             primary_group = "Other"
             for c in cats:
-                if "GA" in c:
-                    primary_group = "Galactic Dynamics (GA)"
-                    break
-                elif "HE" in c:
-                    primary_group = "High-Energy Transients (HE)"
+                short = c.split(".")[-1] if "." in c else c
+                if short in cat_groups:
+                    primary_group = cat_groups[short]
                     break
 
             links = paper_links_map.get(p.arxiv_id, [])
@@ -149,13 +173,12 @@ async def _push_daily_report(
 
         total_scanned = count_papers(db_conn)
         total_relevant = len(papers)
-        categories = ["astro-ph.GA", "astro-ph.HE"]
 
         card = build_report_card(
             papers_by_category=papers_by_category,
             total_scanned=total_scanned,
             total_relevant=total_relevant,
-            categories=categories,
+            categories=root_categories,
         )
 
         await feishu_client.send_card(chat_id, card)

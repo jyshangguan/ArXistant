@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 
 import yaml
+
+from .config import Topic, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -132,3 +135,135 @@ def format_tree_for_prompt(conn: sqlite3.Connection) -> str:
             result_lines.append(f"   {line}")
 
     return "\n".join(result_lines)
+
+
+def derive_topics_from_tree(conn: sqlite3.Connection) -> list[Topic]:
+    """Derive Topic objects from root-level tree nodes in the database.
+
+    Each unique arXiv category found among root nodes becomes a separate Topic.
+    Falls back to config/topics.yaml if the tree is empty.
+    """
+    from .storage import get_tree_children
+
+    roots = get_tree_children(conn, parent_id=None)
+    if not roots:
+        logger.info("Knowledge tree is empty, falling back to config/topics.yaml")
+        from .config import load_topics
+        return load_topics()
+
+    # Collect unique categories from root nodes
+    cat_to_roots: dict[str, list[str]] = defaultdict(list)
+    for root in roots:
+        if root.categories:
+            for cat in root.categories.split(","):
+                cat = cat.strip()
+                if cat:
+                    cat_to_roots[cat].append(root.name)
+
+    if not cat_to_roots:
+        logger.info("No categories found in tree roots, falling back to config/topics.yaml")
+        from .config import load_topics
+        return load_topics()
+
+    topics = []
+    for cat, root_names in sorted(cat_to_roots.items()):
+        description = f"Papers from {cat} covering: {', '.join(root_names)}"
+        topics.append(Topic(
+            name=f"{cat} ({root_names[0]})",
+            description=description,
+            categories=[cat],
+        ))
+
+    logger.info("Derived %d topics from %d tree roots", len(topics), len(roots))
+    return topics
+
+
+def import_tree_from_yaml_force(
+    conn: sqlite3.Connection, tree_path: str | Path
+) -> int:
+    """Import knowledge tree from YAML, clearing existing nodes first.
+
+    Unlike import_tree_from_yaml, this always replaces the entire tree.
+    Returns the number of nodes imported.
+    """
+    from .storage import clear_all_tree_nodes, insert_tree_node
+
+    # Clear existing nodes
+    cleared = clear_all_tree_nodes(conn)
+    if cleared:
+        logger.info("Cleared %d existing tree nodes before force-import", cleared)
+
+    nodes = load_tree_yaml(tree_path)
+    if not nodes:
+        logger.warning("No tree nodes found in %s", tree_path)
+        return 0
+
+    imported = 0
+
+    def _import_children(node_list: list[dict], parent_id: int | None, level: int,
+                         inherited_cats: set[str]) -> None:
+        nonlocal imported
+        for node_def in node_list:
+            name = node_def["name"]
+            description = node_def.get("description", "")
+            node_cats = set(node_def.get("categories", []))
+            all_cats = inherited_cats | node_cats
+            cat_str = ",".join(sorted(all_cats))
+
+            nid = insert_tree_node(
+                conn,
+                name=name,
+                description=description,
+                parent_id=parent_id,
+                level=level,
+                source="user",
+                categories=cat_str,
+            )
+            imported += 1
+
+            children = node_def.get("children", [])
+            if children:
+                _import_children(children, nid, level + 1, all_cats)
+
+    _import_children(nodes, None, 0, set())
+    logger.info("Force-imported %d knowledge tree nodes from %s", imported, tree_path)
+    return imported
+
+
+def build_category_groups(conn: sqlite3.Connection) -> dict[str, str]:
+    """Build a mapping from arXiv category codes to root node display names.
+
+    Used by report generation to group papers by tree root areas.
+    Returns e.g. {"GA": "Galaxy Evolution & Dynamics", "HE": "High-Energy Astrophysics"}.
+    """
+    from .storage import get_tree_children
+
+    roots = get_tree_children(conn, parent_id=None)
+    cat_map: dict[str, str] = {}
+
+    for root in roots:
+        if root.categories:
+            for cat in root.categories.split(","):
+                cat = cat.strip()
+                if cat:
+                    # Use the short form (e.g. "GA" from "astro-ph.GA") as key
+                    short = cat.split(".")[-1] if "." in cat else cat
+                    if short not in cat_map:
+                        cat_map[short] = root.name
+
+    return cat_map
+
+
+def get_root_categories(conn: sqlite3.Connection) -> list[str]:
+    """Get all unique arXiv categories from root tree nodes."""
+    from .storage import get_tree_children
+
+    roots = get_tree_children(conn, parent_id=None)
+    cats: set[str] = set()
+    for root in roots:
+        if root.categories:
+            for cat in root.categories.split(","):
+                cat = cat.strip()
+                if cat:
+                    cats.add(cat)
+    return sorted(cats)

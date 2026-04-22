@@ -467,10 +467,12 @@ def build_prefs_card(prefs: list[dict]) -> dict:
 def build_help_card() -> dict:
     """Build a help card listing all available commands."""
     commands = [
+        ("**/fetch**", "Collect and analyze new papers from arXiv"),
+        ("**/report [category|all]**", "Generate daily report (default: all)"),
         ("**/scan <arxiv_id>**", "Quick relevance scan of a paper"),
         ("**/read <arxiv_id>**", "Full-text reading with structured notes"),
-        ("**/report [GA|HE|all]**", "Generate daily report (default: all)"),
         ("**/tree**", "Display current knowledge tree"),
+        ("**/build**", "Generate a customized knowledge tree from your interests"),
         ("**/prefs**", "Show your preference weights"),
         ("**/reset**", "Clear conversation session"),
         ("**/help**", "Show this help message"),
@@ -513,6 +515,157 @@ def _error_card(message: str) -> dict:
             {
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": message},
+            },
+        ],
+    }
+
+
+def build_fetch_result_card(stats: dict) -> dict:
+    """Build a Feishu card showing fetch/analyze results.
+
+    Args:
+        stats: Dict with keys: papers_collected, papers_new, papers_analyzed.
+    """
+    elements = [
+        {
+            "tag": "div",
+            "fields": [
+                {
+                    "is_short": True,
+                    "text": {"tag": "lark_md", "content": f"**Collected:** {stats.get('papers_collected', 0)}"},
+                },
+                {
+                    "is_short": True,
+                    "text": {"tag": "lark_md", "content": f"**New:** {stats.get('papers_new', 0)}"},
+                },
+                {
+                    "is_short": True,
+                    "text": {"tag": "lark_md", "content": f"**Analyzed:** {stats.get('papers_analyzed', 0)}"},
+                },
+            ],
+        },
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "View Report"},
+                    "type": "primary",
+                    "value": {"type": "report"},
+                },
+            ],
+        },
+    ]
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Fetch Complete"},
+            "template": "green",
+        },
+        "elements": elements,
+    }
+
+
+def build_tree_preview_card(nodes: list[dict]) -> dict:
+    """Build a Feishu card for previewing a generated knowledge tree.
+
+    Args:
+        nodes: List of node dicts with 'name', 'description', 'categories',
+            and optional 'children' (nested dicts with the same structure).
+    """
+    elements = []
+
+    def _add_node(node, indent=0):
+        prefix = "  " * indent
+        marker = "#" * min(indent + 2, 6)
+        text = f"{marker} {node['name']}"
+        if node.get("description"):
+            text += f"\n{prefix}*{node['description']}*"
+        cats = node.get("categories", [])
+        if cats:
+            text += f"\n{prefix}Categories: `{', '.join(cats)}`"
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": text},
+        })
+        for child in node.get("children", []):
+            _add_node(child, indent + 1)
+
+    for node in nodes:
+        _add_node(node)
+
+    # Count total nodes
+    def _count(n):
+        return 1 + sum(_count(c) for c in n.get("children", []))
+
+    total = sum(_count(n) for n in nodes)
+    roots = len(nodes)
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": f"\n**Total:** {total} nodes across {roots} root area(s)",
+        },
+    })
+
+    elements.append({
+        "tag": "action",
+        "actions": [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "Accept"},
+                "type": "primary",
+                "value": {"type": "build_accept"},
+            },
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "Reject"},
+                "type": "danger",
+                "value": {"type": "build_reject"},
+            },
+        ],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Generated Knowledge Tree — Preview"},
+            "template": "turquoise",
+        },
+        "elements": elements,
+    }
+
+
+def build_build_prompt_card() -> dict:
+    """Build a card asking the user to describe their research interests for /build."""
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Build Knowledge Tree"},
+            "template": "turquoise",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        "I'll generate a customized knowledge tree based on your research "
+                        "interests. Please describe your areas of focus in a message.\n\n"
+                        "For example:\n"
+                        "> I study galaxy evolution, particularly barred galaxies and "
+                        "secular evolution. I'm also interested in AGN feedback and "
+                        "supermassive black hole co-evolution."
+                    ),
+                },
+            },
+            {
+                "tag": "note",
+                "elements": [
+                    {"tag": "plain_text", "content": "Send a message describing your interests to continue."},
+                ],
             },
         ],
     }
