@@ -9,6 +9,7 @@ import logging.handlers
 import os
 import signal
 import sqlite3
+import sys
 import threading
 
 import lark_oapi as lark
@@ -289,7 +290,7 @@ def main() -> None:
     def _shutdown(signum, frame):
         logger.info("Received signal %s, shutting down...", signum)
         stop_scheduler()
-        loop.call_soon_threadsafe(loop.stop)
+        os._exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)

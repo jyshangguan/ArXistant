@@ -4,7 +4,8 @@ llm:
   # Provider: "openai_compatible" for any OpenAI-compatible API (Zhipu, Qwen, etc.)
   provider: openai_compatible
   model: glm-4.7-flash
-  base_url: https://open.bigmodel.cn/api/paas/v4
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4
+  #base_url: https://open.bigmodel.cn/api/paas/v4
   # API key is read from GLM_API_KEY in .env
   temperature: 0.1
 
