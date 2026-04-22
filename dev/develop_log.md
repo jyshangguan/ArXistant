@@ -1,5 +1,76 @@
 # Development Log
 
+## 2026-04-22 — Add optional date argument to /fetch
+
+### What was done
+- `/fetch` now accepts an optional `yyyy-mm-dd` date argument: `/fetch 2026-04-20` fetches papers from that specific date
+- Without a date, `/fetch` uses the existing `days_back` window as before (defaults to 3 days)
+- Added `target_date` parameter to `collect_papers()` and `collect_and_store()` — when set, collects papers from 00:00–23:59 UTC of that date instead of using `days_back`
+- Updated `_handle_fetch()` in command_handler to parse and validate the date, and compute appropriate `days_back` for `get_recent_papers()`
+- Updated `/fetch` help text in help card
+
+### Key design decisions
+- Date validation uses regex + `datetime()` constructor — rejects malformed dates like `2026-13-01` with a clear error message
+- When fetching a specific past date, `get_recent_papers` uses `max(1, days_diff + 1)` as `days_back` so the target day is included in the query window
+- `collect_papers` applies both lower and upper bounds in target-date mode to avoid pulling future papers
+
+### Test results
+- 251 tests pass, 0 failures — no regressions
+
+### Files changed
+| File | Change |
+|------|--------|
+| `src/collector.py` | Added `target_date` param to `collect_papers()`, dual-bound date filtering |
+| `src/main.py` | Threaded `target_date` through `collect_and_store()` |
+| `src/bot/command_handler.py` | Parse date arg in `_handle_fetch()`, compute `days_back` for filtering |
+| `src/bot/card_builder.py` | Updated `/fetch` help text to show date syntax |
+
+---
+
+## 2026-04-22 — Phase 6: Redesign /fetch as Quick List, On-Demand LLM Analysis
+
+### What was done
+- Redesigned `/fetch` to be fast: collect papers + keyword-filter for relevance, no LLM calls
+- Moved LLM analysis to on-demand via existing `/scan` and `/read` commands
+- Updated `/report` to show all recent papers with status indicators (new / scanned / read)
+- 6 files modified:
+  - `src/filter.py` — Added `keyword_pre_filter()`, `_extract_tree_keywords()`, `_paper_status()`, `PreFilteredPaper` dataclass. Extracts keyword phrases from tree node names and descriptions, matches against paper title+abstract as whole phrases to avoid false positives. Filters out stop-words and single-word matches.
+  - `src/storage.py` — Added `get_recent_papers()` query returning papers with `is_analyzed` and `is_read` flags. Added `is_analyzed: bool` and `is_read: bool` fields to `StoredPaper` dataclass (default False for backward compatibility).
+  - `src/main.py` — Added `collect_and_store()` function that only collects from arXiv and stores to DB (no LLM). Kept `run_collect_and_analyze()` unchanged for the scheduler.
+  - `src/bot/command_handler.py` — Redesigned `_handle_fetch()` to use the new fast pipeline (collect_and_store → keyword_pre_filter → build_fetch_list_card). Redesigned `_handle_report()` to show ALL recent papers sorted by status (read > scanned > new) instead of only analyzed papers.
+  - `src/bot/card_builder.py` — Added `build_fetch_list_card()` showing relevant papers with [Scan]/[Read]/[arXiv] buttons, matched keywords as relevance reason, category badges. Updated `build_report_card()` with status badges ([NEW]/[SCANNED]/[READ]) and conditional quality display (only shown for analyzed papers). Updated help card descriptions.
+  - `src/analyze.py` — Reverted aggressive rate-limit workarounds: `max_retries` 5→3, `base_delay` 30→15 (no longer needed since /fetch doesn't batch-analyze).
+  - `src/config.py` — Reverted `batch_delay` default to 5. Added `pre_filter_max: int = 30` setting.
+
+### Key design decisions
+- `/fetch` is now purely arXiv API + keyword matching — completes in ~10 seconds instead of ~10 minutes
+- `keyword_pre_filter` uses tree node names and description clauses as keyword phrases, matched as whole phrases (not individual words) to reduce false positives
+- Longer phrases are matched first; shorter phrases that are substrings of already-matched longer ones are skipped to avoid double-counting
+- Stop-words and domain-generic terms ("study", "results", "model", "analysis") excluded from keyword extraction
+- Paper status is determined by DB state: has reading_notes → "read", has quality_score → "scanned", else → "new"
+- `StoredPaper` gains `is_analyzed` and `is_read` boolean fields with False defaults so existing code is unaffected
+- Scheduler continues to use `run_collect_and_analyze()` (with LLM analysis) for overnight batch processing
+
+### Test results
+- 251 tests pass (all existing), 0 failures — no regressions
+- All new imports verified clean
+
+### Files changed
+| File | Change |
+|------|--------|
+| `src/filter.py` | Added `keyword_pre_filter`, `_extract_tree_keywords`, `_paper_status`, `PreFilteredPaper`, stop-word list |
+| `src/storage.py` | Added `get_recent_papers()`, `is_analyzed`/`is_read` fields on `StoredPaper` |
+| `src/main.py` | Added `collect_and_store()` |
+| `src/bot/command_handler.py` | Redesigned `_handle_fetch()` and `_handle_report()` |
+| `src/bot/card_builder.py` | Added `build_fetch_list_card()`, updated `build_report_card()` with status badges, updated help text |
+| `src/analyze.py` | Reverted rate-limit workarounds (max_retries 5→3, base_delay 30→15) |
+| `src/config.py` | Added `pre_filter_max`, reverted `batch_delay` default to 5 |
+
+### Commit
+- `b92276e` Redesign /fetch as quick keyword-filtered list, move LLM analysis to on-demand
+
+---
+
 ## 2026-04-21 — Phase 5: Multi-Level Paper Reading Tools
 
 ### What was done

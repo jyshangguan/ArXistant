@@ -479,7 +479,7 @@ def build_prefs_card(prefs: list[dict]) -> dict:
 def build_help_card() -> dict:
     """Build a help card listing all available commands."""
     commands = [
-        ("**/fetch**", "Collect new papers and show keyword-filtered list"),
+        ("**/fetch [yyyy-mm-dd]**", "Collect today's papers (or a date within 7 days) and show keyword-filtered list"),
         ("**/report [category|all]**", "Show all papers with status: new / scanned / read"),
         ("**/scan <arxiv_id>**", "Quick relevance scan of a paper"),
         ("**/read <arxiv_id>**", "Full-text reading with structured notes"),

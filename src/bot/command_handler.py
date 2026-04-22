@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from ..config import Settings
 from ..storage import (
@@ -56,7 +58,7 @@ async def handle_command(
         elif cmd.name == "report":
             await _handle_report(cmd.args, chat_id, message_id, feishu, db, settings)
         elif cmd.name == "fetch":
-            await _handle_fetch(chat_id, message_id, feishu, db, settings, req_id)
+            await _handle_fetch(cmd.args, chat_id, message_id, feishu, db, settings, req_id)
         elif cmd.name == "tree":
             await _handle_tree(chat_id, message_id, feishu, db)
         elif cmd.name == "build":
@@ -258,6 +260,7 @@ async def _handle_read(
 
 
 async def _handle_fetch(
+    args: str,
     chat_id: str,
     message_id: str,
     feishu,
@@ -265,11 +268,55 @@ async def _handle_fetch(
     settings: Settings,
     req_id: str = "",
 ) -> None:
-    """Execute /fetch command: collect papers and show keyword-filtered list."""
+    """Execute /fetch command: collect papers and show keyword-filtered list.
+
+    Usage: /fetch [yyyy-mm-dd]
+    Without a date, fetches today's papers. With a date, fetches that day's papers.
+    """
     from .card_builder import build_fetch_list_card
     from ..main import collect_and_store
     from ..filter import keyword_pre_filter
     from ..storage import get_recent_papers
+
+    # Parse optional date argument
+    target_date = None
+    date_str = args.strip()
+    if date_str:
+        m = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_str)
+        if not m:
+            await feishu.reply_text(
+                message_id,
+                f"Invalid date format: {date_str}. Use /fetch or /fetch yyyy-mm-dd.",
+            )
+            return
+        try:
+            target_date = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError as e:
+            await feishu.reply_text(message_id, f"Invalid date: {e}")
+            return
+
+        # Reject future dates
+        if target_date.date() > datetime.now(timezone.utc).date():
+            await feishu.reply_text(message_id, f"Cannot fetch future papers: {date_str} is in the future.")
+            return
+
+        # Restrict to within 7 days — listing pages only cover recent dates
+        days_away = (datetime.now(timezone.utc).date() - target_date.date()).days
+        if days_away > 7:
+            await feishu.reply_text(
+                message_id,
+                f"Date must be within the last 7 days. {date_str} is {days_away} days ago.",
+            )
+            return
+
+        # Reject weekends — arXiv does not announce new papers on Sat/Sun
+        if target_date.weekday() >= 5:  # Saturday=5, Sunday=6
+            weekday_name = target_date.strftime('%A')
+            await feishu.reply_text(
+                message_id,
+                f"{date_str} is a {weekday_name}. arXiv does not announce new papers on weekends.",
+            )
+            return
 
     # Concurrency guard
     if chat_id in _active_fetches:
@@ -282,11 +329,16 @@ async def _handle_fetch(
 
         # 1. Collect and store (fast, no LLM)
         stats = await loop.run_in_executor(
-            None, lambda: collect_and_store(db, settings)
+            None, lambda: collect_and_store(db, settings, target_date=target_date)
         )
 
         # 2. Keyword pre-filter recent papers
-        recent = get_recent_papers(db, days_back=settings.days_back)
+        if target_date is not None:
+            now = datetime.now(timezone.utc)
+            days_back = max(1, (now - target_date.replace(tzinfo=timezone.utc)).days + 1)
+        else:
+            days_back = settings.days_back
+        recent = get_recent_papers(db, days_back=days_back)
         pre_filter_max = getattr(settings, 'pre_filter_max', 30)
         relevant = keyword_pre_filter(recent, db, max_papers=pre_filter_max)
 
@@ -484,7 +536,10 @@ async def _handle_report(
         categories=root_categories,
     )
 
-    await feishu.reply_card(message_id, card)
+    if message_id:
+        await feishu.reply_card(message_id, card)
+    else:
+        await feishu.send_card(chat_id, card)
 
 
 async def _handle_tree(

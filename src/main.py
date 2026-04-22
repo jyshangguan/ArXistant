@@ -145,11 +145,15 @@ def collect_and_store(
     conn: sqlite3.Connection,
     settings: Settings,
     topics: list[Topic] | None = None,
+    target_date: datetime | None = None,
 ) -> dict:
     """Collect papers from arXiv and store them. No LLM analysis.
 
     If topics is not provided, derives topics from the knowledge tree in the DB
     (falling back to config/topics.yaml if the tree is empty).
+
+    If target_date is given, fetches papers from that specific date instead of
+    using the configured days_back window.
 
     Returns a stats dict: {"papers_collected", "papers_new"}.
     """
@@ -164,7 +168,7 @@ def collect_and_store(
         return {"papers_collected": 0, "papers_new": 0}
 
     logger.info("Collecting papers from arXiv...")
-    papers = collect_papers(topics, settings)
+    papers = collect_papers(topics, settings, target_date=target_date)
     papers_collected = len(papers)
 
     if not papers:
