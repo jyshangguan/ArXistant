@@ -38,6 +38,6 @@ feishu:
   bot_name: ArXistant
 
 bot:
-  target_chat_id: ""           # chat_id for scheduled report push
+  target_chat_id: "oc_2c50a087092cae01edfc1f3c034d9bb6"           # chat_id for scheduled report push
   session_max_messages: 20
   report_cron: "0 9 * * *"
