@@ -60,7 +60,7 @@
 - [ ] Vector database for semantic paper search
 - [ ] Multi-user support
 
-## Phase 5: Multi-Level Paper Reading Tools (in progress)
+## Phase 5: Multi-Level Paper Reading Tools (done)
 
 ### Phase 5A: Foundation (done)
 - [x] Create `src/tools/` package with shared types (`ScanResult`, `ReadingNote`, `ParsedPaper`, `FigureInfo`)
@@ -88,3 +88,18 @@
 - [ ] Create `src/mcp_server.py` wrapping all 4 tools
 - [ ] Wire up scan_paper and read_paper as MCP tools
 - [ ] Test end-to-end with real paper
+
+## Phase 6: Fast Fetch + On-Demand Analysis (done)
+
+- [x] Add `collect_and_store()` in `src/main.py` — arXiv collect + store, no LLM
+- [x] Add `keyword_pre_filter()` in `src/filter.py` — extract keyword phrases from tree nodes, match against papers
+- [x] Add `get_recent_papers()` in `src/storage.py` — papers with `is_analyzed`/`is_read` flags
+- [x] Redesign `_handle_fetch()` — fast pipeline: collect → keyword filter → list card with [Scan]/[Read] buttons
+- [x] Update `_handle_report()` — show all recent papers with status badges (NEW/SCANNED/READ), sorted by status
+- [x] Add `build_fetch_list_card()` in `card_builder.py` — relevant papers with per-paper buttons
+- [x] Update `build_report_card()` — status indicators, conditional quality display
+- [x] Revert aggressive rate-limit workarounds in `analyze.py` (max_retries 5→3, base_delay 30→15)
+- [x] Add `pre_filter_max: int = 30` setting, revert `batch_delay` to 5
+- [x] Keep `run_collect_and_analyze()` for scheduler (overnight batch still does LLM analysis)
+- [x] Update help card descriptions
+- [x] All 251 tests pass

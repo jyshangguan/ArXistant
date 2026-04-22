@@ -294,3 +294,8 @@ Implemented a systematic debugging strategy for the detached bot. Now every comm
 ```
 2026-04-22 13:25:01,234 [ERROR] [a3f2b1] src.bot.command_handler: Command handler failed [a3f2b1]: scan
 ```
+
+
+## Debug the /fetch error
+
+It seems that the filtering does not find the really relevant papers. Please check if there is any bugs first. I wonder where the 

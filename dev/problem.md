@@ -33,7 +33,8 @@
 - Batch 2/7 fails to parse in both end-to-end runs (reproducible). 6 papers lost per run.
 - **Likely cause**: The response may be truncated (too long for the model's output limit), or may contain non-JSON preamble/postamble that the three fallback strategies don't catch.
 - **Impact**: ~14% of papers are silently dropped. They remain in the DB as `quality_score IS NULL` and will be re-analyzed on the next run — but only if we change the query to also include previously-failed papers.
-- **Fix needed**: (1) Log the raw LLM response when parsing fails for debugging. (2) Consider reducing batch size or truncating abstracts. (3) Add a retry mechanism for failed batches.
+- **Mitigated (Phase 6)**: `/fetch` no longer batch-analyzes papers. LLM analysis is now per-paper via `/scan` and `/read`, so a single failure only affects one paper, not a whole batch. The scheduler still uses batch analysis overnight, but failures there are less critical.
+- **Fix needed**: (1) Log the raw LLM response when parsing fails for debugging. (2) Consider reducing batch size or truncating abstracts.
 
 ### No candidate nodes proposed by the LLM
 - Across 36 analyzed papers (quality >= 3 for many), the LLM never proposed a new tree node.
