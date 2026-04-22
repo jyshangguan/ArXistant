@@ -38,9 +38,6 @@ feishu:
   bot_name: ArXistant
 
 bot:
-  host: "0.0.0.0"
-  port: 8000
-  webhook_path: "/feishu/webhook"
   target_chat_id: ""           # chat_id for scheduled report push
   session_max_messages: 20
   report_cron: "0 9 * * *"

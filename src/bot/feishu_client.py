@@ -1,9 +1,7 @@
-"""Feishu API client: auth token, send message/card, verify signature."""
+"""Feishu API client: auth token, send message/card."""
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -111,43 +109,6 @@ class FeishuClient:
         )
         resp.raise_for_status()
         return resp.json()
-
-    # ── Signature verification ──────────────────────────────────────────
-
-    @staticmethod
-    def verify_signature(
-        timestamp: str,
-        nonce: str,
-        signature: str,
-        encrypt_key: str,
-        body: str,
-    ) -> bool:
-        """Verify the Feishu webhook signature."""
-        content = timestamp + nonce + encrypt_key + body
-        expected = hmac.new(
-            encrypt_key.encode("utf-8"),
-            content.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        return hmac.compare_digest(expected, signature)
-
-    # ── Decrypt/Encrypt (if encrypt_key is set) ─────────────────────────
-
-    @staticmethod
-    def decrypt(encrypt_key: str, encrypted: str) -> str:
-        """Decrypt a Feishu encrypted payload using AES-256-ECB."""
-        import base64
-        from hashlib import sha256
-
-        key = sha256(encrypt_key.encode("utf-8")).digest()
-        from Crypto.Cipher import AES
-
-        cipher = AES.new(key, AES.MODE_ECB)
-        raw = base64.b64decode(encrypted)
-        decrypted = cipher.decrypt(raw)
-        # Remove PKCS7 padding
-        pad_len = decrypted[-1]
-        return decrypted[:-pad_len].decode("utf-8")
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

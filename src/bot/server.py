@@ -1,15 +1,16 @@
-"""FastAPI app: webhook endpoint, lifespan (scheduler + DB)."""
+"""Bot entry point: WebSocket long connection mode via lark-oapi SDK."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import signal
 import sqlite3
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+import threading
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import *
 
 from ..config import load_settings
 from ..storage import init_db
@@ -18,10 +19,11 @@ from .command_router import parse_command
 
 logger = logging.getLogger(__name__)
 
-# Module-level state — set during lifespan
+# Module-level state — set during main()
 _feishu: FeishuClient | None = None
 _db_conn: sqlite3.Connection | None = None
 _settings = None
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 def get_feishu() -> FeishuClient:
@@ -42,10 +44,120 @@ def get_app_settings():
     return _settings
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup: init DB, Feishu client, scheduler. Shutdown: clean up."""
-    global _feishu, _db_conn, _settings
+# ── SDK event handlers (sync, called in WSClient thread) ────────────────
+
+
+def _handle_message(data: P2ImMessageReceiveV1) -> None:
+    """Handle im.message.receive_v1 event from SDK."""
+    event = data.event
+    if event is None:
+        return
+
+    message = event.message
+    sender = event.sender
+    if message is None or sender is None:
+        return
+
+    message_id = message.message_id
+    chat_id = message.chat_id
+    content = message.content
+    message_type = message.message_type
+
+    if sender.sender_id is None:
+        return
+    user_id = sender.sender_id.user_id
+
+    # Skip non-text messages
+    if message_type != "text":
+        logger.debug("Ignoring non-text message (type=%s)", message_type)
+        return
+
+    # Parse user text from JSON content
+    try:
+        content_dict = json.loads(content) if content else {}
+        user_text = content_dict.get("text", "").strip()
+    except (json.JSONDecodeError, TypeError):
+        user_text = (content or "").strip()
+
+    if not user_text:
+        return
+
+    logger.info("Received message from %s: %s", chat_id, user_text[:100])
+
+    cmd = parse_command(user_text)
+
+    # Bridge to async handler in main thread
+    if _main_loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            _async_handle_command(cmd, chat_id, message_id, user_text),
+            _main_loop,
+        )
+
+
+def _handle_card_action(data: P2CardActionTrigger) -> None:
+    """Handle card action trigger (button click) from SDK."""
+    event = data.event
+    if event is None:
+        return
+
+    action = event.action
+    if action is None:
+        return
+
+    action_value = action.value
+    if not isinstance(action_value, dict):
+        action_value = {}
+
+    callback_type = action_value.get("type", "")
+    arxiv_id = action_value.get("arxiv_id", "")
+    chat_id = action_value.get("chat_id", "")
+
+    if not chat_id or not callback_type:
+        logger.warning("Invalid card callback: missing chat_id or type")
+        return
+
+    logger.info("Card action: type=%s, arxiv_id=%s, chat_id=%s", callback_type, arxiv_id, chat_id)
+
+    if _main_loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            _async_handle_card_callback(callback_type, arxiv_id, chat_id),
+            _main_loop,
+        )
+
+
+# ── Async wrappers (run in main thread's event loop) ────────────────────
+
+
+async def _async_handle_command(cmd, chat_id: str, message_id: str, raw_text: str) -> None:
+    from .command_handler import handle_command
+    await handle_command(cmd, chat_id, message_id, raw_text)
+
+
+async def _async_handle_card_callback(callback_type: str, arxiv_id: str, chat_id: str) -> None:
+    from .command_handler import handle_card_callback
+    await handle_card_callback(callback_type, arxiv_id, chat_id, get_feishu(), get_db(), get_app_settings())
+
+
+# ── Main entry point ────────────────────────────────────────────────────
+
+
+def _run_ws_client(app_id: str, app_secret: str, encrypt_key: str = "", verification_token: str = "") -> None:
+    """Run lark.ws.Client in the WSClient daemon thread."""
+    cli = lark.ws.Client(
+        app_id=app_id,
+        app_secret=app_secret,
+        event_handler=lark.EventDispatcherHandler("")
+            .register_p2_im_message_receive_v1(_handle_message)
+            .register_p2_card_action_trigger(_handle_card_action),
+        log_level=lark.LogLevel.DEBUG,
+    )
+    logger.info("Starting WebSocket client...")
+    cli.start()
+
+
+def main() -> None:
+    """Initialize services and start the bot."""
+    global _feishu, _db_conn, _settings, _main_loop
 
     settings = load_settings()
     _settings = settings
@@ -61,122 +173,48 @@ async def lifespan(app: FastAPI):
     _feishu = feishu
     logger.info("Feishu client initialized")
 
-    # Start scheduler
+    # Create main thread event loop
+    loop = asyncio.new_event_loop()
+    _main_loop = loop
+    asyncio.set_event_loop(loop)
+
+    # Start scheduler in the asyncio loop
     from .scheduler import start_scheduler, stop_scheduler
-    start_scheduler(settings, conn, feishu)
+    loop.call_soon_threadsafe(start_scheduler, settings, conn, feishu)
     logger.info("Scheduler started")
 
-    yield
+    # Start WSClient in a daemon thread
+    ws_thread = threading.Thread(
+        target=_run_ws_client,
+        args=(settings.feishu_app_id, settings.feishu_app_secret,
+              settings.feishu_encrypt_key, settings.feishu_verification_token),
+        daemon=True,
+        name="ws-client",
+    )
+    ws_thread.start()
+    logger.info("WebSocket client thread started")
 
-    # Shutdown
-    stop_scheduler()
-    await feishu.close()
-    conn.close()
-    logger.info("ArXistant bot service stopped")
+    # Shutdown handler
+    def _shutdown(signum, frame):
+        logger.info("Received signal %s, shutting down...", signum)
+        stop_scheduler()
+        loop.call_soon_threadsafe(loop.stop)
 
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
 
-app = FastAPI(
-    title="ArXistant Bot",
-    lifespan=lifespan,
-)
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-@app.post("/{webhook_path:path}")
-async def webhook(request: Request):
-    """Handle incoming Feishu webhook events."""
-    settings = get_app_settings()
-    feishu = get_feishu()
-
-    body = await request.body()
-    body_text = body.decode("utf-8")
-    payload = json.loads(body_text)
-
-    logger.debug("Webhook payload: %s", json.dumps(payload, ensure_ascii=False)[:500])
-
-    # Handle URL verification challenge
-    if payload.get("type") == "url_verification":
-        return JSONResponse(content={"challenge": payload["challenge"]})
-
-    # Only process message events (im.message.receive_v1)
-    if payload.get("header", {}).get("event_type") != "im.message.receive_v1":
-        return JSONResponse(content={"code": 0})
-
-    event = payload.get("event", {})
-    message = event.get("message", {})
-    sender = event.get("sender", {})
-    chat_id = message.get("chat_id", "")
-
-    # Skip messages from the bot itself
-    sender_id = sender.get("sender_id", {}).get("user_id", "")
-    if sender_id and sender_id == "":  # bot messages have empty or special sender
-        pass  # We check message_type below
-
-    message_type = message.get("message_type", "")
-    if message_type != "text":
-        logger.debug("Ignoring non-text message (type=%s)", message_type)
-        return JSONResponse(content={"code": 0})
-
-    # Parse user text content
-    content_str = message.get("content", "{}")
+    # Run the asyncio loop (blocks until stop())
     try:
-        content = json.loads(content_str)
-        user_text = content.get("text", "").strip()
-    except json.JSONDecodeError:
-        user_text = content_str.strip()
+        loop.run_forever()
+    finally:
+        loop.run_until_complete(feishu.close())
+        conn.close()
+        logger.info("ArXistant bot service stopped")
 
-    if not user_text:
-        return JSONResponse(content={"code": 0})
 
-    message_id = message.get("message_id", "")
-    logger.info("Received message from %s: %s", chat_id, user_text[:100])
-
-    # Parse command
-    cmd = parse_command(user_text)
-
-    # Fire-and-forget: process asynchronously (Feishu requires 3s response)
-    import asyncio
-    from .command_handler import handle_command
-
-    asyncio.create_task(
-        handle_command(cmd, chat_id, message_id, user_text)
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-
-    return JSONResponse(content={"code": 0})
-
-
-@app.post("/{webhook_path:path}/card_callback")
-async def card_callback(request: Request):
-    """Handle Feishu interactive card button callbacks."""
-    feishu = get_feishu()
-    db = get_db()
-    settings = get_app_settings()
-
-    body = await request.body()
-    payload = json.loads(body.decode("utf-8"))
-
-    logger.debug("Card callback payload: %s", json.dumps(payload, ensure_ascii=False)[:500])
-
-    action = payload.get("action", {})
-    action_value = action.get("value", {})
-
-    callback_type = action_value.get("type", "")
-    arxiv_id = action_value.get("arxiv_id", "")
-    chat_id = action_value.get("chat_id", "")
-
-    if not chat_id or not callback_type:
-        logger.warning("Invalid card callback: missing chat_id or type")
-        return JSONResponse(content={"code": 0})
-
-    import asyncio
-    from .command_handler import handle_card_callback
-
-    asyncio.create_task(
-        handle_card_callback(callback_type, arxiv_id, chat_id, feishu, db, settings)
-    )
-
-    return JSONResponse(content={"code": 0})
+    main()

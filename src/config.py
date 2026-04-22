@@ -69,9 +69,6 @@ class Settings:
     feishu_bot_name: str = "ArXistant"
 
     # Bot
-    bot_host: str = "0.0.0.0"
-    bot_port: int = 8000
-    webhook_path: str = "/feishu/webhook"
     target_chat_id: str = ""
     session_max_messages: int = 20
     report_cron: str = "0 9 * * *"
@@ -129,9 +126,6 @@ def load_settings(path: str | Path | None = None) -> Settings:
         feishu_verification_token=os.getenv("FEISHU_VERIFICATION_TOKEN", feishu.get("verification_token", "")),
         feishu_encrypt_key=os.getenv("FEISHU_ENCRYPT_KEY", feishu.get("encrypt_key", "")),
         feishu_bot_name=feishu.get("bot_name", "ArXistant"),
-        bot_host=bot.get("host", "0.0.0.0"),
-        bot_port=bot.get("port", 8000),
-        webhook_path=bot.get("webhook_path", "/feishu/webhook"),
         target_chat_id=bot.get("target_chat_id", ""),
         session_max_messages=bot.get("session_max_messages", 20),
         report_cron=bot.get("report_cron", "0 9 * * *"),
