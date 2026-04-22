@@ -119,7 +119,7 @@ def build_scan_result_card(result) -> dict:
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"Scan: {result.title[:60]}"},
+            "title": {"tag": "plain_text", "content": f"Scan: [{result.arxiv_id}] {result.title[:50]}"},
             "template": header_template,
         },
         "elements": elements,
@@ -229,7 +229,7 @@ def build_reading_note_card(note) -> dict:
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"Reading: {note.title[:60]}"},
+            "title": {"tag": "plain_text", "content": f"Reading: [{note.arxiv_id}] {note.title[:60]}"},
             "template": "blue",
         },
         "elements": elements,
@@ -685,10 +685,16 @@ def build_fetch_list_card(relevant_papers, stats: dict) -> dict:
     # Papers
     for i, rp in enumerate(relevant_papers[:15]):
         p = rp.paper
-        title = p.title[:60] + "..." if len(p.title) > 60 else p.title
 
         # Status badge
         badge = _status_badge.get(rp.status, "NEW")
+
+        # Authors: truncate to first 3 names
+        author_list = [a.strip() for a in p.authors.split("\n") if a.strip()]
+        if len(author_list) > 3:
+            author_str = ", ".join(author_list[:3]) + f" et al. ({len(author_list)} authors)"
+        else:
+            author_str = ", ".join(author_list)
 
         # Category badges
         cats = [c.strip() for c in p.categories.split(",") if c.strip()] if p.categories else []
@@ -701,9 +707,9 @@ def build_fetch_list_card(relevant_papers, stats: dict) -> dict:
             kw_str += f" +{len(rp.matched_keywords)-3} more"
 
         text = (
-            f"**{i+1}. {title}**\n"
-            f"Matched: {kw_str}\n"
-            f"{cat_str}"
+            f"**{i+1}. [{p.arxiv_id}] {p.title}**\n"
+            f"{author_str}\n"
+            f"Matched: {kw_str}  [{badge}]  {cat_str}"
         )
 
         elements.append({"tag": "hr"})

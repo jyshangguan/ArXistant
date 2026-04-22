@@ -31,7 +31,7 @@ class TestBuildScanResultCard:
         card = build_scan_result_card(result)
 
         assert card["header"]["template"] == "blue"
-        assert "2504.12345" not in card["header"]["title"]["content"]
+        assert "2504.12345" in card["header"]["title"]["content"]
         assert card["config"]["wide_screen_mode"] is True
         # Should have elements
         assert len(card["elements"]) > 0

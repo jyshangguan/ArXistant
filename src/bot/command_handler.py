@@ -105,6 +105,8 @@ async def handle_card_callback(
             from ..tools.read_paper import read_paper
             from .preference_store import boost_weight, ensure_preference
 
+            await feishu.send_text(chat_id, f"Reading {arxiv_id}...\nThis may take a moment.")
+
             loop = asyncio.get_event_loop()
             note = await loop.run_in_executor(
                 None, lambda: read_paper(arxiv_id, settings, db)
@@ -122,6 +124,8 @@ async def handle_card_callback(
         elif callback_type == "scan":
             from ..tools.scan_paper import scan_paper
             from .preference_store import boost_weight, ensure_preference
+
+            await feishu.send_text(chat_id, f"Scanning {arxiv_id}...\nThis may take a moment.")
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
