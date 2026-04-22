@@ -50,9 +50,12 @@ def get_app_settings():
 
 def _log_future_error(future: asyncio.Future) -> None:
     """Log any exception from a coroutine submitted via run_coroutine_threadsafe."""
-    exc = future.exception()
-    if exc is not None:
-        logger.exception("Async handler failed: %s", exc)
+    try:
+        exc = future.exception()
+        if exc is not None:
+            logger.error("Async handler failed", exc_info=exc)
+    except asyncio.InvalidStateError:
+        pass
 
 
 def _handle_message(data: P2ImMessageReceiveV1) -> None:
