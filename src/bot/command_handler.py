@@ -57,7 +57,7 @@ async def handle_command(
         elif cmd.name == "report":
             await _handle_report(cmd.args, chat_id, message_id, feishu, db, settings)
         elif cmd.name == "fetch":
-            await _handle_fetch(chat_id, message_id, feishu, db, settings)
+            await _handle_fetch(chat_id, message_id, feishu, db, settings, req_id)
         elif cmd.name == "tree":
             await _handle_tree(chat_id, message_id, feishu, db)
         elif cmd.name == "build":
@@ -71,7 +71,7 @@ async def handle_command(
         elif cmd.name == "debug":
             await _handle_debug(cmd.args, chat_id, message_id, feishu)
         elif cmd.name == "chat":
-            await _handle_chat(chat_id, raw_text, feishu, db, settings)
+            await _handle_chat(chat_id, raw_text, feishu, db, settings, req_id)
     except Exception as e:
         from .debug import record_error
         record = record_error(req_id, f"cmd:{cmd.name}", e)
@@ -142,7 +142,7 @@ async def handle_card_callback(
             await _handle_report("all", chat_id, "", feishu, db, settings)
 
         elif callback_type == "build_accept":
-            await _handle_build_accept(chat_id, feishu, db, settings)
+            await _handle_build_accept(chat_id, feishu, db, settings, req_id)
 
         elif callback_type == "build_reject":
             await _handle_build_reject(chat_id, feishu, db)
@@ -264,6 +264,7 @@ async def _handle_fetch(
     feishu,
     db: sqlite3.Connection,
     settings: Settings,
+    req_id: str = "",
 ) -> None:
     """Execute /fetch command: collect and analyze papers from arXiv."""
     from .card_builder import build_fetch_result_card
@@ -283,10 +284,14 @@ async def _handle_fetch(
 
         card = build_fetch_result_card(stats)
         await feishu.reply_card(message_id, card)
-        logger.info("Fetch complete for %s: %s", chat_id, stats)
+        logger.info("Fetch complete for %s: %s", chat_id, stats, extra={"req_id": req_id})
     except Exception as e:
-        logger.exception("Fetch failed for %s", chat_id)
-        await feishu.reply_card(message_id, _build_error_card(f"Fetch failed: {e}"))
+        from .debug import record_error
+        record = record_error(req_id, "cmd:fetch", e)
+        logger.error("Fetch failed for %s [%s]", chat_id, req_id,
+                      exc_info=e, extra={"req_id": req_id})
+        card = _build_debug_error_card(record, chat_id)
+        await feishu.reply_card(message_id, card)
     finally:
         _active_fetches.discard(chat_id)
 
@@ -529,6 +534,7 @@ async def _handle_chat(
     feishu,
     db: sqlite3.Connection,
     settings: Settings,
+    req_id: str = "",
 ) -> None:
     """Handle natural language conversation.
 
@@ -563,8 +569,12 @@ async def _handle_chat(
             card = build_tree_preview_card(nodes)
             await feishu.send_card(chat_id, card)
         except Exception as e:
-            logger.exception("Build engine failed for %s", chat_id)
-            await feishu.send_text(chat_id, f"Error generating tree: {e}")
+            from .debug import record_error
+            record = record_error(req_id, "cmd:chat:build_engine", e)
+            logger.error("Build engine failed for %s [%s]", chat_id, req_id,
+                          exc_info=e, extra={"req_id": req_id})
+            card = _build_debug_error_card(record, chat_id)
+            await feishu.send_card(chat_id, card)
             delete_build_session(db, chat_id)
         return
 
@@ -603,6 +613,7 @@ async def _handle_build_accept(
     feishu,
     db: sqlite3.Connection,
     settings: Settings,
+    req_id: str = "",
 ) -> None:
     """Accept a generated tree: import it into the DB."""
     from ..tree import import_tree_from_yaml_force
@@ -628,7 +639,7 @@ async def _handle_build_accept(
             tmp_path = f.name
 
         imported = import_tree_from_yaml_force(db, tmp_path)
-        logger.info("Build accept: imported %d tree nodes for %s", imported, chat_id)
+        logger.info("Build accept: imported %d tree nodes for %s", imported, chat_id, extra={"req_id": req_id})
 
         # Re-initialize preferences for new nodes
         from .preference_store import initialize_all_preferences
@@ -639,8 +650,12 @@ async def _handle_build_accept(
             f"Knowledge tree updated! Imported {imported} nodes. Use /tree to view it, then /fetch to collect papers.",
         )
     except Exception as e:
-        logger.exception("Failed to import generated tree for %s", chat_id)
-        await feishu.send_text(chat_id, f"Failed to import tree: {e}")
+        from .debug import record_error
+        record = record_error(req_id, "cmd:build_accept", e)
+        logger.error("Failed to import generated tree for %s [%s]", chat_id, req_id,
+                      exc_info=e, extra={"req_id": req_id})
+        card = _build_debug_error_card(record, chat_id)
+        await feishu.send_card(chat_id, card)
     finally:
         import os
         try:
