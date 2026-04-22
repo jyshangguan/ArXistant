@@ -33,7 +33,8 @@ def _make_card_action_event(
 ):
     """Build a mock P2CardActionTrigger SDK event object."""
     data = MagicMock()
-    data.event.action.value = {"type": callback_type, "arxiv_id": arxiv_id, "chat_id": chat_id}
+    data.event.action.value = {"type": callback_type, "arxiv_id": arxiv_id}
+    data.event.context.open_chat_id = chat_id
     return data
 
 
@@ -140,21 +141,11 @@ class TestHandleCardAction:
                 coro = call_args[0][0]
                 assert call_args[0][1] is mock_loop
 
-    def test_missing_chat_id_ignored(self):
-        from src.bot.server import _handle_card_action
-
-        data = _make_card_action_event()
-        data.event.action.value = {"type": "read", "arxiv_id": "2504.12345"}
-
-        with patch("src.bot.server.asyncio.run_coroutine_threadsafe") as mock_run:
-            _handle_card_action(data)
-            mock_run.assert_not_called()
-
     def test_missing_type_ignored(self):
         from src.bot.server import _handle_card_action
 
         data = _make_card_action_event()
-        data.event.action.value = {"arxiv_id": "2504.12345", "chat_id": "oc_test"}
+        data.event.action.value = {"arxiv_id": "2504.12345"}
 
         with patch("src.bot.server.asyncio.run_coroutine_threadsafe") as mock_run:
             _handle_card_action(data)
