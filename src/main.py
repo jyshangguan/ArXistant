@@ -141,6 +141,45 @@ def run_collect_and_analyze(
     }
 
 
+def collect_and_store(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    topics: list[Topic] | None = None,
+) -> dict:
+    """Collect papers from arXiv and store them. No LLM analysis.
+
+    If topics is not provided, derives topics from the knowledge tree in the DB
+    (falling back to config/topics.yaml if the tree is empty).
+
+    Returns a stats dict: {"papers_collected", "papers_new"}.
+    """
+    from .tree import derive_topics_from_tree
+
+    if topics is None:
+        topics = derive_topics_from_tree(conn)
+        if not topics:
+            topics = load_topics()
+    if not topics:
+        logger.warning("No topics available for collection, skipping")
+        return {"papers_collected": 0, "papers_new": 0}
+
+    logger.info("Collecting papers from arXiv...")
+    papers = collect_papers(topics, settings)
+    papers_collected = len(papers)
+
+    if not papers:
+        logger.warning("No papers found. Check your categories and date range.")
+        return {"papers_collected": 0, "papers_new": 0}
+
+    papers_new = insert_papers_batch(conn, [_raw_paper_to_dict(p) for p in papers])
+    logger.info("Stored %d new papers (%d total fetched)", papers_new, papers_collected)
+
+    return {
+        "papers_collected": papers_collected,
+        "papers_new": papers_new,
+    }
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,

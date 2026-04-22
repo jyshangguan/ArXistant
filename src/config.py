@@ -47,6 +47,7 @@ class Settings:
     batch_size: int = 6
     batch_delay: float = 5
     relevance_threshold: int = 4
+    pre_filter_max: int = 30
 
     # Report
     report_output_dir: str = "reports"
@@ -116,6 +117,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         batch_size=filt.get("batch_size", 6),
         batch_delay=filt.get("batch_delay", 5),
         relevance_threshold=filt.get("relevance_threshold", 4),
+        pre_filter_max=filt.get("pre_filter_max", 30),
         report_output_dir=report.get("output_dir", "reports"),
         db_path=database.get("path", "data/arxistant.db"),
         candidates_path=candidates.get("path", "data/candidates.yaml"),

@@ -1,17 +1,36 @@
-"""Filter papers by relevance using LLM scoring."""
+"""Filter papers by relevance using keyword matching (fast, no LLM)."""
 
 from __future__ import annotations
 
 import json
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass
 
 from .config import Settings, Topic
 from .collector import RawPaper
 from .llm_client import OpenAI, chat_completion, create_client
+from .storage import StoredPaper
 
 logger = logging.getLogger(__name__)
+
+# Generic stop-words that produce false positives in keyword matching
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
+    "be", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can", "need", "dare",
+    "ought", "used", "this", "that", "these", "those", "it", "its",
+    "not", "no", "nor", "if", "then", "than", "too", "very", "just",
+    "also", "such", "each", "every", "all", "any", "both", "few", "more",
+    "most", "other", "some", "what", "which", "who", "whom", "how",
+    "when", "where", "why", "we", "our", "us", "they", "their", "them",
+    "study", "studies", "result", "results", "model", "models", "method",
+    "methods", "analysis", "based", "using", "used", "data", "new",
+    "paper", "papers", "work", "show", "shows", "propose", "proposed",
+    "observation", "observations", "measurement", "measurements",
+})
 
 
 @dataclass
@@ -228,3 +247,140 @@ def filter_papers(
     relevant.sort(key=lambda r: r.score, reverse=True)
     logger.info("Filtering complete: %d/%d papers above threshold", len(relevant), len(papers))
     return relevant
+
+
+# ── Keyword pre-filter (no LLM) ────────────────────────────────────
+
+
+def _extract_tree_keywords(conn: sqlite3.Connection) -> list[str]:
+    """Extract keyword phrases from all active tree nodes.
+
+    Uses node names and multi-word phrases from descriptions.
+    Returns deduplicated phrases (lowercased), longest first.
+    """
+    from .storage import get_all_tree_nodes
+
+    nodes = get_all_tree_nodes(conn)
+    phrases: set[str] = set()
+
+    for node in nodes:
+        # Node name as a phrase (e.g. "Bar Formation", "Fast Radio Bursts")
+        name = node.name.strip()
+        if len(name) >= 3:
+            phrases.add(name.lower())
+
+        # Extract meaningful phrases from description
+        desc = node.description
+        if not desc:
+            continue
+
+        # Split description into clauses on sentence-ending punctuation
+        clauses = re.split(r'[.;:!?]', desc)
+        for clause in clauses:
+            clause = clause.strip()
+            if not clause:
+                continue
+            # Extract quoted terms
+            for quoted in re.findall(r'"([^"]+)"', clause):
+                phrase = quoted.strip()
+                if len(phrase) >= 3:
+                    phrases.add(phrase.lower())
+            # Also add the full clause if it's a reasonable length (3-6 words)
+            words = clause.split()
+            if 3 <= len(words) <= 6:
+                # Filter out clauses that are just generic filler
+                words_lower = [w.lower() for w in words]
+                if not all(w in _STOP_WORDS for w in words_lower):
+                    phrases.add(clause.lower())
+
+    # Remove phrases that are entirely stop-words or very short
+    filtered = []
+    for p in phrases:
+        words = p.split()
+        if len(words) < 2:
+            continue  # Skip single words
+        non_stop = [w for w in words if w not in _STOP_WORDS]
+        if not non_stop:
+            continue
+        filtered.append(p)
+
+    # Sort longest first (more specific matches first)
+    filtered.sort(key=lambda p: len(p), reverse=True)
+
+    logger.info("Extracted %d keyword phrases from %d tree nodes", len(filtered), len(nodes))
+    return filtered
+
+
+@dataclass
+class PreFilteredPaper:
+    """A paper that matched keyword pre-filter, with match info."""
+    paper: StoredPaper
+    match_count: int
+    matched_keywords: list[str]
+    status: str  # "new", "scanned", "read"
+
+
+def keyword_pre_filter(
+    papers: list[StoredPaper],
+    conn: sqlite3.Connection,
+    max_papers: int = 30,
+) -> list[PreFilteredPaper]:
+    """Fast keyword-based relevance filter using tree node names and descriptions.
+
+    No LLM calls. Matches keyword phrases against paper title + abstract.
+    Returns papers sorted by match count, capped at max_papers.
+    """
+    if not papers:
+        return []
+
+    keywords = _extract_tree_keywords(conn)
+    if not keywords:
+        logger.warning("No keywords extracted from tree, returning all papers")
+        return [PreFilteredPaper(p, 0, [], _paper_status(conn, p.arxiv_id)) for p in papers[:max_papers]]
+
+    results: list[PreFilteredPaper] = []
+
+    for p in papers:
+        text = f"{p.title} {p.abstract}".lower()
+
+        matched = []
+        seen_substrings: set[str] = set()  # avoid double-counting sub-phrases
+
+        for kw in keywords:
+            if kw in text:
+                # Only count if not a substring of an already-matched longer phrase
+                is_substring = any(kw != existing and kw in existing for existing in matched)
+                if not is_substring:
+                    matched.append(kw)
+
+        if matched:
+            results.append(PreFilteredPaper(
+                paper=p,
+                match_count=len(matched),
+                matched_keywords=matched[:5],  # keep top 5 for display
+                status=_paper_status(conn, p.arxiv_id),
+            ))
+
+    # Sort by match count descending
+    results.sort(key=lambda r: r.match_count, reverse=True)
+
+    logger.info("Keyword pre-filter: %d/%d papers matched (%d keywords used)",
+                len(results), len(papers), len(keywords))
+    return results[:max_papers]
+
+
+def _paper_status(conn: sqlite3.Connection, arxiv_id: str) -> str:
+    """Determine a paper's analysis status: 'new', 'scanned', or 'read'."""
+    has_reading = conn.execute(
+        "SELECT 1 FROM reading_notes WHERE arxiv_id = ?", (arxiv_id,)
+    ).fetchone()
+    if has_reading:
+        return "read"
+
+    has_analysis = conn.execute(
+        "SELECT 1 FROM papers WHERE arxiv_id = ? AND quality_score IS NOT NULL", (arxiv_id,)
+    ).fetchone()
+    if has_analysis:
+        return "scanned"
+
+    return "new"

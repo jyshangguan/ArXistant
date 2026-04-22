@@ -149,6 +149,8 @@ class StoredPaper:
     quality_reason: str = ""
     first_seen_at: str = ""
     last_analyzed_at: str | None = None
+    is_analyzed: bool = False
+    is_read: bool = False
 
 
 @dataclass
@@ -398,6 +400,32 @@ def count_papers(conn: sqlite3.Connection) -> int:
     """Count total papers in the database."""
     row = conn.execute("SELECT COUNT(*) FROM papers").fetchone()
     return row[0]
+
+
+def get_recent_papers(
+    conn: sqlite3.Connection, days_back: int = 3
+) -> list[StoredPaper]:
+    """Get papers first seen in the last N days, with analysis status.
+
+    Returns papers ordered by first_seen_at DESC (newest first).
+    """
+    rows = conn.execute(
+        """SELECT p.*,
+                  p.quality_score IS NOT NULL AS is_analyzed,
+                  (SELECT 1 FROM reading_notes rn WHERE rn.arxiv_id = p.arxiv_id) AS is_read
+           FROM papers p
+           WHERE p.first_seen_at >= datetime('now', ? || ' days')
+           ORDER BY p.first_seen_at DESC""",
+        (str(-days_back),),
+    ).fetchall()
+    # Convert to StoredPaper, preserving extra columns
+    result = []
+    for r in rows:
+        sp = StoredPaper(**dict(r))
+        sp.is_analyzed = bool(r["is_analyzed"])
+        sp.is_read = bool(r["is_read"])
+        result.append(sp)
+    return result
 
 
 def update_paper_analysis(

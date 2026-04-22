@@ -247,7 +247,7 @@ def build_report_card(
     Args:
         papers_by_category: Dict mapping category name to list of paper dicts.
             Each paper dict has: arxiv_id, title, quality_score, tree_links,
-            quality_reason, sort_key.
+            quality_reason, sort_key, status.
         total_scanned: Total papers scanned.
         total_relevant: Total relevant papers (score >= threshold).
         categories: List of monitored categories.
@@ -261,11 +261,11 @@ def build_report_card(
         "fields": [
             {
                 "is_short": True,
-                "text": {"tag": "lark_md", "content": f"**Scanned:** {total_scanned}"},
+                "text": {"tag": "lark_md", "content": f"**Total:** {total_scanned}"},
             },
             {
                 "is_short": True,
-                "text": {"tag": "lark_md", "content": f"**Relevant (>=4):** {total_relevant}"},
+                "text": {"tag": "lark_md", "content": f"**Relevant:** {total_relevant}"},
             },
             {
                 "is_short": True,
@@ -277,6 +277,13 @@ def build_report_card(
             },
         ],
     })
+
+    # Status badge helper
+    _status_badge = {
+        "new": "NEW",
+        "scanned": "SCANNED",
+        "read": "READ",
+    }
 
     # Per-category sections
     for cat_name, papers in papers_by_category.items():
@@ -300,6 +307,10 @@ def build_report_card(
             # Quality score display
             qs = p.get("quality_score", 0)
 
+            # Status badge
+            status = p.get("status", "new")
+            badge = _status_badge.get(status, "NEW")
+
             # Tree connections summary
             links = p.get("tree_links", [])
             top_links = links[:2] if links else []
@@ -311,10 +322,11 @@ def build_report_card(
             reason = p.get("quality_reason", "")[:100]
 
             text = (
-                f"**{i+1}. {p['title'][:50]}**\n"
-                f"Quality: {qs}/5 | {link_str}\n"
-                f"{reason}"
+                f"**{i+1}. {p['title'][:50]}** [{badge}]\n"
             )
+            if qs > 0:
+                text += f"Quality: {qs}/5 | {link_str}\n"
+            text += f"{reason}"
 
             elements.append({
                 "tag": "div",
@@ -327,7 +339,7 @@ def build_report_card(
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Read More"},
+                        "text": {"tag": "plain_text", "content": "Read"},
                         "type": "primary",
                         "value": {"type": "read", "arxiv_id": p["arxiv_id"]},
                     },
@@ -467,8 +479,8 @@ def build_prefs_card(prefs: list[dict]) -> dict:
 def build_help_card() -> dict:
     """Build a help card listing all available commands."""
     commands = [
-        ("**/fetch**", "Collect and analyze new papers from arXiv"),
-        ("**/report [category|all]**", "Generate daily report (default: all)"),
+        ("**/fetch**", "Collect new papers and show keyword-filtered list"),
+        ("**/report [category|all]**", "Show all papers with status: new / scanned / read"),
         ("**/scan <arxiv_id>**", "Quick relevance scan of a paper"),
         ("**/read <arxiv_id>**", "Full-text reading with structured notes"),
         ("**/tree**", "Display current knowledge tree"),
@@ -621,6 +633,136 @@ def build_fetch_result_card(stats: dict) -> dict:
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": "Fetch Complete"},
+            "template": "green",
+        },
+        "elements": elements,
+    }
+
+
+def build_fetch_list_card(relevant_papers, stats: dict) -> dict:
+    """Build a Feishu card showing keyword-filtered papers with [Scan]/[Read] buttons.
+
+    Args:
+        relevant_papers: List of PreFilteredPaper objects from keyword_pre_filter.
+        stats: Dict with keys: papers_collected, papers_new.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    elements = []
+
+    # Summary stats
+    elements.append({
+        "tag": "div",
+        "fields": [
+            {
+                "is_short": True,
+                "text": {"tag": "lark_md", "content": f"**Collected:** {stats.get('papers_collected', 0)}"},
+            },
+            {
+                "is_short": True,
+                "text": {"tag": "lark_md", "content": f"**New:** {stats.get('papers_new', 0)}"},
+            },
+            {
+                "is_short": True,
+                "text": {"tag": "lark_md", "content": f"**Relevant:** {len(relevant_papers)}"},
+            },
+        ],
+    })
+
+    if not relevant_papers:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "No papers matched your knowledge tree keywords."},
+        })
+
+    # Status badge helper
+    _status_badge = {
+        "new": "NEW",
+        "scanned": "SCANNED",
+        "read": "READ",
+    }
+
+    # Papers
+    for i, rp in enumerate(relevant_papers[:15]):
+        p = rp.paper
+        title = p.title[:60] + "..." if len(p.title) > 60 else p.title
+
+        # Status badge
+        badge = _status_badge.get(rp.status, "NEW")
+
+        # Category badges
+        cats = [c.strip() for c in p.categories.split(",") if c.strip()] if p.categories else []
+        short_cats = [c.split(".")[-1] if "." in c else c for c in cats[:3]]
+        cat_str = " ".join(f"`{c}`" for c in short_cats)
+
+        # Matched keywords (reason)
+        kw_str = ", ".join(rp.matched_keywords[:3])
+        if len(rp.matched_keywords) > 3:
+            kw_str += f" +{len(rp.matched_keywords)-3} more"
+
+        text = (
+            f"**{i+1}. {title}**\n"
+            f"Matched: {kw_str}\n"
+            f"{cat_str}"
+        )
+
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": text},
+        })
+
+        # Action buttons
+        elements.append({
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Scan"},
+                    "type": "primary",
+                    "value": {"type": "scan", "arxiv_id": p.arxiv_id},
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "Read"},
+                    "type": "default",
+                    "value": {"type": "read", "arxiv_id": p.arxiv_id},
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "arXiv"},
+                    "type": "default",
+                    "url": f"https://arxiv.org/abs/{p.arxiv_id}",
+                },
+            ],
+        })
+
+    # View Report button
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "action",
+        "actions": [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "View Full Report"},
+                "type": "primary",
+                "value": {"type": "report"},
+            },
+        ],
+    })
+
+    # Footer
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": f"Generated by ArXistant at {now}"},
+        ],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "New Papers"},
             "template": "green",
         },
         "elements": elements,

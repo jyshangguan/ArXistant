@@ -11,7 +11,6 @@ from collections import defaultdict
 from ..config import Settings
 from ..storage import (
     get_all_tree_nodes,
-    get_analyzed_papers,
     get_links_for_paper,
     count_papers,
     get_tree_node_by_name,
@@ -266,9 +265,11 @@ async def _handle_fetch(
     settings: Settings,
     req_id: str = "",
 ) -> None:
-    """Execute /fetch command: collect and analyze papers from arXiv."""
-    from .card_builder import build_fetch_result_card
-    from ..main import run_collect_and_analyze
+    """Execute /fetch command: collect papers and show keyword-filtered list."""
+    from .card_builder import build_fetch_list_card
+    from ..main import collect_and_store
+    from ..filter import keyword_pre_filter
+    from ..storage import get_recent_papers
 
     # Concurrency guard
     if chat_id in _active_fetches:
@@ -278,13 +279,22 @@ async def _handle_fetch(
     _active_fetches.add(chat_id)
     try:
         loop = asyncio.get_event_loop()
+
+        # 1. Collect and store (fast, no LLM)
         stats = await loop.run_in_executor(
-            None, lambda: run_collect_and_analyze(db, settings)
+            None, lambda: collect_and_store(db, settings)
         )
 
-        card = build_fetch_result_card(stats)
+        # 2. Keyword pre-filter recent papers
+        recent = get_recent_papers(db, days_back=settings.days_back)
+        pre_filter_max = getattr(settings, 'pre_filter_max', 30)
+        relevant = keyword_pre_filter(recent, db, max_papers=pre_filter_max)
+
+        # 3. Build list card with [Scan]/[Read] buttons
+        card = build_fetch_list_card(relevant, stats)
         await feishu.reply_card(message_id, card)
-        logger.info("Fetch complete for %s: %s", chat_id, stats, extra={"req_id": req_id})
+        logger.info("Fetch complete for %s: %s, %d relevant", chat_id, stats,
+                     len(relevant), extra={"req_id": req_id})
     except Exception as e:
         from .debug import record_error
         record = record_error(req_id, "cmd:fetch", e)
@@ -369,10 +379,11 @@ async def _handle_report(
     db: sqlite3.Connection,
     settings: Settings,
 ) -> None:
-    """Execute /report command."""
+    """Execute /report command: show all recent papers with status indicators."""
     from .card_builder import build_report_card
     from .preference_store import get_weighted_score, initialize_all_preferences
     from ..tree import build_category_groups, get_root_categories
+    from ..storage import get_recent_papers
 
     # Build category mapping from tree root nodes
     cat_groups = build_category_groups(db)
@@ -394,22 +405,25 @@ async def _handle_report(
     # Initialize preferences for all nodes (lazy init)
     initialize_all_preferences(db)
 
-    # Get analyzed papers with quality >= threshold
-    threshold = settings.relevance_threshold
-    papers = get_analyzed_papers(db, min_quality=threshold)
+    # Get all recent papers (not just analyzed ones)
+    papers = get_recent_papers(db, days_back=settings.days_back)
 
     if not papers:
-        await feishu.reply_text(message_id, "No relevant papers found in the database.")
+        await feishu.reply_text(message_id, "No papers found in the database.")
         return
 
-    # Build paper→links mapping
+    # Build paper→links mapping for analyzed papers
     paper_links_map: dict[str, list[dict]] = {}
     for p in papers:
-        links = get_links_for_paper(db, p.arxiv_id)
-        if links:
-            paper_links_map[p.arxiv_id] = links
+        if p.is_analyzed:
+            links = get_links_for_paper(db, p.arxiv_id)
+            if links:
+                paper_links_map[p.arxiv_id] = links
 
-    # Group by category and compute weighted scores
+    # Determine status and sort priority
+    _status_priority = {"read": 0, "scanned": 1, "new": 2}
+
+    # Group by category
     papers_by_category: dict[str, list[dict]] = defaultdict(list)
 
     for p in papers:
@@ -421,8 +435,16 @@ async def _handle_report(
             if not cat_match:
                 continue
 
-        # Compute weighted score
+        # Compute weighted score (for analyzed papers)
         weighted_score = get_weighted_score(db, p.arxiv_id, p.quality_score or 0)
+
+        # Determine status
+        if p.is_read:
+            status = "read"
+        elif p.is_analyzed:
+            status = "scanned"
+        else:
+            status = "new"
 
         # Find primary category group from tree roots
         primary_group = "Other"
@@ -441,14 +463,16 @@ async def _handle_report(
             "quality_reason": p.quality_reason,
             "tree_links": links,
             "sort_key": weighted_score,
+            "status_key": _status_priority.get(status, 2),
+            "status": status,
             "categories": cats,
         }
 
         papers_by_category[primary_group].append(paper_dict)
 
-    # Sort by weighted score within each category
+    # Sort: by status priority (read first) then by weighted score within same status
     for cat_papers in papers_by_category.values():
-        cat_papers.sort(key=lambda x: x["sort_key"], reverse=True)
+        cat_papers.sort(key=lambda x: (x["status_key"], -x["sort_key"]))
 
     total_scanned = count_papers(db)
     total_relevant = len(papers)
