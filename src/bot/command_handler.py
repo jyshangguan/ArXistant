@@ -25,16 +25,19 @@ async def handle_command(
     chat_id: str,
     message_id: str,
     raw_text: str,
+    feishu=None,
+    db=None,
+    settings=None,
 ) -> None:
     """Route a parsed command to the appropriate handler.
 
     Sends a "Processing..." acknowledgment for long-running commands.
     """
-    from .server import get_feishu, get_db, get_app_settings
-
-    feishu = get_feishu()
-    db = get_db()
-    settings = get_app_settings()
+    if feishu is None or db is None or settings is None:
+        from .server import get_feishu, get_db, get_app_settings
+        feishu = get_feishu()
+        db = get_db()
+        settings = get_app_settings()
 
     try:
         # Acknowledge long-running commands

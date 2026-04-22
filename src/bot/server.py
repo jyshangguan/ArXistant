@@ -162,7 +162,7 @@ def _handle_card_action(data: P2CardActionTrigger):
 
 async def _async_handle_command(cmd, chat_id: str, message_id: str, raw_text: str) -> None:
     from .command_handler import handle_command
-    await handle_command(cmd, chat_id, message_id, raw_text)
+    await handle_command(cmd, chat_id, message_id, raw_text, get_feishu(), get_db(), get_app_settings())
 
 
 async def _async_handle_card_callback(callback_type: str, arxiv_id: str, chat_id: str) -> None:
