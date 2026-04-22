@@ -33,6 +33,7 @@ async def handle_command(
     feishu=None,
     db=None,
     settings=None,
+    req_id: str = "",
 ) -> None:
     """Route a parsed command to the appropriate handler.
 
@@ -46,7 +47,7 @@ async def handle_command(
 
     try:
         # Acknowledge long-running commands
-        if cmd.name in ("scan", "read", "report", "fetch", "chat"):
+        if cmd.name in ("scan", "read", "report", "fetch", "chat", "debug"):
             await feishu.reply_text(message_id, "Processing...")
 
         if cmd.name == "scan":
@@ -67,15 +68,23 @@ async def handle_command(
             await _handle_prefs(chat_id, message_id, feishu, db)
         elif cmd.name == "reset":
             await _handle_reset(chat_id, message_id, feishu, db)
+        elif cmd.name == "debug":
+            await _handle_debug(cmd.args, chat_id, message_id, feishu)
         elif cmd.name == "chat":
             await _handle_chat(chat_id, raw_text, feishu, db, settings)
     except Exception as e:
-        logger.exception("Command handler failed: %s", cmd.name)
+        from .debug import record_error
+        record = record_error(req_id, f"cmd:{cmd.name}", e)
+        logger.error("Command handler failed [%s]: %s", req_id, cmd.name,
+                      exc_info=e, extra={"req_id": req_id})
         try:
-            from .card_builder import _error_card
-            await feishu.reply_card(message_id, _error_card(f"Error: {e}"))
+            card = _build_debug_error_card(record, chat_id)
+            if message_id:
+                await feishu.reply_card(message_id, card)
+            else:
+                await feishu.send_card(chat_id, card)
         except Exception:
-            logger.exception("Failed to send error message")
+            logger.exception("Failed to send error message", extra={"req_id": req_id})
 
 
 async def handle_card_callback(
@@ -85,6 +94,7 @@ async def handle_card_callback(
     feishu,
     db: sqlite3.Connection,
     settings: Settings,
+    req_id: str = "",
 ) -> None:
     """Handle interactive card button callbacks."""
     from .card_builder import build_scan_result_card, build_reading_note_card
@@ -138,15 +148,47 @@ async def handle_card_callback(
             await _handle_build_reject(chat_id, feishu, db)
 
     except Exception as e:
-        logger.exception("Card callback failed: type=%s, arxiv=%s", callback_type, arxiv_id)
+        from .debug import record_error
+        record = record_error(req_id, f"callback:{callback_type}", e)
+        logger.error("Card callback failed [%s]: type=%s, arxiv=%s", req_id, callback_type, arxiv_id,
+                      exc_info=e, extra={"req_id": req_id})
         try:
-            from .card_builder import _error_card
-            await feishu.send_card(chat_id, _error_card(f"Error: {e}"))
+            card = _build_debug_error_card(record, chat_id)
+            await feishu.send_card(chat_id, card)
         except Exception:
-            logger.exception("Failed to send error message")
+            logger.exception("Failed to send error message", extra={"req_id": req_id})
 
 
 # ── Command handlers ────────────────────────────────────────────────────
+
+
+async def _handle_debug(
+    args: str,
+    chat_id: str,
+    message_id: str,
+    feishu,
+) -> None:
+    """Execute /debug command: show errors or toggle verbose mode."""
+    from .debug import get_recent_errors, is_verbose, set_verbose
+    from .card_builder import build_debug_card
+
+    arg = args.strip().lower()
+
+    if arg == "on":
+        set_verbose(chat_id, True)
+        await feishu.reply_text(message_id, "Verbose mode enabled. Error cards will now include full tracebacks.")
+        return
+
+    if arg == "off":
+        set_verbose(chat_id, False)
+        await feishu.reply_text(message_id, "Verbose mode disabled.")
+        return
+
+    # Default: show recent errors
+    errors = get_recent_errors(10)
+    verbose = is_verbose(chat_id)
+    card = build_debug_card(errors, verbose)
+    await feishu.reply_card(message_id, card)
 
 
 async def _handle_scan(
@@ -253,6 +295,65 @@ def _build_error_card(message: str) -> dict:
     """Helper to build an error card from command_handler."""
     from .card_builder import _error_card
     return _error_card(message)
+
+
+def _build_debug_error_card(record, chat_id: str) -> dict:
+    """Build an error card with request ID, source, and optional traceback."""
+    from .debug import is_verbose
+
+    elements = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**Error:** {record.error_message}",
+            },
+        },
+        {
+            "tag": "div",
+            "fields": [
+                {
+                    "is_short": True,
+                    "text": {"tag": "lark_md", "content": f"**Request ID:** `{record.request_id}`"},
+                },
+                {
+                    "is_short": True,
+                    "text": {"tag": "lark_md", "content": f"**Source:** `{record.source}`"},
+                },
+                {
+                    "is_short": True,
+                    "text": {"tag": "lark_md", "content": f"**Time:** {record.timestamp.strftime('%H:%M:%S UTC')}"},
+                },
+            ],
+        },
+    ]
+
+    if is_verbose(chat_id):
+        tb = record.traceback_text[-2000:]
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**Traceback:**\n```\n{tb}\n```",
+            },
+        })
+
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": "Use /debug to view recent errors."},
+        ],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Error"},
+            "template": "red",
+        },
+        "elements": elements,
+    }
 
 
 async def _handle_report(

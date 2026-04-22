@@ -24,6 +24,7 @@ _PATTERNS = [
     ("build",  r"^/build\s*(.*)$"),
     ("prefs",  r"^/prefs\s*$"),
     ("reset",  r"^/reset\s*$"),
+    ("debug",  r"^/debug\s*(.*)$"),
     ("help",   r"^(?:/help|help)\s*$"),
 ]
 

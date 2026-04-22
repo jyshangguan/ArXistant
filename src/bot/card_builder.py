@@ -474,6 +474,7 @@ def build_help_card() -> dict:
         ("**/tree**", "Display current knowledge tree"),
         ("**/build**", "Generate a customized knowledge tree from your interests"),
         ("**/prefs**", "Show your preference weights"),
+        ("**/debug [on|off]**", "Show recent errors or toggle verbose tracebacks"),
         ("**/reset**", "Clear conversation session"),
         ("**/help**", "Show this help message"),
         ("", ""),
@@ -517,6 +518,65 @@ def _error_card(message: str) -> dict:
                 "text": {"tag": "lark_md", "content": message},
             },
         ],
+    }
+
+
+def build_debug_card(errors: list, verbose: bool) -> dict:
+    """Build a Feishu card listing recent errors.
+
+    Args:
+        errors: List of ErrorRecord objects.
+        verbose: If True, include truncated traceback per error.
+    """
+    elements = []
+
+    if not errors:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "No recent errors recorded."},
+        })
+    else:
+        for i, rec in enumerate(errors, 1):
+            text = (
+                f"**{i}.** `{rec.request_id}` | `{rec.source}` | "
+                f"{rec.timestamp.strftime('%H:%M:%S UTC')}\n"
+                f"{rec.error_message}"
+            )
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": text},
+            })
+
+            if verbose and rec.traceback_text:
+                tb = rec.traceback_text[-500:]
+                elements.append({
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"```\n{tb}\n```",
+                    },
+                })
+
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {
+                "tag": "plain_text",
+                "content": (
+                    f"Showing {len(errors)} most recent error(s). "
+                    "Use /debug on to enable verbose mode."
+                ),
+            },
+        ],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Debug: Recent Errors"},
+            "template": "orange",
+        },
+        "elements": elements,
     }
 
 

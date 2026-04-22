@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import logging.handlers
+import os
 import signal
 import sqlite3
 import threading
@@ -17,8 +19,55 @@ from ..config import load_settings
 from ..storage import init_db
 from .feishu_client import FeishuClient
 from .command_router import parse_command
+from .debug import new_request_id
 
 logger = logging.getLogger(__name__)
+
+
+class RequestIdFilter(logging.Filter):
+    """Injects ``req_id`` from the ``extra`` dict into every log record."""
+
+    def filter(self, record) -> bool:
+        record.req_id = getattr(record, "req_id", "")
+        return True
+
+
+def _setup_logging() -> None:
+    """Configure root logger with rotating file handler and console handler."""
+    root = logging.getLogger()
+    if root.handlers:
+        return  # already configured
+
+    log_dir = os.path.join("data", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    file_fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] [%(req_id)s] %(name)s: %(message)s",
+    )
+    console_fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    # Rotating file handler — DEBUG, 5 MB, 3 backups
+    fh = logging.handlers.RotatingFileHandler(
+        os.path.join(log_dir, "bot.log"),
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+    )
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(file_fmt)
+    fh.addFilter(RequestIdFilter())
+
+    # Console handler — INFO
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(console_fmt)
+    ch.addFilter(RequestIdFilter())
+
+    root.setLevel(logging.DEBUG)
+    root.addHandler(fh)
+    root.addHandler(ch)
+
 
 # Module-level state — set during main()
 _feishu: FeishuClient | None = None
@@ -102,11 +151,12 @@ def _do_handle_message(data: P2ImMessageReceiveV1) -> None:
     logger.info("Received message from %s: %s", chat_id, user_text[:100])
 
     cmd = parse_command(user_text)
+    req_id = new_request_id()
 
     # Bridge to async handler in main thread
     if _main_loop is not None:
         future = asyncio.run_coroutine_threadsafe(
-            _async_handle_command(cmd, chat_id, message_id, user_text),
+            _async_handle_command(cmd, chat_id, message_id, user_text, req_id),
             _main_loop,
         )
         future.add_done_callback(_log_future_error)
@@ -142,10 +192,11 @@ def _handle_card_action(data: P2CardActionTrigger):
             return P2CardActionTriggerResponse()
 
         logger.info("Card action: type=%s, arxiv_id=%s, chat_id=%s", callback_type, arxiv_id, chat_id)
+        req_id = new_request_id()
 
         if _main_loop is not None:
             future = asyncio.run_coroutine_threadsafe(
-                _async_handle_card_callback(callback_type, arxiv_id, chat_id),
+                _async_handle_card_callback(callback_type, arxiv_id, chat_id, req_id),
                 _main_loop,
             )
             future.add_done_callback(_log_future_error)
@@ -160,14 +211,14 @@ def _handle_card_action(data: P2CardActionTrigger):
 # ── Async wrappers (run in main thread's event loop) ────────────────────
 
 
-async def _async_handle_command(cmd, chat_id: str, message_id: str, raw_text: str) -> None:
+async def _async_handle_command(cmd, chat_id: str, message_id: str, raw_text: str, req_id: str = "") -> None:
     from .command_handler import handle_command
-    await handle_command(cmd, chat_id, message_id, raw_text, get_feishu(), get_db(), get_app_settings())
+    await handle_command(cmd, chat_id, message_id, raw_text, get_feishu(), get_db(), get_app_settings(), req_id=req_id)
 
 
-async def _async_handle_card_callback(callback_type: str, arxiv_id: str, chat_id: str) -> None:
+async def _async_handle_card_callback(callback_type: str, arxiv_id: str, chat_id: str, req_id: str = "") -> None:
     from .command_handler import handle_card_callback
-    await handle_card_callback(callback_type, arxiv_id, chat_id, get_feishu(), get_db(), get_app_settings())
+    await handle_card_callback(callback_type, arxiv_id, chat_id, get_feishu(), get_db(), get_app_settings(), req_id=req_id)
 
 
 # ── Main entry point ────────────────────────────────────────────────────
@@ -253,8 +304,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    _setup_logging()
     main()

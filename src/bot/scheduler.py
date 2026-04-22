@@ -91,7 +91,10 @@ async def _push_daily_report(
 
     from .card_builder import build_report_card
     from .preference_store import get_weighted_score, initialize_all_preferences
-    from ..tree import build_category_groups, get_root_categories
+    from .tree import build_category_groups, get_root_categories
+    from .debug import new_request_id, record_error
+
+    req_id = new_request_id()
 
     chat_id = settings.target_chat_id
     if not chat_id:
@@ -185,7 +188,9 @@ async def _push_daily_report(
         logger.info("Daily report pushed to %s (%d relevant papers)", chat_id, total_relevant)
 
     except Exception as e:
-        logger.exception("Failed to push daily report: %s", e)
+        record_error(req_id, "scheduler:daily_report", e)
+        logger.error("Failed to push daily report [%s]: %s", req_id, e,
+                      exc_info=e, extra={"req_id": req_id})
         try:
             await feishu_client.send_text(
                 chat_id,

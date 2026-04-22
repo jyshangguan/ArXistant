@@ -16,6 +16,15 @@ FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 TOKEN_EXPIRY_BUFFER = 300  # refresh 5 min before expiry
 
 
+class FeishuAPIError(Exception):
+    """Raised when a Feishu API call returns a non-2xx status."""
+    def __init__(self, operation: str, status_code: int, body: str):
+        self.operation = operation
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f"Feishu API error in {operation}: HTTP {status_code} — {body[:200]}")
+
+
 class FeishuClient:
     """Low-level Feishu API wrapper using httpx."""
 
@@ -29,6 +38,15 @@ class FeishuClient:
 
     # ── Auth ────────────────────────────────────────────────────────────
 
+    def _check_response(self, resp, operation: str) -> dict:
+        """Check HTTP response; raise FeishuAPIError on failure."""
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError:
+            body = resp.text[:200]
+            raise FeishuAPIError(operation, resp.status_code, body)
+        return resp.json()
+
     async def get_token(self) -> str:
         """Get or refresh the tenant access token."""
         if self._token and time.time() < self._token_expires_at:
@@ -41,8 +59,7 @@ class FeishuClient:
                 "app_secret": self._app_secret,
             },
         )
-        resp.raise_for_status()
-        data = resp.json()
+        data = self._check_response(resp, "get_token")
         self._token = data["tenant_access_token"]
         self._token_expires_at = time.time() + data["expire"] - TOKEN_EXPIRY_BUFFER
         logger.debug("Feishu token refreshed, expires in %ds", data["expire"])
@@ -63,8 +80,7 @@ class FeishuClient:
                 "content": json.dumps({"text": text}),
             },
         )
-        resp.raise_for_status()
-        return resp.json()
+        return self._check_response(resp, "send_text")
 
     async def send_card(self, chat_id: str, card: dict) -> dict:
         """Send an interactive card message to a chat."""
@@ -79,8 +95,7 @@ class FeishuClient:
                 "content": json.dumps(card),
             },
         )
-        resp.raise_for_status()
-        return resp.json()
+        return self._check_response(resp, "send_card")
 
     async def reply_card(self, message_id: str, card: dict) -> dict:
         """Reply to a message with an interactive card."""
@@ -93,8 +108,7 @@ class FeishuClient:
                 "content": json.dumps(card),
             },
         )
-        resp.raise_for_status()
-        return resp.json()
+        return self._check_response(resp, "reply_card")
 
     async def reply_text(self, message_id: str, text: str) -> dict:
         """Reply to a message with plain text."""
@@ -107,8 +121,7 @@ class FeishuClient:
                 "content": json.dumps({"text": text}),
             },
         )
-        resp.raise_for_status()
-        return resp.json()
+        return self._check_response(resp, "reply_text")
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

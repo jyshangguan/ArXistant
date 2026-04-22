@@ -240,3 +240,57 @@ uvicorn src.bot.server:app --host 0.0.0.0 --port 8000
 - Multi-user support if needed
 - Production deployment with proper reverse proxy and TLS
 - Rate limiting for Feishu API (~10 msg/s)
+
+## Update and re-schedule
+
+Now, ArXistant can be run on Feishu. We need to reschedule our plan and see what is the most urgent to be developed further. I find that the code does not search for the latest arXiv paper for now when I use `/report`. Also the GA does not mean `galaxy dynamics`. I think the root name of the tree should be revised. Both `galaxy dynamics` and `High-Energy Astrophysical Transients` are subsubt topics. We should have a strategy to first go through a relatively large paper list and build up the knowledge tree; and we also should search for some established catagory methods. Think carefully and give me a plan.
+
+
+### Debug the bot usage
+
+There are also bugs when I interact with the bot. What is the best way to do debugging? Are you able to find the errors in the log when I run the bot?
+
+
+## Bot Debugging System (Completed)
+
+Implemented a systematic debugging strategy for the detached bot. Now every command, card callback, and scheduler job is traceable via unique request IDs.
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `src/bot/debug.py` | Error ring buffer, per-chat verbose toggle, request ID generation |
+| `tests/test_debug.py` | Tests for ring buffer, verbose toggle, request ID format |
+
+### Modified files
+
+| File | Changes |
+|------|---------|
+| `src/bot/server.py` | `_setup_logging()` with RotatingFileHandler to `data/logs/bot.log`; `RequestIdFilter`; `req_id` generated per message/callback and threaded through async wrappers |
+| `src/bot/command_handler.py` | `req_id` parameter on `handle_command`/`handle_card_callback`; errors recorded to ring buffer with `_build_debug_error_card`; added `_handle_debug()` handler |
+| `src/bot/card_builder.py` | `build_debug_card()` for listing recent errors; updated `build_help_card()` with `/debug` |
+| `src/bot/command_router.py` | Added `/debug [on|off]` pattern |
+| `src/bot/feishu_client.py` | `FeishuAPIError` exception and `_check_response()` for contextual error messages on HTTP failures |
+| `src/bot/scheduler.py` | `record_error()` in `_push_daily_report` with request ID |
+
+### Key features
+
+- **Request IDs**: Every command and card callback gets a 6-char hex ID (e.g. `a3f2b1`) that appears in file logs and error cards
+- **Error ring buffer**: Last 50 errors stored in memory, viewable via `/debug` command in Feishu
+- **Verbose mode**: `/debug on` enables full tracebacks in error cards; `/debug off` disables them
+- **File logging**: Rotating log file at `data/logs/bot.log` (5 MB, 3 backups) with DEBUG level; console stays at INFO
+- **Feishu API errors**: All API calls now raise `FeishuAPIError` with operation name, status code, and response body
+
+### Usage
+
+| Command | Description |
+|---------|-------------|
+| `/debug` | Show last 10 errors |
+| `/debug on` | Enable verbose mode (full tracebacks in error cards) |
+| `/debug off` | Disable verbose mode |
+
+### Log file format
+
+```
+2026-04-22 13:25:01,234 [ERROR] [a3f2b1] src.bot.command_handler: Command handler failed [a3f2b1]: scan
+```
