@@ -255,8 +255,9 @@ def filter_papers(
 def _extract_tree_keywords(conn: sqlite3.Connection) -> list[str]:
     """Extract keyword phrases from all active tree nodes.
 
-    Uses node names and multi-word phrases from descriptions.
-    Returns deduplicated phrases (lowercased), longest first.
+    Uses node names (with parenthetical stripping), abbreviations,
+    and multi-word phrases from descriptions. Returns deduplicated
+    phrases (lowercased), longest first.
     """
     from .storage import get_all_tree_nodes
 
@@ -264,48 +265,44 @@ def _extract_tree_keywords(conn: sqlite3.Connection) -> list[str]:
     phrases: set[str] = set()
 
     for node in nodes:
-        # Node name as a phrase (e.g. "Bar Formation", "Fast Radio Bursts")
         name = node.name.strip()
-        if len(name) >= 3:
-            phrases.add(name.lower())
+
+        # Strip parentheticals like "(AGN)", "(BLR)" from node name
+        stripped = re.sub(r'\s*\([^)]*\)\s*', ' ', name).strip()
+        if len(stripped) >= 4:
+            phrases.add(stripped.lower())
+
+        # Add abbreviations from parens, e.g. "AGN", "VLBI"
+        for abbr in re.findall(r'\(([A-Z]{2,6})\)', name):
+            phrases.add(abbr.lower())
 
         # Extract meaningful phrases from description
-        desc = node.description
+        desc = node.description or ""
         if not desc:
             continue
 
-        # Split description into clauses on sentence-ending punctuation
-        clauses = re.split(r'[.;:!?]', desc)
+        # Split on commas AND sentence-ending punctuation
+        clauses = re.split(r'[,.;:!?]', desc)
         for clause in clauses:
             clause = clause.strip()
             if not clause:
                 continue
-            # Extract quoted terms
-            for quoted in re.findall(r'"([^"]+)"', clause):
-                phrase = quoted.strip()
-                if len(phrase) >= 3:
-                    phrases.add(phrase.lower())
-            # Also add the full clause if it's a reasonable length (3-6 words)
             words = clause.split()
-            if 3 <= len(words) <= 6:
-                # Filter out clauses that are just generic filler
-                words_lower = [w.lower() for w in words]
-                if not all(w in _STOP_WORDS for w in words_lower):
-                    phrases.add(clause.lower())
+            # Extract 2-5 word phrases from each clause
+            for length in range(2, min(6, len(words) + 1)):
+                for start in range(len(words) - length + 1):
+                    phrase_words = words[start:start + length]
+                    if any(w.lower() not in _STOP_WORDS for w in phrase_words):
+                        phrases.add(' '.join(w.lower() for w in phrase_words))
 
-    # Remove phrases that are entirely stop-words or very short
-    filtered = []
-    for p in phrases:
-        words = p.split()
-        if len(words) < 2:
-            continue  # Skip single words
-        non_stop = [w for w in words if w not in _STOP_WORDS]
-        if not non_stop:
-            continue
-        filtered.append(p)
+    # Remove phrases that are entirely stop-words or single words
+    filtered = [
+        p for p in phrases
+        if any(w not in _STOP_WORDS for w in p.split())
+    ]
 
     # Sort longest first (more specific matches first)
-    filtered.sort(key=lambda p: len(p), reverse=True)
+    filtered.sort(key=len, reverse=True)
 
     logger.info("Extracted %d keyword phrases from %d tree nodes", len(filtered), len(nodes))
     return filtered

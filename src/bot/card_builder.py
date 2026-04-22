@@ -484,7 +484,7 @@ def build_help_card() -> dict:
         ("**/scan <arxiv_id>**", "Quick relevance scan of a paper"),
         ("**/read <arxiv_id>**", "Full-text reading with structured notes"),
         ("**/tree**", "Display current knowledge tree"),
-        ("**/build**", "Generate a customized knowledge tree from your interests"),
+        ("**/build**", "Generate a customized knowledge tree from your interests (updates DB, not YAML)"),
         ("**/prefs**", "Show your preference weights"),
         ("**/debug [on|off]**", "Show recent errors or toggle verbose tracebacks"),
         ("**/reset**", "Clear conversation session"),
