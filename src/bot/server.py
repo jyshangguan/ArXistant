@@ -48,8 +48,22 @@ def get_app_settings():
 # ── SDK event handlers (sync, called in WSClient thread) ────────────────
 
 
+def _log_future_error(future: asyncio.Future) -> None:
+    """Log any exception from a coroutine submitted via run_coroutine_threadsafe."""
+    exc = future.exception()
+    if exc is not None:
+        logger.exception("Async handler failed: %s", exc)
+
+
 def _handle_message(data: P2ImMessageReceiveV1) -> None:
     """Handle im.message.receive_v1 event from SDK."""
+    try:
+        _do_handle_message(data)
+    except Exception:
+        logger.exception("Unhandled error in _handle_message")
+
+
+def _do_handle_message(data: P2ImMessageReceiveV1) -> None:
     event = data.event
     if event is None:
         return
@@ -66,7 +80,6 @@ def _handle_message(data: P2ImMessageReceiveV1) -> None:
 
     if sender.sender_id is None:
         return
-    user_id = sender.sender_id.user_id
 
     # Skip non-text messages
     if message_type != "text":
@@ -89,49 +102,56 @@ def _handle_message(data: P2ImMessageReceiveV1) -> None:
 
     # Bridge to async handler in main thread
     if _main_loop is not None:
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             _async_handle_command(cmd, chat_id, message_id, user_text),
             _main_loop,
         )
+        future.add_done_callback(_log_future_error)
 
 
 def _handle_card_action(data: P2CardActionTrigger):
     """Handle card action trigger (button click) from SDK."""
     from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
 
-    event = data.event
-    if event is None:
+    try:
+        event = data.event
+        if event is None:
+            return P2CardActionTriggerResponse()
+
+        action = event.action
+        if action is None:
+            return P2CardActionTriggerResponse()
+
+        action_value = action.value
+        if not isinstance(action_value, dict):
+            action_value = {}
+
+        callback_type = action_value.get("type", "")
+        arxiv_id = action_value.get("arxiv_id", "")
+
+        # chat_id comes from event.context.open_chat_id, not from action.value
+        chat_id = ""
+        if event.context is not None:
+            chat_id = getattr(event.context, "open_chat_id", "") or ""
+
+        if not callback_type:
+            logger.warning("Invalid card callback: missing callback type")
+            return P2CardActionTriggerResponse()
+
+        logger.info("Card action: type=%s, arxiv_id=%s, chat_id=%s", callback_type, arxiv_id, chat_id)
+
+        if _main_loop is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                _async_handle_card_callback(callback_type, arxiv_id, chat_id),
+                _main_loop,
+            )
+            future.add_done_callback(_log_future_error)
+
         return P2CardActionTriggerResponse()
-
-    action = event.action
-    if action is None:
+    except Exception:
+        logger.exception("Unhandled error in _handle_card_action")
+        from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
         return P2CardActionTriggerResponse()
-
-    action_value = action.value
-    if not isinstance(action_value, dict):
-        action_value = {}
-
-    callback_type = action_value.get("type", "")
-    arxiv_id = action_value.get("arxiv_id", "")
-
-    # chat_id comes from event.context.open_chat_id, not from action.value
-    chat_id = ""
-    if event.context is not None:
-        chat_id = getattr(event.context, "open_chat_id", "") or ""
-
-    if not callback_type:
-        logger.warning("Invalid card callback: missing callback type")
-        return P2CardActionTriggerResponse()
-
-    logger.info("Card action: type=%s, arxiv_id=%s, chat_id=%s", callback_type, arxiv_id, chat_id)
-
-    if _main_loop is not None:
-        asyncio.run_coroutine_threadsafe(
-            _async_handle_card_callback(callback_type, arxiv_id, chat_id),
-            _main_loop,
-        )
-
-    return P2CardActionTriggerResponse()
 
 
 # ── Async wrappers (run in main thread's event loop) ────────────────────
@@ -165,6 +185,9 @@ def _run_ws_client(app_id: str, app_secret: str, encrypt_key: str = "", verifica
         event_handler=event_handler,
         log_level=lark.LogLevel.DEBUG,
     )
+    logger.info("WebSocket event handlers registered: events=%s, callbacks=%s",
+                list(event_handler._processorMap.keys()),
+                list(event_handler._callback_processor_map.keys()))
     logger.info("Starting WebSocket client...")
     cli.start()
 
