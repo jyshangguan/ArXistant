@@ -1,21 +1,14 @@
-"""APScheduler for daily cron report push."""
+"""APScheduler for daily cron fetch card push."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from datetime import datetime
 
 import sqlite3
 
 from ..config import Settings
-from ..storage import (
-    get_all_tree_nodes,
-    get_analyzed_papers,
-    get_links_for_paper,
-    count_papers,
-    get_tree_node_by_name,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +17,41 @@ _scheduler = None
 # Concurrency guard for scheduled fetch
 _scheduled_fetch_active = False
 
+# Standard cron day-of-week: 0=Sun, 1=Mon, ..., 6=Sat
+# APScheduler ISO day-of-week: 0=Mon, 1=Tue, ..., 6=Sun
+_CRON_TO_APSCHED_DOW = {0: 6, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
+
+
+def _convert_cron_dow(dow_str: str) -> str:
+    """Convert standard cron day-of-week to APScheduler ISO convention.
+
+    Standard cron: 0=Sun, 1=Mon, ..., 6=Sat (also accepts mon-sun names).
+    APScheduler:   0=Mon, 1=Tue, ..., 6=Sun.
+    """
+    import re
+
+    # Handle named ranges like mon-fri — APScheduler accepts them natively
+    if dow_str == "*" or re.fullmatch(r"[a-zA-Z]+(-[a-zA-Z]+)?(,[a-zA-Z]+(-[a-zA-Z]+)?)*", dow_str):
+        return dow_str
+
+    def _convert_token(token: str) -> str:
+        token = token.strip()
+        if re.fullmatch(r"\d+", token):
+            return str(_CRON_TO_APSCHED_DOW[int(token)])
+        if re.fullmatch(r"\d+-\d+", token):
+            lo, hi = token.split("-")
+            return f"{_CRON_TO_APSCHED_DOW[int(lo)]}-{_CRON_TO_APSCHED_DOW[int(hi)]}"
+        return token
+
+    return ",".join(_convert_token(part) for part in dow_str.split(","))
+
 
 def start_scheduler(
     settings: Settings,
     db_conn: sqlite3.Connection,
     feishu_client,
 ) -> None:
-    """Start the APScheduler with the daily report cron job."""
+    """Start the APScheduler with the daily fetch cron job."""
     global _scheduler
 
     if _scheduler is not None:
@@ -45,31 +66,32 @@ def start_scheduler(
 
     _scheduler = AsyncIOScheduler()
 
-    # Parse cron expression
+    # Parse cron expression (convert standard cron DOW to APScheduler ISO)
     cron_parts = settings.report_cron.strip().split()
     if len(cron_parts) == 5:
+        dow = _convert_cron_dow(cron_parts[4])
         trigger = CronTrigger(
             minute=cron_parts[0],
             hour=cron_parts[1],
             day=cron_parts[2],
             month=cron_parts[3],
-            day_of_week=cron_parts[4],
+            day_of_week=dow,
         )
     else:
-        logger.warning("Invalid cron expression: %s, using default (0 9 * * *)", settings.report_cron)
-        trigger = CronTrigger(hour=9, minute=0)
+        logger.warning("Invalid cron expression: %s, using default (30 8 * * 1-5)", settings.report_cron)
+        trigger = CronTrigger(hour=8, minute=30, day_of_week="mon-fri")
 
     _scheduler.add_job(
         _push_daily_report,
         trigger=trigger,
         args=[settings, db_conn, feishu_client],
         id="daily_report",
-        name="Daily report push",
+        name="Daily fetch card push",
         replace_existing=True,
     )
 
     _scheduler.start()
-    logger.info("Scheduler started: daily report at %s", settings.report_cron)
+    logger.info("Scheduler started: daily fetch at %s", settings.report_cron)
 
 
 def stop_scheduler() -> None:
@@ -86,12 +108,16 @@ async def _push_daily_report(
     db_conn: sqlite3.Connection,
     feishu_client,
 ) -> None:
-    """Fetch new papers, then generate and push the daily report to Feishu."""
+    """Fetch new papers, keyword-filter, and push a fetch card to Feishu.
+
+    Mirrors the /fetch command flow (no LLM):
+      1. collect_and_store()  — fetch from arXiv API, store in DB
+      2. keyword_pre_filter() — filter against knowledge tree keywords
+      3. build_fetch_list_card() — build interactive card with [Scan]/[Read] buttons
+    """
     global _scheduled_fetch_active
 
-    from .card_builder import build_report_card
-    from .preference_store import get_weighted_score, initialize_all_preferences
-    from .tree import build_category_groups, get_root_categories
+    from .card_builder import build_fetch_list_card
     from .debug import new_request_id, record_error
 
     req_id = new_request_id()
@@ -101,100 +127,68 @@ async def _push_daily_report(
         logger.warning("No target_chat_id, skipping scheduled report")
         return
 
-    logger.info("Generating scheduled daily report for %s", chat_id)
+    # Safety check: skip on weekends (cron should handle this, but just in case)
+    if datetime.now().weekday() >= 5:
+        logger.info("Skipping scheduled fetch: weekend")
+        return
+
+    logger.info("Generating scheduled fetch card for %s", chat_id)
 
     try:
-        # Fetch new papers before reporting
         if not _scheduled_fetch_active:
             _scheduled_fetch_active = True
             try:
-                from ..main import run_collect_and_analyze
+                from ..main import collect_and_store
+                from ..storage import get_recent_papers
+                from ..filter import keyword_pre_filter
+
+                # 1. Collect and store (fast, no LLM)
                 loop = asyncio.get_event_loop()
                 stats = await loop.run_in_executor(
-                    None, lambda: run_collect_and_analyze(db_conn, settings)
+                    None, lambda: collect_and_store(db_conn, settings)
                 )
                 logger.info("Scheduled fetch complete: %s", stats)
+
+                # 2. Keyword pre-filter recent papers
+                recent = get_recent_papers(db_conn, days_back=settings.days_back)
+                pre_filter_max = getattr(settings, "pre_filter_max", 30)
+                relevant = keyword_pre_filter(recent, db_conn, max_papers=pre_filter_max)
+
+                # 3. Handle empty results
+                if not relevant:
+                    await feishu_client.send_text(
+                        chat_id,
+                        "Daily fetch: No new relevant papers found today.",
+                    )
+                    return
+
+                # 4. Build and send fetch list card
+                card = build_fetch_list_card(relevant, stats)
+                await feishu_client.send_card(chat_id, card)
+                logger.info("Fetch card pushed to %s (%d relevant papers)", chat_id, len(relevant))
+
             except Exception as e:
-                logger.exception("Scheduled fetch failed: %s", e)
+                record_error(req_id, "scheduler:daily_report", e)
+                logger.error("Scheduled fetch failed [%s]: %s", req_id, e,
+                             exc_info=e, extra={"req_id": req_id})
+                try:
+                    await feishu_client.send_text(
+                        chat_id,
+                        f"Failed to generate daily fetch: {e}",
+                    )
+                except Exception:
+                    logger.exception("Failed to send error notification")
             finally:
                 _scheduled_fetch_active = False
 
-        # Build category mapping from tree root nodes
-        cat_groups = build_category_groups(db_conn)
-        root_categories = get_root_categories(db_conn)
-
-        # Initialize preferences
-        initialize_all_preferences(db_conn)
-
-        threshold = settings.relevance_threshold
-        papers = get_analyzed_papers(db_conn, min_quality=threshold)
-
-        if not papers:
-            await feishu_client.send_text(
-                chat_id,
-                "Daily report: No new relevant papers found today.",
-            )
-            return
-
-        # Build paper→links mapping
-        paper_links_map: dict[str, list[dict]] = {}
-        for p in papers:
-            links = get_links_for_paper(db_conn, p.arxiv_id)
-            if links:
-                paper_links_map[p.arxiv_id] = links
-
-        # Group by category
-        papers_by_category: dict[str, list[dict]] = defaultdict(list)
-
-        for p in papers:
-            cats = [c.strip() for c in p.categories.split(",")] if p.categories else []
-            weighted_score = get_weighted_score(db_conn, p.arxiv_id, p.quality_score or 0)
-
-            # Find primary category group from tree roots
-            primary_group = "Other"
-            for c in cats:
-                short = c.split(".")[-1] if "." in c else c
-                if short in cat_groups:
-                    primary_group = cat_groups[short]
-                    break
-
-            links = paper_links_map.get(p.arxiv_id, [])
-
-            papers_by_category[primary_group].append({
-                "arxiv_id": p.arxiv_id,
-                "title": p.title,
-                "quality_score": p.quality_score or 0,
-                "quality_reason": p.quality_reason,
-                "tree_links": links,
-                "sort_key": weighted_score,
-                "categories": cats,
-            })
-
-        # Sort by weighted score
-        for cat_papers in papers_by_category.values():
-            cat_papers.sort(key=lambda x: x["sort_key"], reverse=True)
-
-        total_scanned = count_papers(db_conn)
-        total_relevant = len(papers)
-
-        card = build_report_card(
-            papers_by_category=papers_by_category,
-            total_scanned=total_scanned,
-            total_relevant=total_relevant,
-            categories=root_categories,
-        )
-
-        await feishu_client.send_card(chat_id, card)
-        logger.info("Daily report pushed to %s (%d relevant papers)", chat_id, total_relevant)
-
     except Exception as e:
         record_error(req_id, "scheduler:daily_report", e)
-        logger.error("Failed to push daily report [%s]: %s", req_id, e,
+        logger.error("Failed to push daily fetch [%s]: %s", req_id, e,
                       exc_info=e, extra={"req_id": req_id})
         try:
             await feishu_client.send_text(
                 chat_id,
-                f"Failed to generate daily report: {e}",
+                f"Failed to generate daily fetch: {e}",
             )
         except Exception:
             logger.exception("Failed to send error notification")

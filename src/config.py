@@ -60,6 +60,7 @@ class Settings:
 
     # Reading
     max_text_chars: int = 80000
+    executive_read_max_chars: int = 30000
     html_timeout: int = 30
 
     # Feishu
@@ -72,7 +73,7 @@ class Settings:
     # Bot
     target_chat_id: str = ""
     session_max_messages: int = 20
-    report_cron: str = "0 9 * * *"
+    report_cron: str = "30 8 * * 1-5"
 
 
 def load_topics(path: str | Path | None = None) -> list[Topic]:
@@ -122,6 +123,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         db_path=database.get("path", "data/arxistant.db"),
         candidates_path=candidates.get("path", "data/candidates.yaml"),
         max_text_chars=reading.get("max_text_chars", 80000),
+        executive_read_max_chars=reading.get("executive_read_max_chars", 30000),
         html_timeout=reading.get("html_timeout", 30),
         feishu_app_id=os.getenv("FEISHU_APP_ID", feishu.get("app_id", "")),
         feishu_app_secret=os.getenv("FEISHU_APP_SECRET", feishu.get("app_secret", "")),
@@ -130,5 +132,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         feishu_bot_name=feishu.get("bot_name", "ArXistant"),
         target_chat_id=bot.get("target_chat_id", ""),
         session_max_messages=bot.get("session_max_messages", 20),
-        report_cron=bot.get("report_cron", "0 9 * * *"),
+        report_cron=bot.get("report_cron", "30 8 * * 1-5"),
     )
