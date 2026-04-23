@@ -298,4 +298,24 @@ Implemented a systematic debugging strategy for the detached bot. Now every comm
 
 ## Debug the /fetch error
 
-It seems that the filtering does not find the really relevant papers. Please check if there is any bugs first. I wonder where the 
+It seems that the filtering does not find the really relevant papers. Please check if there is any bugs first. I use /build to update the knowledge tree but I do not see any change in the config/knowledge_tree.md file. Is it saved there? If there is no bug, then we need to consider how to improve the filtering method.
+
+
+# Refine the bot
+
+## Display of the report
+
+I want the report of /fetch to show the arXiv number, the full title and author names. After clicking the "scan" or "read" there should be a message telling me that you are working on it. Better to show the status.
+
+Then, I think the reply after I click "read" is still wrong.
+
+
+## Debug the code
+
+Are you able to mimic Feishu to interact with ArXistant so that you can fully debug its usage?
+
+
+# Enable the regular checking
+
+I want to enable the scheduled check and report for the code. Check when the new ArXiv paper is released everyday. Do the fetch and report to Feishu 30 min after the new papers released. Check carefully and make a plan.
+
