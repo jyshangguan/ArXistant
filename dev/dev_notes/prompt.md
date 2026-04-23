@@ -343,3 +343,22 @@ Replaced the old LLM-heavy daily report scheduler with the fast `/fetch` pipelin
 
 APScheduler uses ISO weekday numbering (Mon=0, Sun=6) while standard cron uses (Sun=0, Mon=1, Sat=6). The cron string `"1-5"` was passed directly to `CronTrigger(day_of_week=...)`, causing it to fire on Tue–Sat instead of Mon–Fri. Fixed by adding `_convert_cron_dow()` that maps standard cron values to APScheduler's convention.
 
+
+## Fix: /fetch and scheduled report return stale papers (Completed)
+
+### Root cause
+
+Both `/fetch` (without date) and the scheduled report used the arXiv **search API** (`sort_by=submittedDate, max_results=100`), which does NOT reliably return papers announced on the current day. The 100-result cap causes today's papers to be pushed out by cross-listed submissions from earlier days.
+
+Evidence: on Apr 23, the search API returned 112 papers all dated Apr 20–22, with **0** papers dated Apr 23. The listing page showed 43 new papers under "Thu, 23 Apr 2026" (23 GA + 20 HE).
+
+### Fix
+
+Changed both `/fetch` and `_push_daily_report` to use the **listing page** approach (`_collect_papers_by_date` with `target_date=today`) instead of the search API. The listing page scrapes `arxiv.org/list/{category}/recent` and extracts paper IDs from the section matching today's date — always returns all papers for that day.
+
+| File | Change |
+|------|--------|
+| `src/bot/scheduler.py` | `_push_daily_report` now passes `target_date=datetime.now(timezone.utc)` to `collect_and_store()` |
+| `src/bot/command_handler.py` | `/fetch` without a date argument defaults to `target_date=datetime.now(timezone.utc)` instead of `None` |
+| `tests/test_scheduler.py` | Updated happy path test to verify `target_date` kwarg is passed |
+

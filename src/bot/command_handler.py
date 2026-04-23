@@ -304,8 +304,8 @@ async def _handle_fetch(
     from ..filter import keyword_pre_filter
     from ..storage import get_recent_papers
 
-    # Parse optional date argument
-    target_date = None
+    # Parse optional date argument — default to today (listing page mode)
+    target_date = datetime.now(timezone.utc)
     date_str = args.strip()
     if date_str:
         m = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', date_str)
@@ -359,11 +359,8 @@ async def _handle_fetch(
         )
 
         # 2. Keyword pre-filter recent papers
-        if target_date is not None:
-            now = datetime.now(timezone.utc)
-            days_back = max(1, (now - target_date.replace(tzinfo=timezone.utc)).days + 1)
-        else:
-            days_back = settings.days_back
+        now = datetime.now(timezone.utc)
+        days_back = max(1, (now - target_date.replace(tzinfo=timezone.utc)).days + 1)
         recent = get_recent_papers(db, days_back=days_back)
         pre_filter_max = getattr(settings, 'pre_filter_max', 30)
         relevant = keyword_pre_filter(recent, db, max_papers=pre_filter_max)

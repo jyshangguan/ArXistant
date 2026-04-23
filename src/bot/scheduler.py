@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import sqlite3
 
@@ -142,10 +142,11 @@ async def _push_daily_report(
                 from ..storage import get_recent_papers
                 from ..filter import keyword_pre_filter
 
-                # 1. Collect and store (fast, no LLM)
+                # 1. Collect and store via listing page (fast, no LLM)
                 loop = asyncio.get_event_loop()
+                today = datetime.now(timezone.utc)
                 stats = await loop.run_in_executor(
-                    None, lambda: collect_and_store(db_conn, settings)
+                    None, lambda: collect_and_store(db_conn, settings, target_date=today)
                 )
                 logger.info("Scheduled fetch complete: %s", stats)
 

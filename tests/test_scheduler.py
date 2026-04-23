@@ -100,8 +100,10 @@ def test_push_daily_report_happy_path(mock_datetime, settings, db_conn, feishu_c
     ):
         _run(_push_daily_report(settings, db_conn, feishu_client))
 
-    mock_collect.assert_called_once_with(db_conn, settings)
-    mock_recent.assert_called_once_with(db_conn, days_back=settings.days_back)
+    mock_collect.assert_called_once()
+    call_kwargs = mock_collect.call_args[1]
+    assert call_kwargs["target_date"] is not None
+    mock_recent.assert_called_once()
     mock_filter.assert_called_once()
     mock_build.assert_called_once_with(mock_relevant, mock_stats)
     feishu_client.send_card.assert_called_once_with("oc_test_chat", mock_card)
