@@ -60,14 +60,13 @@ class TreeConnection:
 
 @dataclass
 class ReadingNote:
-    """Detailed reading notes for a paper."""
+    """Executive reading notes for a paper."""
 
     arxiv_id: str
     title: str
-    summary: str = ""
+    authors: str = ""
+    background: str = ""
     key_findings: list[str] = field(default_factory=list)
-    methodology: str = ""
-    results: str = ""
+    evaluation: str = ""
     tree_connections: list[TreeConnection] = field(default_factory=list)
-    unfamiliar_concepts: list[str] = field(default_factory=list)
     cached: bool = False

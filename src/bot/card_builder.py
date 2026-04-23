@@ -127,7 +127,7 @@ def build_scan_result_card(result) -> dict:
 
 
 def build_reading_note_card(note) -> dict:
-    """Build a Feishu card for a read_paper result.
+    """Build a compact Feishu card for an executive reading summary.
 
     Args:
         note: A ReadingNote dataclass from src.tools.types.
@@ -139,19 +139,34 @@ def build_reading_note_card(note) -> dict:
 
     elements = []
 
-    # Summary
-    if note.summary:
+    # Authors — flatten newline-separated list, show at most 5, single line
+    if note.authors:
+        author_list = [a.strip() for a in note.authors.split("\n") if a.strip()]
+        if len(author_list) > 5:
+            author_str = ", ".join(author_list[:5]) + f" et al. ({len(author_list)} authors)"
+        else:
+            author_str = ", ".join(author_list)
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"**Summary:**\n{note.summary}",
+                "content": f"**Authors:** {author_str}",
+            },
+        })
+
+    # Background
+    if note.background:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**Background:** {note.background}",
             },
         })
 
     # Key findings
     if note.key_findings:
-        findings = "\n".join(f"- {f}" for f in note.key_findings[:5])
+        findings = "\n".join(f"- {f}" for f in note.key_findings[:3])
         elements.append({
             "tag": "div",
             "text": {
@@ -160,30 +175,20 @@ def build_reading_note_card(note) -> dict:
             },
         })
 
-    # Methodology
-    if note.methodology:
+    # Evaluation
+    if note.evaluation:
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"**Methodology:** {note.methodology}",
-            },
-        })
-
-    # Results
-    if note.results:
-        elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"**Results:** {note.results}",
+                "content": f"**Evaluation:** {note.evaluation}",
             },
         })
 
     # Tree connections
     if note.tree_connections:
         conn_lines = []
-        for tc in note.tree_connections[:5]:
+        for tc in note.tree_connections[:3]:
             conn_lines.append(f"- **{tc.node_name}**: {tc.connection}")
         elements.append({
             "tag": "div",
@@ -193,15 +198,13 @@ def build_reading_note_card(note) -> dict:
             },
         })
 
-    # Unfamiliar concepts
-    if note.unfamiliar_concepts:
-        concepts = ", ".join(note.unfamiliar_concepts[:5])
+    # Check whether any LLM-generated content was produced.
+    # Authors come from the DB and are not an indicator of success.
+    has_content = note.background or note.key_findings or note.evaluation
+    if not has_content:
         elements.append({
             "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"**New Concepts:** {concepts}",
-            },
+            "text": {"tag": "lark_md", "content": "Could not extract structured notes from this paper. The LLM response may have been malformed."},
         })
 
     # Cache indicator
@@ -229,7 +232,7 @@ def build_reading_note_card(note) -> dict:
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"Reading: [{note.arxiv_id}] {note.title[:60]}"},
+            "title": {"tag": "plain_text", "content": f"[{note.arxiv_id}] {note.title}"},
             "template": "blue",
         },
         "elements": elements,

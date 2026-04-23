@@ -108,9 +108,20 @@ async def handle_card_callback(
             await feishu.send_text(chat_id, f"Reading {arxiv_id}...\nThis may take a moment.")
 
             loop = asyncio.get_event_loop()
-            note = await loop.run_in_executor(
-                None, lambda: read_paper(arxiv_id, settings, db)
-            )
+            try:
+                note = await loop.run_in_executor(
+                    None, lambda: read_paper(arxiv_id, settings, db)
+                )
+            except RuntimeError as e:
+                if "HTML version not available" in str(e):
+                    await feishu.send_text(
+                        chat_id,
+                        f"Cannot read {arxiv_id}: the HTML version is not available on arXiv. "
+                        f"Some papers (e.g., older submissions) only have PDF. "
+                        f"You can view it at https://arxiv.org/abs/{arxiv_id}",
+                    )
+                    return
+                raise
 
             # Boost preferences for connected nodes
             for tc in note.tree_connections:
@@ -249,9 +260,20 @@ async def _handle_read(
         return
 
     loop = asyncio.get_event_loop()
-    note = await loop.run_in_executor(
-        None, lambda: read_paper(arxiv_id, settings, db)
-    )
+    try:
+        note = await loop.run_in_executor(
+            None, lambda: read_paper(arxiv_id, settings, db)
+        )
+    except RuntimeError as e:
+        if "HTML version not available" in str(e):
+            await feishu.reply_text(
+                message_id,
+                f"Cannot read {arxiv_id}: the HTML version is not available on arXiv. "
+                f"Some papers (e.g., older submissions) only have PDF. "
+                f"You can view it at https://arxiv.org/abs/{arxiv_id}",
+            )
+            return
+        raise
 
     # Boost preferences for connected nodes
     for tc in note.tree_connections:

@@ -149,8 +149,10 @@ async def _execute_tool(
             return (
                 f"Reading notes for {arxiv_id}:\n"
                 f"Title: {note.title}\n"
-                f"Summary: {note.summary}\n"
+                f"Authors: {note.authors}\n"
+                f"Background: {note.background}\n"
                 f"Key findings: {'; '.join(note.key_findings[:3])}\n"
+                f"Evaluation: {note.evaluation}\n"
                 f"Tree connections: {', '.join(f'{tc.node_name}: {tc.connection}' for tc in note.tree_connections[:3])}"
             )
         else:

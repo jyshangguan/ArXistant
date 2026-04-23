@@ -84,14 +84,13 @@ class TestBuildReadingNoteCard:
         note = ReadingNote(
             arxiv_id="2504.12345",
             title="Test Paper Title",
-            summary="This paper studies bar formation in galaxies.",
+            authors="Smith J, Doe A",
+            background="This paper studies bar formation in galaxies.",
             key_findings=["Finding 1", "Finding 2"],
-            methodology="N-body simulation",
-            results="Bars form within 2 Gyr",
+            evaluation="Solid contribution with clear methodology.",
             tree_connections=[
                 TreeConnection(node_name="Bar Formation", connection="Directly about bar formation"),
             ],
-            unfamiliar_concepts=["concept A", "concept B"],
             cached=False,
         )
         card = build_reading_note_card(note)
@@ -113,6 +112,25 @@ class TestBuildReadingNoteCard:
     def test_invalid_input(self):
         card = build_reading_note_card("not a note")
         assert card["header"]["template"] == "red"
+
+    def test_empty_llm_content_shows_error(self):
+        """When LLM returns nothing (only authors from DB), show error message."""
+        note = ReadingNote(
+            arxiv_id="2504.12345",
+            title="Paper with failed LLM",
+            authors="Author A, Author B",
+            background="",
+            key_findings=[],
+            evaluation="",
+            tree_connections=[],
+            cached=False,
+        )
+        card = build_reading_note_card(note)
+        # Should have authors + error message
+        divs = [e for e in card["elements"] if e.get("tag") == "div"]
+        texts = [d["text"]["content"] for d in divs]
+        assert any("Authors" in t for t in texts)
+        assert any("Could not extract" in t for t in texts)
 
 
 class TestBuildReportCard:
