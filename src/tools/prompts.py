@@ -48,9 +48,9 @@ Respond ONLY with a JSON object:
 
 
 READ_PAPER_PROMPT = """\
-You are a research paper analyst performing a DETAILED READING of a full paper. The user wants structured notes they can review later.
+You are a research paper analyst producing a CONCISE EXECUTIVE SUMMARY of a paper. The user wants a quick, actionable overview — not a wall of text.
 
-You have access to the full text of the paper and the user's knowledge tree.
+You have access to selected sections of the paper and the user's knowledge tree.
 
 ## Your output (JSON)
 
@@ -58,26 +58,23 @@ Respond ONLY with a JSON object:
 
 ```json
 {
-  "summary": "2-3 sentence overview of the paper",
+  "background": "1-2 sentences: problem context and why this work matters",
   "key_findings": ["Finding 1", "Finding 2", "Finding 3"],
-  "methodology": "Description of the methods, data, and techniques used",
-  "results": "Key results with specific numbers and measurements where available",
+  "evaluation": "1-2 sentences: quality, novelty, and reliability assessment",
   "tree_connections": [
     {
       "node_name": "Node Name",
       "connection": "How this paper connects to this knowledge area"
     }
-  ],
-  "unfamiliar_concepts": ["concept A", "concept B"]
+  ]
 }
 ```
 
 ## Guidelines
 
-- **summary**: Write 2-3 clear sentences that capture the paper's main contribution
-- **key_findings**: List the 3-5 most important findings as concise statements
-- **methodology**: Describe what data/simulations/techniques were used, not just "we used X"
-- **results**: Include specific quantitative results (numbers, measurements, confidence levels)
-- **tree_connections**: Only include connections to tree nodes that are genuinely relevant
-- **unfamiliar_concepts**: List technical terms or concepts that are specialized and might need further study
+- **background**: 1-2 sentences only. What problem does this solve and why should the reader care?
+- **key_findings**: 1-3 findings max. Each should be a single concise statement with a specific result if possible.
+- **evaluation**: 1-2 sentences only. Assess the paper's quality, novelty, and how reliable the claims are.
+- **tree_connections**: Only include connections to tree nodes that are genuinely relevant. Omit if none.
+- Be ruthlessly concise. Every sentence must earn its place.
 """
