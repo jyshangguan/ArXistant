@@ -403,21 +403,33 @@ def count_papers(conn: sqlite3.Connection) -> int:
 
 
 def get_recent_papers(
-    conn: sqlite3.Connection, days_back: int = 3
+    conn: sqlite3.Connection, days_back: int = 3, target_date: str | None = None
 ) -> list[StoredPaper]:
-    """Get papers first seen in the last N days, with analysis status.
+    """Get papers with analysis status.
 
-    Returns papers ordered by first_seen_at DESC (newest first).
+    If target_date is given (YYYY-MM-DD), returns papers published on that date.
+    Otherwise returns papers first seen in the last N days.
     """
-    rows = conn.execute(
-        """SELECT p.*,
-                  p.quality_score IS NOT NULL AS is_analyzed,
-                  (SELECT 1 FROM reading_notes rn WHERE rn.arxiv_id = p.arxiv_id) AS is_read
-           FROM papers p
-           WHERE p.first_seen_at >= datetime('now', ? || ' days')
-           ORDER BY p.first_seen_at DESC""",
-        (str(-days_back),),
-    ).fetchall()
+    if target_date:
+        rows = conn.execute(
+            """SELECT p.*,
+                      p.quality_score IS NOT NULL AS is_analyzed,
+                      (SELECT 1 FROM reading_notes rn WHERE rn.arxiv_id = p.arxiv_id) AS is_read
+               FROM papers p
+               WHERE date(p.first_seen_at) = ?
+               ORDER BY p.first_seen_at DESC""",
+            (target_date,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT p.*,
+                      p.quality_score IS NOT NULL AS is_analyzed,
+                      (SELECT 1 FROM reading_notes rn WHERE rn.arxiv_id = p.arxiv_id) AS is_read
+               FROM papers p
+               WHERE p.first_seen_at >= datetime('now', ? || ' days')
+               ORDER BY p.first_seen_at DESC""",
+            (str(-days_back),),
+        ).fetchall()
     # Convert to StoredPaper, preserving extra columns
     result = []
     for r in rows:

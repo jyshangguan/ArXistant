@@ -150,8 +150,9 @@ async def _push_daily_report(
                 )
                 logger.info("Scheduled fetch complete: %s", stats)
 
-                # 2. Keyword pre-filter recent papers
-                recent = get_recent_papers(db_conn, days_back=settings.days_back)
+                # 2. Keyword pre-filter: only papers published on target_date
+                target_date_str = today.strftime('%Y-%m-%d')
+                recent = get_recent_papers(db_conn, target_date=target_date_str)
                 pre_filter_max = getattr(settings, "pre_filter_max", 30)
                 relevant = keyword_pre_filter(recent, db_conn, max_papers=pre_filter_max)
 

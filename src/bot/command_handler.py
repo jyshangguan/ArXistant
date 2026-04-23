@@ -358,10 +358,9 @@ async def _handle_fetch(
             None, lambda: collect_and_store(db, settings, target_date=target_date)
         )
 
-        # 2. Keyword pre-filter recent papers
-        now = datetime.now(timezone.utc)
-        days_back = max(1, (now - target_date.replace(tzinfo=timezone.utc)).days + 1)
-        recent = get_recent_papers(db, days_back=days_back)
+        # 2. Keyword pre-filter: only papers published on target_date
+        target_date_str = target_date.strftime('%Y-%m-%d')
+        recent = get_recent_papers(db, target_date=target_date_str)
         pre_filter_max = getattr(settings, 'pre_filter_max', 30)
         relevant = keyword_pre_filter(recent, db, max_papers=pre_filter_max)
 
