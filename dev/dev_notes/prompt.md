@@ -346,19 +346,28 @@ APScheduler uses ISO weekday numbering (Mon=0, Sun=6) while standard cron uses (
 
 ## Fix: /fetch and scheduled report return stale papers (Completed)
 
-### Root cause
+### Problem 1: search API misses today's papers
 
 Both `/fetch` (without date) and the scheduled report used the arXiv **search API** (`sort_by=submittedDate, max_results=100`), which does NOT reliably return papers announced on the current day. The 100-result cap causes today's papers to be pushed out by cross-listed submissions from earlier days.
 
 Evidence: on Apr 23, the search API returned 112 papers all dated Apr 20–22, with **0** papers dated Apr 23. The listing page showed 43 new papers under "Thu, 23 Apr 2026" (23 GA + 20 HE).
 
-### Fix
+**Fix:** Changed both `/fetch` and `_push_daily_report` to use the **listing page** approach (`_collect_papers_by_date` with `target_date=today`) instead of the search API. The listing page scrapes `arxiv.org/list/{category}/recent` and extracts paper IDs from the section matching today's date — always returns all papers for that day.
 
-Changed both `/fetch` and `_push_daily_report` to use the **listing page** approach (`_collect_papers_by_date` with `target_date=today`) instead of the search API. The listing page scrapes `arxiv.org/list/{category}/recent` and extracts paper IDs from the section matching today's date — always returns all papers for that day.
+### Problem 2: old papers dominate keyword filter results
+
+After switching to listing page fetch, `/fetch` still showed old papers. `get_recent_papers(days_back=1)` returned 94 papers — including papers from earlier fetches that were stored with today's `first_seen_at` timestamp. The `keyword_pre_filter` sorted by match count, so old papers with 5-6 keyword matches (from Apr 16-17) pushed today's papers (2-3 matches) out of the top 30.
+
+**Fix:** Added `target_date` parameter to `get_recent_papers()`. When set, it filters by `date(first_seen_at) = target_date` instead of the `days_back` window. This ensures only papers fetched in the current session are passed to `keyword_pre_filter`, so today's results are not drowned out by older high-match papers.
+
+Note: arXiv's `published` field does NOT match the listing page date. Papers under "Thu, 23 Apr 2026" on the listing page have `published` dates of Apr 20-22. So filtering by `published = today` would find nothing — `first_seen_at` is the correct filter.
+
+### Files modified
 
 | File | Change |
 |------|--------|
-| `src/bot/scheduler.py` | `_push_daily_report` now passes `target_date=datetime.now(timezone.utc)` to `collect_and_store()` |
-| `src/bot/command_handler.py` | `/fetch` without a date argument defaults to `target_date=datetime.now(timezone.utc)` instead of `None` |
-| `tests/test_scheduler.py` | Updated happy path test to verify `target_date` kwarg is passed |
+| `src/bot/scheduler.py` | `_push_daily_report` passes `target_date=today` to `collect_and_store()` and `get_recent_papers()` |
+| `src/bot/command_handler.py` | `/fetch` defaults to `target_date=datetime.now(timezone.utc)` and passes it to `get_recent_papers()` |
+| `src/storage.py` | `get_recent_papers()` accepts optional `target_date` to filter by `first_seen_at` instead of `days_back` |
+| `tests/test_scheduler.py` | Updated happy path test to verify `target_date` kwarg |
 
