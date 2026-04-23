@@ -319,3 +319,27 @@ Are you able to mimic Feishu to interact with ArXistant so that you can fully de
 
 I want to enable the scheduled check and report for the code. Check when the new ArXiv paper is released everyday. Do the fetch and report to Feishu 30 min after the new papers released. Check carefully and make a plan.
 
+
+## Scheduled Fetch Card Push (Completed)
+
+Replaced the old LLM-heavy daily report scheduler with the fast `/fetch` pipeline. The bot now automatically checks for new arXiv papers and sends an interactive fetch card to Feishu 30 minutes after arXiv's daily announcement.
+
+### arXiv schedule
+
+- arXiv announces new papers Sunday–Thursday at 20:00 ET (08:00 CST next day)
+- 30 min after = 08:30 CST
+- Cron: `30 8 * * 1-5` (Monday–Friday)
+
+### Files modified
+
+| File | Change |
+|------|--------|
+| `src/bot/scheduler.py` | Rewrote `_push_daily_report` to use `collect_and_store` → `keyword_pre_filter` → `build_fetch_list_card` → `send_card`. Removed old LLM-based `run_collect_and_analyze` + `build_report_card` flow. Added `_convert_cron_dow()` to fix day-of-week mismatch between standard cron (Mon=1) and APScheduler ISO (Mon=0). Added weekend safety check. |
+| `src/config.py` | `report_cron` default: `"0 9 * * *"` → `"30 8 * * 1-5"` |
+| `config/settings.yaml` | `report_cron`: `"0 9 * * *"` → `"30 8 * * 1-5"` |
+| `tests/test_scheduler.py` | New file: 17 tests covering happy path, weekend skip, empty results, error handling, concurrency guard, cron DOW conversion, APScheduler fire-time verification, idempotent scheduler start |
+
+### Bug found during testing
+
+APScheduler uses ISO weekday numbering (Mon=0, Sun=6) while standard cron uses (Sun=0, Mon=1, Sat=6). The cron string `"1-5"` was passed directly to `CronTrigger(day_of_week=...)`, causing it to fire on Tue–Sat instead of Mon–Fri. Fixed by adding `_convert_cron_dow()` that maps standard cron values to APScheduler's convention.
+
