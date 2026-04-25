@@ -1,3 +1,6 @@
+# Understanding verification
+
+
 # Ranking system
 I want you to develop a ranking tool that helps to sort the paper list so that in /fetch, you get the paper list and can use the ranking tool to sort the list. This can be based on the classical suggestion algorithms. In the report, we can include a button so that the user can indicate which paper is `interested` (even without /scan or /read) and the ranking tool can refine the suggestion strategy. Of course, if the reader click /scan or /read, the paper's topic should also gain higher weight.
 
