@@ -374,4 +374,9 @@ Note: arXiv's `published` field does NOT match the listing page date. Papers und
 
 # Make a doc
 
-Please c
+Please create a doc and Claude skills for this package. Think carefully and give me a plan.
+
+
+# Understanding verifier
+
+Next step, I want to make a major development on the 
