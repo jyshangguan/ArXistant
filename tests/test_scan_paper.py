@@ -42,6 +42,17 @@ class TestParseScanResponse:
         result = _parse_scan_response(text)
         assert result["quality_score"] == 5
 
+    def test_latex_escapes_in_fenced_json(self):
+        """LaTeX escapes (\\sigma, \\odot) in LLM output should be sanitized."""
+        text = (
+            '```json\n'
+            '{"quality_score": 4, "quality_reason": "studies $\\sigma_\\odot$", '
+            '"tree_links": [], "recommend_reading": true, "rationale": "relevant"}\n```'
+        )
+        result = _parse_scan_response(text)
+        assert result["quality_score"] == 4
+        assert "sigma" in result["quality_reason"]
+
 
 def _make_arxiv_result(title="Test Paper", authors=None, summary="Test abstract", categories=None):
     """Create a mock arxiv.Result."""

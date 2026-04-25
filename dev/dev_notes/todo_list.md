@@ -1,6 +1,7 @@
-# Refine the fetch process
+# Ranking system
+I want you to develop a ranking tool that helps to sort the paper list so that in /fetch, you get the paper list and can use the ranking tool to sort the list. This can be based on the classical suggestion algorithms. In the report, we can include a button so that the user can indicate which paper is `interested` (even without /scan or /read) and the ranking tool can refine the suggestion strategy. Of course, if the reader click /scan or /read, the paper's topic should also gain higher weight.
 
-Use filtering to find the relevant papers. Make a list and feed once to the LLM, together with the preference information, so that the LLM can provide a resulted ranked list. May as the LLM for more things.
+Think carefully and make a plan. Note that make the ranking tool independent to modulize the code.
 
 
 # Refine the work flow
@@ -16,3 +17,12 @@ Need to consider how to take notes after discussing with the user.
 # Visualize the knowledge tree
 
 I want a function and a method to visualize the knowledge tree, so that the user can interact and make correction.
+
+
+===
+Finished works
+
+# Refine the fetch process
+[Done]
+
+Use filtering to find the relevant papers. Make a list and feed once to the LLM, together with the preference information, so that the LLM can provide a resulted ranked list. May as the LLM for more things.

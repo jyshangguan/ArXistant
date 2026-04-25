@@ -18,12 +18,47 @@ from ..storage import (
     get_tree_node_by_name,
     get_build_session,
     delete_build_session,
+    get_paper,
+    update_paper_analysis,
+    upsert_paper_tree_link,
 )
 
 logger = logging.getLogger(__name__)
 
 # Concurrency guard for /fetch
 _active_fetches: set[str] = set()
+
+
+async def _ensure_paper_scanned(
+    arxiv_id: str,
+    settings: Settings,
+    db: sqlite3.Connection,
+    feishu,
+    chat_id: str,
+) -> None:
+    """Run /scan if the paper hasn't been scanned yet, then save results to DB."""
+    paper = get_paper(db, arxiv_id)
+    if paper and paper.quality_score is not None:
+        return
+
+    from ..tools.scan_paper import scan_paper
+    from .preference_store import boost_weight
+
+    await feishu.send_text(chat_id, f"Paper {arxiv_id} not yet scanned. Scanning first...")
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, lambda: scan_paper(arxiv_id, settings, db)
+    )
+
+    # Save scan result to DB
+    update_paper_analysis(db, arxiv_id, result.quality_score, result.quality_reason)
+    for link in result.tree_links:
+        node = get_tree_node_by_name(db, link.node_name)
+        if node:
+            upsert_paper_tree_link(db, arxiv_id, node.id, link.relevance_score, link.relevance_reason)
+            if link.relevance_score >= 3:
+                boost_weight(db, node.id, amount=1.0)
 
 
 async def handle_command(
@@ -104,6 +139,8 @@ async def handle_card_callback(
         if callback_type == "read":
             from ..tools.read_paper import read_paper
             from .preference_store import boost_weight, ensure_preference
+
+            await _ensure_paper_scanned(arxiv_id, settings, db, feishu, chat_id)
 
             await feishu.send_text(chat_id, f"Reading {arxiv_id}...\nThis may take a moment.")
 
@@ -258,6 +295,8 @@ async def _handle_read(
     if not arxiv_id:
         await feishu.reply_text(message_id, "Usage: /read <arxiv_id>")
         return
+
+    await _ensure_paper_scanned(arxiv_id, settings, db, feishu, chat_id)
 
     loop = asyncio.get_event_loop()
     try:

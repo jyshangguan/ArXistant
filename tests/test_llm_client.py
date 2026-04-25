@@ -23,10 +23,11 @@ class TestCreateClient:
     @patch("src.llm_client.OpenAI")
     def test_passes_correct_args(self, mock_openai_cls, sample_settings):
         create_client(sample_settings)
-        mock_openai_cls.assert_called_once_with(
-            api_key="test-key-123",
-            base_url="https://open.bigmodel.cn/api/paas/v4",
-        )
+        call_kwargs = mock_openai_cls.call_args[1]
+        assert call_kwargs["api_key"] == "test-key-123"
+        assert call_kwargs["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
+        assert call_kwargs["max_retries"] == 0
+        assert call_kwargs["timeout"] is not None
 
 
 # ── chat_completion ──────────────────────────────────────────────────────

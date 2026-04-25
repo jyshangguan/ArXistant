@@ -3,7 +3,7 @@
 llm:
   # Provider: "openai_compatible" for any OpenAI-compatible API (Zhipu, Qwen, etc.)
   provider: openai_compatible
-  model: glm-4.7-flash
+  model: glm-5-turbo
   base_url: https://open.bigmodel.cn/api/coding/paas/v4
   # API key is read from GLM_API_KEY in .env
   temperature: 0.1
@@ -40,4 +40,4 @@ feishu:
 bot:
   target_chat_id: "oc_2c50a087092cae01edfc1f3c034d9bb6"           # chat_id for scheduled report push
   session_max_messages: 20
-  report_cron: "30 8 * * 1-5"
+  report_cron: "30 10 * * 1-5"

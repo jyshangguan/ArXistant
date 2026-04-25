@@ -78,8 +78,8 @@ def start_scheduler(
             day_of_week=dow,
         )
     else:
-        logger.warning("Invalid cron expression: %s, using default (30 8 * * 1-5)", settings.report_cron)
-        trigger = CronTrigger(hour=8, minute=30, day_of_week="mon-fri")
+        logger.warning("Invalid cron expression: %s, using default (30 10 * * 1-5)", settings.report_cron)
+        trigger = CronTrigger(hour=10, minute=30, day_of_week="mon-fri")
 
     _scheduler.add_job(
         _push_daily_report,

@@ -53,6 +53,26 @@ class TestParseReadResponse:
         assert result["background"] == "only background"
         # _parse_read_response returns raw dict; caller uses .get() with defaults
         assert result.get("key_findings", []) == []
+
+    def test_latex_escapes_in_fenced_json(self):
+        """LLM often includes LaTeX (\\odot, \\alpha) which are invalid JSON escapes."""
+        text = (
+            '```json\n'
+            '{"background": "the $M_\\odot$ cloud", '
+            '"key_findings": ["$\\alpha \\approx -0.71$"], '
+            '"evaluation": "good", '
+            '"tree_connections": []}\n```'
+        )
+        result = _parse_read_response(text)
+        assert result["background"] == "the $M_\\odot$ cloud"
+        assert len(result["key_findings"]) == 1
+        assert "\\alpha" in result["key_findings"][0]
+
+    def test_latex_escapes_in_bare_json(self):
+        """LaTeX escapes without code fences also get sanitized."""
+        text = '{"background": "use \\lambda for wavelength", "key_findings": [], "evaluation": "ok", "tree_connections": []}'
+        result = _parse_read_response(text)
+        assert "lambda" in result["background"]
         assert result.get("tree_connections", []) == []
 
 

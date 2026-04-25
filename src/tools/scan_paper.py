@@ -8,7 +8,7 @@ import re
 import time
 
 import arxiv
-from openai import RateLimitError
+from openai import APIConnectionError, InternalServerError, RateLimitError
 
 from ..config import Settings
 from ..llm_client import create_client, chat_completion
@@ -17,6 +17,15 @@ from .prompts import SCAN_PAPER_PROMPT
 from .types import ScanResult, TreeLink
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_json_escapes(s: str) -> str:
+    """Fix invalid JSON escape sequences (e.g. LaTeX \\lambda, \\odot) by doubling the backslash."""
+    return re.sub(
+        r"\\(?![\\\"/bfnrtu])",
+        r"\\\\",
+        s,
+    )
 
 
 def _parse_scan_response(text: str) -> dict:
@@ -41,7 +50,7 @@ def _parse_scan_response(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Try brace extraction
+    # Try brace extraction with escape sanitization (handles LaTeX in LLM output)
     brace_match = re.search(r"\{.*\}", text, re.DOTALL)
     if brace_match:
         try:
@@ -49,7 +58,13 @@ def _parse_scan_response(text: str) -> dict:
             if isinstance(result, dict):
                 return result
         except json.JSONDecodeError:
-            pass
+            sanitized = _sanitize_json_escapes(brace_match.group(0))
+            try:
+                result = json.loads(sanitized)
+                if isinstance(result, dict):
+                    return result
+            except json.JSONDecodeError:
+                pass
 
     logger.warning("Could not parse scan response as JSON")
     return {}
@@ -113,13 +128,13 @@ def scan_paper(
                 temperature=settings.llm_temperature,
             )
             break
-        except RateLimitError:
+        except (RateLimitError, InternalServerError, APIConnectionError) as e:
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
-                logger.warning("Rate limited, retrying in %ds (attempt %d/%d)", delay, attempt + 1, max_retries)
+                logger.warning("LLM error, retrying in %ds (attempt %d/%d): %s", delay, attempt + 1, max_retries, type(e).__name__)
                 time.sleep(delay)
             else:
-                logger.exception("Rate limited, all retries exhausted")
+                logger.exception("LLM error, all retries exhausted")
         except Exception:
             logger.exception("LLM call failed for scan_paper")
             break

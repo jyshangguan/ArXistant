@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import httpx
 
 from openai import OpenAI
 
@@ -10,12 +11,21 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+# Per-request timeout. 120s is generous for LLM completions.
+_LLM_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
 
 def create_client(settings: Settings) -> OpenAI:
-    """Create an OpenAI client configured for the target provider."""
+    """Create an OpenAI client configured for the target provider.
+
+    Disables the built-in retry so that retry logic is controlled entirely
+    by callers (scan_paper / read_paper / conversation).
+    """
     client = OpenAI(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
+        timeout=_LLM_TIMEOUT,
+        max_retries=0,
     )
     return client
 

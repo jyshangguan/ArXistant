@@ -73,7 +73,7 @@ class Settings:
     # Bot
     target_chat_id: str = ""
     session_max_messages: int = 20
-    report_cron: str = "30 8 * * 1-5"
+    report_cron: str = "30 10 * * 1-5"
 
 
 def load_topics(path: str | Path | None = None) -> list[Topic]:
@@ -132,5 +132,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         feishu_bot_name=feishu.get("bot_name", "ArXistant"),
         target_chat_id=bot.get("target_chat_id", ""),
         session_max_messages=bot.get("session_max_messages", 20),
-        report_cron=bot.get("report_cron", "30 8 * * 1-5"),
+        report_cron=bot.get("report_cron", "30 10 * * 1-5"),
     )

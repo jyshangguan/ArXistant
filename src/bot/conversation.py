@@ -79,21 +79,33 @@ async def handle_conversation(
 async def _call_llm(messages: list[dict], settings: Settings) -> str:
     """Call LLM with message list. Uses chat_completion_messages."""
     from ..llm_client import chat_completion_messages
+    from openai import APIConnectionError, InternalServerError, RateLimitError
 
     client = create_client(settings)
     loop = asyncio.get_event_loop()
+    max_retries = 3
+    base_delay = 15
 
-    try:
-        response = await loop.run_in_executor(
-            None,
-            lambda: chat_completion_messages(
-                client, settings.llm_model, messages, settings.llm_temperature,
-            ),
-        )
-        return response
-    except Exception as e:
-        logger.error("Conversation LLM call failed: %s", e)
-        return f"Sorry, I encountered an error processing your message: {e}"
+    for attempt in range(max_retries + 1):
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: chat_completion_messages(
+                    client, settings.llm_model, messages, settings.llm_temperature,
+                ),
+            )
+            return response
+        except (RateLimitError, InternalServerError, APIConnectionError) as e:
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning("Conversation LLM error, retrying in %ds (attempt %d/%d): %s", delay, attempt + 1, max_retries, type(e).__name__)
+                await asyncio.sleep(delay)
+            else:
+                logger.error("Conversation LLM call failed after retries: %s", e)
+                return f"Sorry, I encountered an error processing your message: {e}"
+        except Exception as e:
+            logger.error("Conversation LLM call failed: %s", e)
+            return f"Sorry, I encountered an error processing your message: {e}"
 
 
 def _extract_tool_actions(text: str) -> list[dict]:
