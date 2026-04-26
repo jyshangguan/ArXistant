@@ -328,7 +328,7 @@ class TestCardBuilders:
 
         assert "Verification Progress" in card["header"]["title"]["content"]
         elements_text = json.dumps(card["elements"])
-        assert "P1" in elements_text
+        assert "Q?" in elements_text
         assert "Logic 8" in elements_text
 
     def test_verification_result_card_structure(self):

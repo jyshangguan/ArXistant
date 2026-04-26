@@ -284,6 +284,37 @@ def main() -> None:
     _main_loop = loop
     asyncio.set_event_loop(loop)
 
+    # Pre-upload static images for card rendering
+    import httpx as _httpx
+    import io as _io
+    from PIL import Image as _PILImage
+    _HG_URL = "https://cdn.dribbble.com/userupload/26461009/file/original-34112a6691dbcded236ef6463151af82.gif"
+    _HG_CROP = (335, 235, 460, 360)  # central hourglass region in 800x600 canvas
+    _HG_SIZE = 20
+    try:
+        resp = _httpx.Client(follow_redirects=True, timeout=15).get(_HG_URL)
+        resp.raise_for_status()
+        # Crop central hourglass region, then resize preserving all frames
+        img = _PILImage.open(_io.BytesIO(resp.content))
+        frames = []
+        durations = []
+        for i in range(getattr(img, 'n_frames', 1)):
+            img.seek(i)
+            cropped = img.convert('RGBA').crop(_HG_CROP)
+            frames.append(cropped.resize((_HG_SIZE, _HG_SIZE), _PILImage.LANCZOS))
+            durations.append(img.info.get('duration', 100))
+        buf = _io.BytesIO()
+        frames[0].save(buf, format='GIF', save_all=True, append_images=frames[1:],
+                       loop=0, duration=durations, disposal=2)
+        hg_key = loop.run_until_complete(feishu.upload_image(buf.getvalue()))
+        from .card_builder import set_hourglass_image_key
+        set_hourglass_image_key(hg_key)
+        logger.info("Hourglass image uploaded (cropped+resized %dx%d): %s", _HG_SIZE, _HG_SIZE, hg_key)
+    except Exception:
+        logger.warning("Failed to upload hourglass image — ensure app has im:resource permission. "
+                       "Go to https://open.feishu.cn/app and enable 'im:resource' or 'im:resource:upload' scope. "
+                       "Falling back to emoji.", exc_info=False)
+
     # Start scheduler in the asyncio loop
     from .scheduler import start_scheduler, stop_scheduler
     loop.call_soon_threadsafe(start_scheduler, settings, conn, feishu)

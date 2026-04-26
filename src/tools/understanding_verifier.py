@@ -562,6 +562,7 @@ def verify_paper_understanding(
             progress_callback=_stage_report,
         )
         certificates.append(cert)
+        progress.completed_certificates.append(cert)
 
         if not cert.verified:
             progress.failed_points.append(point.point_id)
@@ -572,6 +573,7 @@ def verify_paper_understanding(
             cert.understanding_level,
         )
 
+    progress.current_point = None
     progress.current_stage = "done"
     if progress_callback:
         progress_callback(progress)

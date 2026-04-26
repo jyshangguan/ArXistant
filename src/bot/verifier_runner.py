@@ -64,14 +64,27 @@ async def start_verification(
         return []
 
     # Show verification plan
-    from .card_builder import build_verification_plan_card
+    from ..tools.understanding_types import VerificationProgress
+    from .card_builder import build_verification_plan_card, build_verification_progress_card
     plan_card = build_verification_plan_card(arxiv_id, title, points)
     await feishu.send_card(chat_id, plan_card)
+
+    # Send initial progress card (will be updated in-place later)
+    initial_progress = VerificationProgress(
+        arxiv_id=arxiv_id,
+        total_points=len(points),
+        current_point_index=0,
+        start_time=datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
+    )
+    initial_card = build_verification_progress_card(initial_progress)
+    plan_resp = await feishu.send_card(chat_id, initial_card)
+    initial_msg_id = plan_resp.get("data", {}).get("message_id")
 
     # Start background verification
     task = asyncio.create_task(
         _run_verification_bg(
             arxiv_id, title, paper_context, points, settings, db, feishu, chat_id,
+            initial_progress_message_id=initial_msg_id,
         )
     )
     _active_verifications[chat_id] = task
@@ -92,36 +105,31 @@ async def _run_verification_bg(
     db: sqlite3.Connection,
     feishu,
     chat_id: str,
+    initial_progress_message_id: str | None = None,
 ) -> list:
-    """Background task: run verification, send progress, handle user questions."""
+    """Background task: run verification, update progress card in-place, handle user questions."""
 
-    from ..tools.understanding_types import VerificationProgress
     from ..tools.understanding_verifier import verify_paper_understanding
     from .card_builder import build_verification_progress_card, build_verification_result_card
-
-    progress = VerificationProgress(
-        arxiv_id=arxiv_id,
-        total_points=len(points),
-        current_point_index=0,
-        start_time=datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
-    )
 
     last_progress_time = 0.0
     progress_interval = getattr(settings, "verifier_progress_interval", 30)
     loop = asyncio.get_running_loop()
 
+    # Mutable container so the closure can read/write the message ID
+    progress_msg_id = [initial_progress_message_id]
+
     def on_progress(p: VerificationProgress) -> None:
-        """Callback from sync verifier -> schedule async Feishu update."""
+        """Callback from sync verifier -> schedule async Feishu card update."""
         nonlocal last_progress_time
         now = time.time()
-        # Throttle: only send update if enough time has passed or we're at a milestone
         is_milestone = p.current_stage in ("certificate", "done", "extracting")
         if is_milestone or (now - last_progress_time) >= progress_interval:
             last_progress_time = now
             try:
-                loop.call_soon_threadsafe(_schedule_progress, feishu, chat_id, p)
+                loop.call_soon_threadsafe(_schedule_progress, feishu, chat_id, p, progress_msg_id)
             except RuntimeError:
-                pass  # Event loop closed (bot shutting down)
+                pass
 
     certificates = await loop.run_in_executor(
         None,
@@ -133,12 +141,18 @@ async def _run_verification_bg(
         ),
     )
 
-    # Send final result card
+    # Overwrite progress card with final result in-place
     if certificates:
         result_card = build_verification_result_card(arxiv_id, certificates)
-        await feishu.send_card(chat_id, result_card)
+        if progress_msg_id[0]:
+            try:
+                await feishu.update_card(progress_msg_id[0], result_card)
+            except Exception:
+                logger.exception("Failed to update progress card to result, sending new card")
+                await feishu.send_card(chat_id, result_card)
+        else:
+            await feishu.send_card(chat_id, result_card)
 
-        # Store certificates in DB
         if getattr(settings, "verifier_store_certificates", True):
             from ..tools.html_parser import fetch_and_parse
             try:
@@ -156,19 +170,28 @@ async def _run_verification_bg(
     return certificates
 
 
-def _schedule_progress(feishu, chat_id: str, progress) -> None:
-    """Schedule a progress card send (called via call_soon_threadsafe)."""
-    asyncio.create_task(_send_progress_card(feishu, chat_id, progress))
+def _schedule_progress(feishu, chat_id: str, progress, msg_id_holder: list) -> None:
+    """Schedule a progress card update (called via call_soon_threadsafe)."""
+    asyncio.create_task(_update_progress_card(feishu, chat_id, progress, msg_id_holder))
 
 
-async def _send_progress_card(feishu, chat_id: str, progress) -> None:
-    """Send a progress update card to Feishu."""
+async def _update_progress_card(feishu, chat_id: str, progress, msg_id_holder: list) -> None:
+    """Update the progress card in-place, or send a new one if no message_id exists."""
     from .card_builder import build_verification_progress_card
     card = build_verification_progress_card(progress)
     try:
-        await feishu.send_card(chat_id, card)
+        if msg_id_holder[0]:
+            await feishu.update_card(msg_id_holder[0], card)
+        else:
+            resp = await feishu.send_card(chat_id, card)
+            msg_id_holder[0] = resp.get("data", {}).get("message_id")
     except Exception:
-        logger.exception("Failed to send progress card")
+        logger.exception("Failed to update progress card, sending new one")
+        try:
+            resp = await feishu.send_card(chat_id, card)
+            msg_id_holder[0] = resp.get("data", {}).get("message_id")
+        except Exception:
+            logger.exception("Failed to send fallback progress card")
 
 
 async def ask_user_question(

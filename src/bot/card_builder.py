@@ -913,8 +913,8 @@ def build_verification_plan_card(
             "text": {
                 "tag": "lark_md",
                 "content": (
-                    f"**{i+1}. {p.normalized_question[:80]}**\n"
-                    f"Type: `{p.point_type}` | Importance: {importance_bar} ({p.importance}/5)"
+                    f"**{i+1}. {p.normalized_question}**\n"
+                    f"`{p.point_type}` · {importance_bar} ({p.importance}/5)"
                 ),
             },
         })
@@ -939,6 +939,58 @@ def build_verification_plan_card(
     }
 
 
+_VERIFIER_STAGE_ORDER = ["logic_chain", "logic_review", "feynman_test", "feynman_review", "gaps", "certificate"]
+_STAGE_LABELS = {
+    "logic_chain": "Logic Chain",
+    "logic_review": "Logic Review",
+    "feynman_test": "Feynman Test",
+    "feynman_review": "Feynman Review",
+    "gaps": "Gap Analysis",
+    "certificate": "Certificate",
+}
+_HOURGLASS_IMG_KEY: str = ""
+
+
+def set_hourglass_image_key(image_key: str) -> None:
+    global _HOURGLASS_IMG_KEY
+    _HOURGLASS_IMG_KEY = image_key
+
+
+_STAGE_STATUS = {
+    "extracting": "Extracting scientific points from paper...",
+    "logic_chain": "Building logic chain — identifying evidence and reasoning...",
+    "logic_review": "Reviewing logical consistency of the argument...",
+    "feynman_test": "Testing understanding via Feynman explanation...",
+    "feynman_review": "Critiquing Feynman explanation quality...",
+    "gaps": "Identifying remaining knowledge gaps...",
+    "iterating": "Re-verifying with additional evidence...",
+    "certificate": "Generating understanding certificate...",
+    "done": "Verification complete.",
+}
+_LEVEL_EMOJI = {
+    "critically_understood": "✅",
+    "mechanism_understood": "\U0001f9e0",
+    "argument_understood": "\U0001f4ac",
+    "partially_understood": "⚠️",
+    "not_understood": "❌",
+}
+
+
+def _format_stage_chain(current_stage: str) -> str:
+    """Format the verification stage chain with bold/colored stages."""
+    current_idx = _VERIFIER_STAGE_ORDER.index(current_stage) if current_stage in _VERIFIER_STAGE_ORDER else 0
+    parts = []
+    for i, stage in enumerate(_VERIFIER_STAGE_ORDER):
+        label = _STAGE_LABELS.get(stage, stage)
+        if i < current_idx:
+            parts.append(f"**{label}**")
+        elif i == current_idx:
+            parts.append(f"<font color='red'>**{label}**</font>")
+        else:
+            parts.append(label)
+    return " → ".join(parts)
+
+
 def build_verification_progress_card(progress) -> dict:
     """Build a Feishu card showing verification progress.
 
@@ -947,41 +999,87 @@ def build_verification_progress_card(progress) -> dict:
     """
     elements = []
 
-    # Current point and stage
-    if progress.current_point:
+    # Completed points
+    for i, cert in enumerate(progress.completed_certificates):
+        emoji = _LEVEL_EMOJI.get(cert.understanding_level, "✅")
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
                 "content": (
-                    f"**Verifying:** Point {progress.current_point_index}/{progress.total_points}\n"
-                    f"{progress.current_point.normalized_question[:80]}\n"
-                    f"Stage: `{progress.current_stage}`"
+                    f"{i+1}. {emoji} {cert.point.normalized_question}\n"
+                    f"   Logic {cert.logic_review.score} · Feynman {cert.feynman_test.score} · `{cert.understanding_level}`"
                 ),
             },
         })
 
-    # Completed points summary
-    completed = progress.completed_certificates
-    if completed:
+    # Current point with stage chain and status box
+    if progress.current_point:
+        idx = len(progress.completed_certificates) + 1
+        stage_chain = _format_stage_chain(progress.current_stage)
+        dot_color = "#FF8C00"
+        status_text = _STAGE_STATUS.get(progress.current_stage, "Working...")
         elements.append({"tag": "hr"})
-        lines = []
-        for cert in completed:
-            lines.append(
-                f"- {cert.point.point_id}: Logic {cert.logic_review.score}/10, "
-                f"Feynman {cert.feynman_test.score}/10 "
-                f"`{cert.understanding_level}`"
-            )
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": "**Completed:**\n" + "\n".join(lines),
+                "content": (
+                    f"{idx}/{progress.total_points} <font color='{dot_color}'>●</font> "
+                    f"{progress.current_point.normalized_question}\n"
+                    f"{stage_chain}"
+                ),
             },
         })
+        if _HOURGLASS_IMG_KEY:
+            elements.append({
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "grey",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "24px",
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "img",
+                                "img_key": _HOURGLASS_IMG_KEY,
+                                "alt": {"tag": "plain_text", "content": "hourglass"},
+                                "width": 20,
+                                "height": 20,
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "lark_md",
+                                    "content": status_text,
+                                },
+                            },
+                        ],
+                    },
+                ],
+            })
+        else:
+            elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"⏳ {status_text}",
+                },
+            })
 
     # Failed points
     if progress.failed_points:
+        elements.append({"tag": "hr"})
         elements.append({
             "tag": "div",
             "text": {
@@ -1006,76 +1104,51 @@ def build_verification_result_card(
 ) -> dict:
     """Build a Feishu card showing final verification results.
 
+    Each point shows its question, scores, and per-point problems (gaps, weaknesses,
+    hidden assumptions) listed underneath. No truncation on question text.
+
     Args:
         arxiv_id: arXiv paper ID.
         certificates: List of UnderstandingCertificate objects.
     """
     elements = []
-
-    level_emoji = {
-        "critically_understood": "✅",
-        "mechanism_understood": "\U0001f9e0",
-        "argument_understood": "\U0001f4ac",
-        "partially_understood": "⚠️",
-        "not_understood": "❌",
-    }
-
-    # Summary table
-    lines = []
     level_counts: dict[str, int] = {}
-    for cert in certificates:
-        emoji = level_emoji.get(cert.understanding_level, "?")
-        q = cert.point.normalized_question[:50]
-        lines.append(
-            f"| {emoji} {cert.point.point_id} | {q} | {cert.logic_review.score} | {cert.feynman_test.score} | `{cert.understanding_level}` |"
-        )
+
+    for i, cert in enumerate(certificates):
+        emoji = _LEVEL_EMOJI.get(cert.understanding_level, "?")
         level_counts[cert.understanding_level] = level_counts.get(cert.understanding_level, 0) + 1
 
-    elements.append({
-        "tag": "div",
-        "text": {
-            "tag": "lark_md",
-            "content": "| Point | Question | Logic | Feynman | Level |\n|---|---|---|---|---|\n" + "\n".join(lines),
-        },
-    })
+        if i > 0:
+            elements.append({"tag": "hr"})
+
+        lines = [
+            f"{i+1}. {emoji} {cert.point.normalized_question}",
+            f"   Logic {cert.logic_review.score} · Feynman {cert.feynman_test.score} · `{cert.understanding_level}`",
+        ]
+
+        problems = []
+        for gap in cert.remaining_gaps:
+            problems.append(f"- {gap}")
+        for w in cert.logic_review.weaknesses:
+            problems.append(f"- {w}")
+        for a in cert.logic_review.hidden_assumptions:
+            problems.append(f"- {a}")
+        lines.extend(problems[:3])
+
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(lines)},
+        })
 
     # Level summary
+    elements.append({"tag": "hr"})
     if level_counts:
         summary_parts = [f"{v} {k.replace('_', ' ')}" for k, v in sorted(level_counts.items())]
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": "**Summary:** " + ", ".join(summary_parts),
-            },
-        })
-
-    # Gaps from all certificates
-    all_gaps = []
-    for cert in certificates:
-        for gap in cert.remaining_gaps[:2]:
-            all_gaps.append(f"- [{cert.point.point_id}] {gap}")
-    if all_gaps:
-        elements.append({"tag": "hr"})
-        elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": "**Key Gaps:**\n" + "\n".join(all_gaps[:10]),
-            },
-        })
-
-    # Follow-up
-    all_followup = []
-    for cert in certificates:
-        for fu in cert.recommended_followup[:1]:
-            all_followup.append(f"- {fu}")
-    if all_followup:
-        elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": "**Recommended Follow-up:**\n" + "\n".join(all_followup[:5]),
+                "content": f"**{len(certificates)} points:** " + ", ".join(summary_parts),
             },
         })
 

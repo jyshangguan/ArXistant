@@ -123,6 +123,31 @@ class FeishuClient:
         )
         return self._check_response(resp, "reply_text")
 
+    async def update_card(self, message_id: str, card: dict) -> dict:
+        """Update an existing interactive card message in-place."""
+        token = await self.get_token()
+        resp = await self._http.patch(
+            f"{FEISHU_API_BASE}/im/v1/messages/{message_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "msg_type": "interactive",
+                "content": json.dumps(card),
+            },
+        )
+        return self._check_response(resp, "update_card")
+
+    async def upload_image(self, image_bytes: bytes, image_type: str = "message") -> str:
+        """Upload an image to Feishu and return the image_key for use in cards."""
+        token = await self.get_token()
+        resp = await self._http.post(
+            f"{FEISHU_API_BASE}/im/v1/images",
+            headers={"Authorization": f"Bearer {token}"},
+            data={"image_type": image_type},
+            files={"image": ("image.gif", image_bytes, "image/gif")},
+        )
+        data = self._check_response(resp, "upload_image")
+        return data["data"]["image_key"]
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._http.aclose()
