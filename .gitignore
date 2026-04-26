@@ -27,3 +27,6 @@ Thumbs.db
 # Local data (generated at runtime)
 data/
 reports/
+
+# Dev notes (tracked in separate local repo)
+dev/dev_notes/
