@@ -40,7 +40,7 @@ src/
 ├── llm_client.py      OpenAI-compatible LLM wrapper
 ├── main.py            pipeline orchestrator
 ├── bot/               Feishu bot service
-│   ├── server.py         FastAPI + WebSocket entry point
+│   ├── server.py         WebSocket long connection entry point
 │   ├── command_router.py  /command parsing
 │   ├── command_handler.py command execution
 │   ├── card_builder.py    Feishu interactive cards
@@ -397,7 +397,7 @@ conda run -n llm python -m pytest tests/ -v
 conda run -n llm python -m src.main
 
 # Feishu bot
-conda run -n llm uvicorn src.bot.server:app --host 0.0.0.0 --port 8000
+conda run -n llm python -m src.bot.server
 ```
 
 **Logs:** `data/logs/bot.log` (rotating, 5MB, 3 backups)

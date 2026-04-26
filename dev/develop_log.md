@@ -1,5 +1,44 @@
 # Development Log
 
+## 2026-04-26 — Fix Verification Cards: Live Progress, In-Place Result, Animated Hourglass
+
+### What was done
+- Fixed stale Verification Progress cards showing previous paper's data
+- Redesigned all verification card builders (plan, progress, result) for readability
+- Added animated hourglass status box with cropped + resized GIF uploaded to Feishu
+- Changed final Verification Result to overwrite the Progress card in-place
+- Fixed Android mobile rendering by constraining image column to fixed pixel width
+
+### Bugs fixed
+- **Stale progress cards**: Root cause was `completed_certificates` never populated in `understanding_verifier.py` — the progress callback returned stale data from a previous run. Fixed by appending each completed certificate to `progress.completed_certificates` and clearing `progress.current_point` when done.
+- **Truncated text**: Removed `[:80]` truncation from all card builders. Titles and point questions now display in full two-line format.
+- **Raw stage names**: `_STAGE_LABELS` map replaces internal identifiers (`logic_chain`, `feynman_test`) with human-readable labels ("Building Logic Chain", "Running Feynman Test").
+- **Aggregated problems**: Result card now shows per-point problems (gaps, weaknesses, hidden assumptions) nested under each point, instead of a separate aggregated list.
+- **Hourglass too large**: The Dribbble GIF was 800x600 with a ~105x105 hourglass in the center. The whole 800x600 was uploaded, causing Feishu to render at native resolution. Fixed by cropping the center (335,235)-(460,360) and resizing to 20x20 before upload.
+- **Android hourglass too large**: Android Feishu client ignores `width`/`height` on `img` elements when column width is `"auto"`. Fixed by setting column width to `"24px"`.
+
+### Key design decisions
+- Feishu `lark_md` does NOT support external image URLs — requires `image_key` from upload API
+- Feishu `lark_md` in interactive cards does NOT parse `![](image_key)` — must use native `img` element inside `column_set`
+- `column_set` with `flex_mode: "none"` and `background_style: "grey"` creates a visual status box
+- Fixed `"24px"` column width constrains image on Android; `"auto"` does not
+- `update_card()` (PATCH) overwrites a card in-place; used to replace progress card with result
+- Image cropping uses PIL: scan all frames at 5px resolution to find non-white content bounds
+
+### Files changed
+| File | Change |
+|------|--------|
+| `src/tools/understanding_verifier.py` | Populate `completed_certificates` during verification, clear `current_point` on done |
+| `src/bot/verifier_runner.py` | Overwrite progress card with result via `update_card()` with fallback to `send_card()` |
+| `src/bot/card_builder.py` | Redesign all verification cards: human-readable stages, per-point problems, hourglass status box |
+| `src/bot/feishu_client.py` | Add `upload_image()` method |
+| `src/bot/server.py` | Download + crop + resize hourglass GIF at startup, upload to Feishu |
+
+### Commit
+- `6524446` Fix verification cards: live progress, in-place result overwrite, animated hourglass
+
+---
+
 ## 2026-04-22 — Rate limit investigation & GLM Coding Plan switch
 
 ### What was done
