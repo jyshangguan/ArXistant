@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../doc/logo0.5.jpg" width="240" alt="ArXistant logo">
+  <img src="logo0.5.jpg" width="240" alt="ArXistant logo">
 </p>
 
 <h1 align="center">ArXistant</h1>
@@ -132,7 +132,7 @@ python -m src.main
 
 ## Documentation
 
-Full developer guide: [doc/DOCS.md](../doc/DOCS.md)
+Developer guide is available locally at `dev/dev_notes/DOCS.md`.
 
 ## License
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="doc/logo0.5.jpg" width="200" alt="ArXistant logo">
+  <img src="docs/logo0.5.jpg" width="200" alt="ArXistant logo">
 </p>
 
 <h1 align="center">ArXistant</h1>
