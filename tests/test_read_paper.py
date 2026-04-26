@@ -10,11 +10,11 @@ import requests as req_lib
 
 from src.tools.read_paper import (
     read_paper,
-    _parse_read_response,
     _truncate_text,
     _select_executive_sections,
     _section_priority,
 )
+from src.tools.json_utils import parse_llm_json as _parse_read_response
 from src.tools.types import ReadingNote, TreeConnection
 
 from tests.test_html_parser import _mock_response, SAMPLE_ARXIV_HTML

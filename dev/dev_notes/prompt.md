@@ -379,4 +379,16 @@ Please create a doc and Claude skills for this package. Think carefully and give
 
 # Understanding verifier
 
-Next step, I want to make a major development on the 
+Next step, I want to make a major development on understanding the paper. Please read the detailed plan in,
+
+`/home/shangguan/Softwares/my_modules/ArXistant/dev/dev_notes/understanding_verifier_design.md`
+
+and make a plan to implement the understanding verifier. This is probably a big project. I think you can realize it step by step. Make an overall plan including the design of all functions, save them in the development notes in `/home/shangguan/Softwares/my_modules/ArXistant/dev`. Then, realize them step by step. 
+
+Note that, I want the understanding verifier to be able to talk to the user. If it meet some problem that cannot be understood or logic gap that cannot be filled, it can talk to the user for help (of course in Feishu). This also means that we should provides more details of the progress in Feishu so that the user knows the overall plan and the progress of the reading/understanding.
+
+
+# Improve the reading modes
+
+Not all papers have the HTML 
+

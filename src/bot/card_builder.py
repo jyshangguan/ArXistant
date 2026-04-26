@@ -72,9 +72,9 @@ def build_scan_result_card(result) -> dict:
     # Tree links
     if result.tree_links:
         link_lines = []
-        for link in result.tree_links:
+        for i, link in enumerate(result.tree_links):
             link_lines.append(
-                f"- **{link.node_name}** (relevance {link.relevance_score}/5): {link.relevance_reason}"
+                f"{i+1}. **{link.node_name}** (relevance {link.relevance_score}/5): {link.relevance_reason}"
             )
         elements.append({
             "tag": "div",
@@ -166,7 +166,7 @@ def build_reading_note_card(note) -> dict:
 
     # Key findings
     if note.key_findings:
-        findings = "\n".join(f"- {f}" for f in note.key_findings[:3])
+        findings = "\n".join(f"{i+1}. {f}" for i, f in enumerate(note.key_findings[:3]))
         elements.append({
             "tag": "div",
             "text": {
@@ -188,8 +188,8 @@ def build_reading_note_card(note) -> dict:
     # Tree connections
     if note.tree_connections:
         conn_lines = []
-        for tc in note.tree_connections[:3]:
-            conn_lines.append(f"- **{tc.node_name}**: {tc.connection}")
+        for i, tc in enumerate(note.tree_connections[:3]):
+            conn_lines.append(f"{i+1}. **{tc.node_name}**: {tc.connection}")
         elements.append({
             "tag": "div",
             "text": {
@@ -880,3 +880,320 @@ def build_build_prompt_card() -> dict:
             },
         ],
     }
+
+
+def build_verification_plan_card(
+    arxiv_id: str,
+    title: str,
+    points: list,
+) -> dict:
+    """Build a Feishu card showing the verification plan before starting.
+
+    Args:
+        arxiv_id: arXiv paper ID.
+        title: Paper title.
+        points: List of ScientificPoint objects.
+    """
+    elements = []
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": f"**Paper:** [{title[:60]}](https://arxiv.org/abs/{arxiv_id})",
+        },
+    })
+
+    elements.append({"tag": "hr"})
+
+    for i, p in enumerate(points):
+        importance_bar = "█" * p.importance + "░" * (5 - p.importance)
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**{i+1}. {p.normalized_question[:80]}**\n"
+                    f"Type: `{p.point_type}` | Importance: {importance_bar} ({p.importance}/5)"
+                ),
+            },
+        })
+
+    est_minutes = len(points) * 1.5
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": f"**{len(points)} points** to verify. Estimated time: ~{est_minutes:.0f} min.",
+        },
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"Verification Plan: {arxiv_id}"},
+            "template": "purple",
+        },
+        "elements": elements,
+    }
+
+
+def build_verification_progress_card(progress) -> dict:
+    """Build a Feishu card showing verification progress.
+
+    Args:
+        progress: A VerificationProgress object from understanding_types.
+    """
+    elements = []
+
+    # Current point and stage
+    if progress.current_point:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**Verifying:** Point {progress.current_point_index}/{progress.total_points}\n"
+                    f"{progress.current_point.normalized_question[:80]}\n"
+                    f"Stage: `{progress.current_stage}`"
+                ),
+            },
+        })
+
+    # Completed points summary
+    completed = progress.completed_certificates
+    if completed:
+        elements.append({"tag": "hr"})
+        lines = []
+        for cert in completed:
+            lines.append(
+                f"- {cert.point.point_id}: Logic {cert.logic_review.score}/10, "
+                f"Feynman {cert.feynman_test.score}/10 "
+                f"`{cert.understanding_level}`"
+            )
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "**Completed:**\n" + "\n".join(lines),
+            },
+        })
+
+    # Failed points
+    if progress.failed_points:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**Failed:** {', '.join(progress.failed_points)}",
+            },
+        })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"Verification Progress: {progress.arxiv_id}"},
+            "template": "blue",
+        },
+        "elements": elements,
+    }
+
+
+def build_verification_result_card(
+    arxiv_id: str,
+    certificates: list,
+) -> dict:
+    """Build a Feishu card showing final verification results.
+
+    Args:
+        arxiv_id: arXiv paper ID.
+        certificates: List of UnderstandingCertificate objects.
+    """
+    elements = []
+
+    level_emoji = {
+        "critically_understood": "✅",
+        "mechanism_understood": "\U0001f9e0",
+        "argument_understood": "\U0001f4ac",
+        "partially_understood": "⚠️",
+        "not_understood": "❌",
+    }
+
+    # Summary table
+    lines = []
+    level_counts: dict[str, int] = {}
+    for cert in certificates:
+        emoji = level_emoji.get(cert.understanding_level, "?")
+        q = cert.point.normalized_question[:50]
+        lines.append(
+            f"| {emoji} {cert.point.point_id} | {q} | {cert.logic_review.score} | {cert.feynman_test.score} | `{cert.understanding_level}` |"
+        )
+        level_counts[cert.understanding_level] = level_counts.get(cert.understanding_level, 0) + 1
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": "| Point | Question | Logic | Feynman | Level |\n|---|---|---|---|---|\n" + "\n".join(lines),
+        },
+    })
+
+    # Level summary
+    if level_counts:
+        summary_parts = [f"{v} {k.replace('_', ' ')}" for k, v in sorted(level_counts.items())]
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "**Summary:** " + ", ".join(summary_parts),
+            },
+        })
+
+    # Gaps from all certificates
+    all_gaps = []
+    for cert in certificates:
+        for gap in cert.remaining_gaps[:2]:
+            all_gaps.append(f"- [{cert.point.point_id}] {gap}")
+    if all_gaps:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "**Key Gaps:**\n" + "\n".join(all_gaps[:10]),
+            },
+        })
+
+    # Follow-up
+    all_followup = []
+    for cert in certificates:
+        for fu in cert.recommended_followup[:1]:
+            all_followup.append(f"- {fu}")
+    if all_followup:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "**Recommended Follow-up:**\n" + "\n".join(all_followup[:5]),
+            },
+        })
+
+    # Action button
+    elements.append({
+        "tag": "action",
+        "actions": [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "Open on arXiv"},
+                "type": "default",
+                "url": f"https://arxiv.org/abs/{arxiv_id}",
+            },
+        ],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"Verification Result: {arxiv_id}"},
+            "template": "green" if any(c.understanding_level in ("critically_understood", "mechanism_understood") for c in certificates) else "yellow",
+        },
+        "elements": elements,
+    }
+
+
+def build_verifier_question_card(
+    question_id: str,
+    point_id: str,
+    question_text: str,
+    options: list[str] | None = None,
+) -> dict:
+    """Build a Feishu card asking the user for help on a verification gap.
+
+    Args:
+        question_id: Unique ID for this question (used for response routing).
+        point_id: The point ID that is stuck.
+        question_text: The specific question or gap description.
+        options: Optional list of choice labels for button buttons.
+    """
+    elements = []
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": f"**Point {point_id}** needs your input:",
+        },
+    })
+
+    elements.append({
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": question_text,
+        },
+    })
+
+    actions = []
+
+    if options:
+        for opt in options[:4]:
+            actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": opt},
+                "type": "default",
+                "value": {"type": "verifier_answer", "question_id": question_id, "response": opt},
+            })
+
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Skip"},
+        "type": "default",
+        "value": {"type": "verifier_skip_point", "question_id": question_id},
+    })
+
+    actions.append({
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "Abort Verification"},
+        "type": "danger",
+        "value": {"type": "verifier_abort", "question_id": question_id},
+    })
+
+    elements.append({
+        "tag": "action",
+        "actions": actions,
+    })
+
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": "Reply with text or click a button. Skips automatically after 5 minutes."},
+        ],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Verification Needs Your Input"},
+            "template": "orange",
+        },
+        "elements": elements,
+    }
+
+
+def build_verification_summary_inline(certificates: list[dict]) -> str:
+    """Generate a compact one-line summary for inclusion in /read output.
+
+    Args:
+        certificates: List of certificate dicts from DB.
+    """
+    if not certificates:
+        return ""
+
+    level_counts: dict[str, int] = {}
+    for cert in certificates:
+        level = cert.get("understanding_level", "not_understood")
+        level_counts[level] = level_counts.get(level, 0) + 1
+
+    parts = [f"{v} {k.replace('_', ' ')}" for k, v in sorted(level_counts.items())]
+    return f"Verification: {len(certificates)} points checked. " + ", ".join(parts) + "."

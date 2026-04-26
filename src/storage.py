@@ -12,7 +12,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -94,6 +94,28 @@ CREATE TABLE IF NOT EXISTS reading_notes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reading_notes_arxiv ON reading_notes(arxiv_id);
+
+CREATE TABLE IF NOT EXISTS understanding_certificates (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    arxiv_id        TEXT NOT NULL,
+    point_id        TEXT NOT NULL,
+    point_type      TEXT NOT NULL DEFAULT '',
+    question        TEXT NOT NULL DEFAULT '',
+    claim           TEXT NOT NULL DEFAULT '',
+    logic_score     INTEGER NOT NULL DEFAULT 0,
+    feynman_score   INTEGER NOT NULL DEFAULT 0,
+    overall_score   INTEGER NOT NULL DEFAULT 0,
+    understanding_level TEXT NOT NULL DEFAULT '',
+    verified        INTEGER NOT NULL DEFAULT 0,
+    certificate_json TEXT NOT NULL DEFAULT '',
+    full_text_hash  TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(arxiv_id, point_id, full_text_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_understanding_certificates_arxiv ON understanding_certificates(arxiv_id);
+CREATE INDEX IF NOT EXISTS idx_understanding_certificates_hash ON understanding_certificates(full_text_hash);
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
     chat_id     TEXT PRIMARY KEY,
@@ -771,6 +793,30 @@ _MIGRATIONS: dict[int, str] = {
         updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    5: """
+    CREATE TABLE IF NOT EXISTS understanding_certificates (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        arxiv_id        TEXT NOT NULL,
+        point_id        TEXT NOT NULL,
+        point_type      TEXT NOT NULL DEFAULT '',
+        question        TEXT NOT NULL DEFAULT '',
+        claim           TEXT NOT NULL DEFAULT '',
+        logic_score     INTEGER NOT NULL DEFAULT 0,
+        feynman_score   INTEGER NOT NULL DEFAULT 0,
+        overall_score   INTEGER NOT NULL DEFAULT 0,
+        understanding_level TEXT NOT NULL DEFAULT '',
+        verified        INTEGER NOT NULL DEFAULT 0,
+        certificate_json TEXT NOT NULL DEFAULT '',
+        full_text_hash  TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(arxiv_id, point_id, full_text_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_understanding_certificates_arxiv
+    ON understanding_certificates(arxiv_id);
+    CREATE INDEX IF NOT EXISTS idx_understanding_certificates_hash
+    ON understanding_certificates(full_text_hash);
+    """,
 }
 
 
@@ -898,3 +944,86 @@ def delete_build_session(
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+# ── Understanding certificates CRUD ────────────────────────────────────
+
+
+def upsert_understanding_certificate(
+    conn: sqlite3.Connection,
+    arxiv_id: str,
+    point_id: str,
+    point_type: str,
+    question: str,
+    claim: str,
+    logic_score: int,
+    feynman_score: int,
+    overall_score: int,
+    understanding_level: str,
+    verified: bool,
+    certificate_json: str,
+    full_text_hash: str,
+) -> None:
+    """Insert or update an understanding certificate."""
+    conn.execute(
+        """INSERT INTO understanding_certificates
+           (arxiv_id, point_id, point_type, question, claim,
+            logic_score, feynman_score, overall_score, understanding_level,
+            verified, certificate_json, full_text_hash, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(arxiv_id, point_id, full_text_hash) DO UPDATE SET
+             point_type = excluded.point_type,
+             question = excluded.question,
+             claim = excluded.claim,
+             logic_score = excluded.logic_score,
+             feynman_score = excluded.feynman_score,
+             overall_score = excluded.overall_score,
+             understanding_level = excluded.understanding_level,
+             verified = excluded.verified,
+             certificate_json = excluded.certificate_json,
+             updated_at = datetime('now')""",
+        (arxiv_id, point_id, point_type, question, claim,
+         logic_score, feynman_score, overall_score, understanding_level,
+         int(verified), certificate_json, full_text_hash),
+    )
+    conn.commit()
+
+
+def get_certificates_for_paper(
+    conn: sqlite3.Connection,
+    arxiv_id: str,
+) -> list[dict]:
+    """Get all understanding certificates for a paper."""
+    rows = conn.execute(
+        "SELECT * FROM understanding_certificates WHERE arxiv_id = ? ORDER BY created_at",
+        (arxiv_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_latest_certificate(
+    conn: sqlite3.Connection,
+    arxiv_id: str,
+    point_id: str,
+) -> dict | None:
+    """Get the latest certificate for a specific point."""
+    row = conn.execute(
+        """SELECT * FROM understanding_certificates
+           WHERE arxiv_id = ? AND point_id = ?
+           ORDER BY created_at DESC LIMIT 1""",
+        (arxiv_id, point_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def has_certificates_for_paper(
+    conn: sqlite3.Connection,
+    arxiv_id: str,
+    full_text_hash: str,
+) -> bool:
+    """Check if certificates exist for this paper version."""
+    row = conn.execute(
+        "SELECT 1 FROM understanding_certificates WHERE arxiv_id = ? AND full_text_hash = ? LIMIT 1",
+        (arxiv_id, full_text_hash),
+    ).fetchone()
+    return row is not None

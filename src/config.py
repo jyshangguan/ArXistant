@@ -75,6 +75,19 @@ class Settings:
     session_max_messages: int = 20
     report_cron: str = "30 10 * * 1-5"
 
+    # Understanding Verifier
+    verifier_enabled: bool = True
+    verifier_max_points: int = 5
+    verifier_max_iterations: int = 1
+    verifier_run_feynman: bool = True
+    verifier_feynman_importance_threshold: int = 4
+    verifier_logic_pass_threshold: int = 8
+    verifier_feynman_pass_threshold: int = 8
+    verifier_max_context_chars: int = 20000
+    verifier_store_certificates: bool = True
+    verifier_ask_user_on_gaps: bool = True
+    verifier_progress_interval: int = 30
+
 
 def load_topics(path: str | Path | None = None) -> list[Topic]:
     """Load topic definitions from YAML."""
@@ -101,6 +114,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
     reading = data.get("reading", {})
     feishu = data.get("feishu", {})
     bot = data.get("bot", {})
+    verifier = data.get("verifier", {})
 
     # Allow env-var overrides for secrets and model
     api_key = os.getenv("GLM_API_KEY", "")
@@ -133,4 +147,15 @@ def load_settings(path: str | Path | None = None) -> Settings:
         target_chat_id=bot.get("target_chat_id", ""),
         session_max_messages=bot.get("session_max_messages", 20),
         report_cron=bot.get("report_cron", "30 10 * * 1-5"),
+        verifier_enabled=verifier.get("enabled", True),
+        verifier_max_points=verifier.get("max_points", 5),
+        verifier_max_iterations=verifier.get("max_iterations", 1),
+        verifier_run_feynman=verifier.get("run_feynman", True),
+        verifier_feynman_importance_threshold=verifier.get("feynman_importance_threshold", 4),
+        verifier_logic_pass_threshold=verifier.get("logic_pass_threshold", 8),
+        verifier_feynman_pass_threshold=verifier.get("feynman_pass_threshold", 8),
+        verifier_max_context_chars=verifier.get("max_context_chars", 20000),
+        verifier_store_certificates=verifier.get("store_certificates", True),
+        verifier_ask_user_on_gaps=verifier.get("ask_user_on_gaps", True),
+        verifier_progress_interval=verifier.get("progress_interval", 30),
     )

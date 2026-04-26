@@ -61,6 +61,67 @@ async def _ensure_paper_scanned(
                 boost_weight(db, node.id, amount=1.0)
 
 
+async def _start_background_verification(
+    arxiv_id: str,
+    title: str,
+    settings: Settings,
+    db: sqlite3.Connection,
+    feishu,
+    chat_id: str,
+) -> None:
+    """Start background understanding verification after /read.
+
+    Checks for cached certificates first. If none found, fetches full paper
+    context and launches the async verifier runner.
+    """
+    from ..tools.html_parser import fetch_and_parse
+    from ..storage import has_certificates_for_paper
+
+    # Fetch parsed paper for full context
+    loop = asyncio.get_event_loop()
+    parsed = await loop.run_in_executor(
+        None,
+        lambda: fetch_and_parse(arxiv_id, timeout=getattr(settings, "html_timeout", 30)),
+    )
+
+    # Check cache
+    if has_certificates_for_paper(db, arxiv_id, parsed.full_text_hash):
+        from ..storage import get_certificates_for_paper
+        from .card_builder import build_verification_summary_inline
+        existing = get_certificates_for_paper(db, arxiv_id)
+        if existing:
+            summary = build_verification_summary_inline(existing)
+            await feishu.send_text(chat_id, f"Verification already complete for this version.\n{summary}")
+            return
+
+    # Build paper context from all sections (not just executive sections)
+    paper_context = _build_verifier_context(parsed)
+
+    # Start verification in background (non-blocking)
+    from .verifier_runner import start_verification
+    await start_verification(
+        arxiv_id=arxiv_id,
+        title=title,
+        paper_context=paper_context,
+        settings=settings,
+        db=db,
+        feishu=feishu,
+        chat_id=chat_id,
+    )
+
+
+def _build_verifier_context(parsed) -> str:
+    """Build paper context for the verifier from all available sections."""
+    parts = []
+    if parsed.abstract:
+        parts.append(f"## Abstract\n{parsed.abstract}\n\n")
+    for section in parsed.sections:
+        text = section.get("text", "").strip()
+        if text:
+            parts.append(f"## {section['title']}\n{text}\n\n")
+    return "".join(parts)
+
+
 async def handle_command(
     cmd,
     chat_id: str,
@@ -131,11 +192,38 @@ async def handle_card_callback(
     db: sqlite3.Connection,
     settings: Settings,
     req_id: str = "",
+    question_id: str = "",
+    response: str = "",
 ) -> None:
     """Handle interactive card button callbacks."""
     from .card_builder import build_scan_result_card, build_reading_note_card
 
     try:
+        if callback_type == "verifier_answer":
+            from .verifier_runner import resolve_user_response
+            success = resolve_user_response(question_id, response)
+            if not success:
+                await feishu.send_text(chat_id, "This question has expired or was already answered.")
+            else:
+                await feishu.send_text(chat_id, "Thanks! Continuing verification...")
+            return
+
+        if callback_type == "verifier_skip_point":
+            from .verifier_runner import resolve_user_response
+            resolve_user_response(question_id, "__SKIP__")
+            await feishu.send_text(chat_id, "Skipping this point.")
+            return
+
+        if callback_type == "verifier_abort":
+            from .verifier_runner import _active_verifications
+            task = _active_verifications.get(chat_id)
+            if task and not task.done():
+                task.cancel()
+                await feishu.send_text(chat_id, "Verification cancelled.")
+            else:
+                await feishu.send_text(chat_id, "No active verification to cancel.")
+            return
+
         if callback_type == "read":
             from ..tools.read_paper import read_paper
             from .preference_store import boost_weight, ensure_preference
@@ -168,6 +256,15 @@ async def handle_card_callback(
 
             card = build_reading_note_card(note)
             await feishu.send_card(chat_id, card)
+
+            # Start verification in background (fire-and-forget)
+            if getattr(settings, "verifier_enabled", True):
+                try:
+                    asyncio.create_task(
+                        _start_background_verification(arxiv_id, note.title, settings, db, feishu, chat_id)
+                    )
+                except Exception as e:
+                    logger.warning("Verification failed to start for %s: %s", arxiv_id, e)
 
         elif callback_type == "scan":
             from ..tools.scan_paper import scan_paper
@@ -322,6 +419,15 @@ async def _handle_read(
 
     card = build_reading_note_card(note)
     await feishu.reply_card(message_id, card)
+
+    # Start verification in background (fire-and-forget)
+    if getattr(settings, "verifier_enabled", True):
+        try:
+            asyncio.create_task(
+                _start_background_verification(arxiv_id, note.title, settings, db, feishu, chat_id)
+            )
+        except Exception as e:
+            logger.warning("Verification failed to start for %s: %s", arxiv_id, e)
 
 
 async def _handle_fetch(

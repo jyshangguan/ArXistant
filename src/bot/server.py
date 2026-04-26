@@ -151,6 +151,15 @@ def _do_handle_message(data: P2ImMessageReceiveV1) -> None:
 
     logger.info("Received message from %s: %s", chat_id, user_text[:100])
 
+    # Check if this is a reply to a pending verifier question
+    from .verifier_runner import _user_responses
+    if _user_responses:
+        for qid, future in list(_user_responses.items()):
+            if not future.done():
+                future.set_result(user_text)
+                logger.info("Routed text reply to verifier question %s", qid)
+                return
+
     cmd = parse_command(user_text)
     req_id = new_request_id()
 
@@ -182,6 +191,8 @@ def _handle_card_action(data: P2CardActionTrigger):
 
         callback_type = action_value.get("type", "")
         arxiv_id = action_value.get("arxiv_id", "")
+        question_id = action_value.get("question_id", "")
+        response = action_value.get("response", "")
 
         # chat_id comes from event.context.open_chat_id, not from action.value
         chat_id = ""
@@ -197,7 +208,8 @@ def _handle_card_action(data: P2CardActionTrigger):
 
         if _main_loop is not None:
             future = asyncio.run_coroutine_threadsafe(
-                _async_handle_card_callback(callback_type, arxiv_id, chat_id, req_id),
+                _async_handle_card_callback(callback_type, arxiv_id, chat_id, req_id,
+                                           question_id=question_id, response=response),
                 _main_loop,
             )
             future.add_done_callback(_log_future_error)
@@ -217,9 +229,11 @@ async def _async_handle_command(cmd, chat_id: str, message_id: str, raw_text: st
     await handle_command(cmd, chat_id, message_id, raw_text, get_feishu(), get_db(), get_app_settings(), req_id=req_id)
 
 
-async def _async_handle_card_callback(callback_type: str, arxiv_id: str, chat_id: str, req_id: str = "") -> None:
+async def _async_handle_card_callback(callback_type: str, arxiv_id: str, chat_id: str, req_id: str = "",
+                                      question_id: str = "", response: str = "") -> None:
     from .command_handler import handle_card_callback
-    await handle_card_callback(callback_type, arxiv_id, chat_id, get_feishu(), get_db(), get_app_settings(), req_id=req_id)
+    await handle_card_callback(callback_type, arxiv_id, chat_id, get_feishu(), get_db(), get_app_settings(),
+                              req_id=req_id, question_id=question_id, response=response)
 
 
 # ── Main entry point ────────────────────────────────────────────────────

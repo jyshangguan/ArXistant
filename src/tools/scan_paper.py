@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
 
 import arxiv
@@ -12,62 +10,13 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 
 from ..config import Settings
 from ..llm_client import create_client, chat_completion
+from ..storage import insert_paper, paper_exists
 from ..tree import format_tree_for_prompt
+from .json_utils import parse_llm_json
 from .prompts import SCAN_PAPER_PROMPT
 from .types import ScanResult, TreeLink
 
 logger = logging.getLogger(__name__)
-
-
-def _sanitize_json_escapes(s: str) -> str:
-    """Fix invalid JSON escape sequences (e.g. LaTeX \\lambda, \\odot) by doubling the backslash."""
-    return re.sub(
-        r"\\(?![\\\"/bfnrtu])",
-        r"\\\\",
-        s,
-    )
-
-
-def _parse_scan_response(text: str) -> dict:
-    """Extract JSON from LLM response for scan_paper."""
-    text = text.strip()
-
-    # Try direct parse
-    try:
-        result = json.loads(text)
-        if isinstance(result, dict):
-            return result
-    except json.JSONDecodeError:
-        pass
-
-    # Try code fences
-    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
-    if fence_match:
-        try:
-            result = json.loads(fence_match.group(1).strip())
-            if isinstance(result, dict):
-                return result
-        except json.JSONDecodeError:
-            pass
-
-    # Try brace extraction with escape sanitization (handles LaTeX in LLM output)
-    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if brace_match:
-        try:
-            result = json.loads(brace_match.group(0))
-            if isinstance(result, dict):
-                return result
-        except json.JSONDecodeError:
-            sanitized = _sanitize_json_escapes(brace_match.group(0))
-            try:
-                result = json.loads(sanitized)
-                if isinstance(result, dict):
-                    return result
-            except json.JSONDecodeError:
-                pass
-
-    logger.warning("Could not parse scan response as JSON")
-    return {}
 
 
 def scan_paper(
@@ -94,6 +43,20 @@ def scan_paper(
         raise ValueError(f"Paper {arxiv_id} not found on arXiv")
 
     entry = results[0]
+
+    # Ensure paper exists in DB
+    if not paper_exists(db_conn, arxiv_id):
+        insert_paper(db_conn, {
+            "arxiv_id": arxiv_id,
+            "title": entry.title,
+            "authors": ", ".join(str(a) for a in entry.authors),
+            "abstract": entry.summary,
+            "published": entry.published.isoformat() if entry.published else "",
+            "categories": ", ".join(entry.categories),
+            "primary_category": entry.primary_category,
+            "pdf_url": entry.pdf_url,
+            "entry_url": entry.entry_id,
+        })
 
     # 2. Load knowledge tree
     tree_prompt = format_tree_for_prompt(db_conn)
@@ -143,7 +106,7 @@ def scan_paper(
         raise RuntimeError(f"Failed to get LLM response for scan of {arxiv_id}")
 
     # 5. Parse response
-    parsed = _parse_scan_response(response_text)
+    parsed = parse_llm_json(response_text)
 
     quality_score = max(1, min(5, int(parsed.get("quality_score", 1))))
     quality_reason = parsed.get("quality_reason", "")

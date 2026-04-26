@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.tools.scan_paper import scan_paper, _parse_scan_response
+from src.tools.scan_paper import scan_paper
+from src.tools.json_utils import parse_llm_json as _parse_scan_response
 from src.tools.types import ScanResult, TreeLink
 
 

@@ -51,6 +51,7 @@ src/
 │   ├── session_store.py   chat history
 │   ├── debug.py           error recording
 │   ├── build_engine.py    interactive tree building
+│   ├── verifier_runner.py async verification orchestration
 │   └── prompts.py         bot system prompt
 └── tools/             paper-level analysis tools
     ├── scan_paper.py      quick relevance scan
@@ -58,6 +59,10 @@ src/
     ├── html_parser.py     arXiv HTML → structured text
     ├── types.py           data classes for tool outputs
     ├── prompts.py         tool system prompts
+    ├── json_utils.py      shared LLM JSON parsing
+    ├── understanding_types.py   verifier data models
+    ├── understanding_prompts.py verifier LLM prompts
+    ├── understanding_verifier.py verifier pipeline
     ├── search_references.py  (stub)
     └── analyze_figure.py     (stub)
 ```
@@ -305,7 +310,7 @@ FEISHU_VERIFICATION_TOKEN=...
 
 ## Database Schema
 
-Schema version: **4**. Tables:
+Schema version: **5**. Tables:
 
 | Table | Purpose |
 |-------|---------|
@@ -319,6 +324,7 @@ Schema version: **4**. Tables:
 | `session_messages` | Chat history (id, chat_id, role, content, created_at) |
 | `user_preferences` | Learned preference weights (id, tree_node_id UNIQUE, weight REAL, interaction_count, updated_at) |
 | `build_sessions` | Tree building state (chat_id PK, stage, interests, tree_yaml, created_at, updated_at) |
+| `understanding_certificates` | Verification results (arxiv_id, point_id, point_type, question, claim, logic_score, feynman_score, overall_score, understanding_level, verified, certificate_json, full_text_hash, created_at, updated_at; UNIQUE on arxiv_id+point_id+full_text_hash) |
 
 **reading_notes column reuse mapping** (non-obvious):
 - DB `summary` stores tool's `background`

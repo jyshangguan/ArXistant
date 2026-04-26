@@ -14,6 +14,7 @@ from ..llm_client import create_client, chat_completion
 from ..storage import get_paper, get_reading_note, upsert_reading_note
 from ..tree import format_tree_for_prompt
 from .html_parser import fetch_and_parse, PaperHtmlUnavailableError
+from .json_utils import parse_llm_json
 from .prompts import READ_PAPER_PROMPT
 from .types import ReadingNote, TreeConnection
 
@@ -87,56 +88,6 @@ def _select_executive_sections(
 
     return "".join(parts)
 
-
-def _sanitize_json_escapes(s: str) -> str:
-    """Fix invalid JSON escape sequences (e.g. LaTeX \\lambda, \\odot) by doubling the backslash."""
-    return re.sub(
-        r"\\(?![\\\"/bfnrtu])",
-        r"\\\\",
-        s,
-    )
-
-
-def _parse_read_response(text: str) -> dict:
-    """Extract JSON from LLM response for read_paper."""
-    text = text.strip()
-
-    # Try direct parse
-    try:
-        result = json.loads(text)
-        if isinstance(result, dict):
-            return result
-    except json.JSONDecodeError:
-        pass
-
-    # Try code fences
-    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
-    if fence_match:
-        try:
-            result = json.loads(fence_match.group(1).strip())
-            if isinstance(result, dict):
-                return result
-        except json.JSONDecodeError:
-            pass
-
-    # Try brace extraction with escape sanitization (handles LaTeX in LLM output)
-    brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-    if brace_match:
-        try:
-            result = json.loads(brace_match.group(0))
-            if isinstance(result, dict):
-                return result
-        except json.JSONDecodeError:
-            sanitized = _sanitize_json_escapes(brace_match.group(0))
-            try:
-                result = json.loads(sanitized)
-                if isinstance(result, dict):
-                    return result
-            except json.JSONDecodeError:
-                pass
-
-    logger.warning("Could not parse read_paper response as JSON")
-    return {}
 
 
 def _truncate_text(text: str, max_chars: int) -> str:
@@ -269,7 +220,7 @@ def read_paper(
         logger.warning("LLM returned empty response for read_paper %s", arxiv_id)
 
     # 8. Parse response
-    parsed_response = _parse_read_response(response_text)
+    parsed_response = parse_llm_json(response_text)
 
     if not parsed_response:
         logger.warning("Failed to parse read_paper response for %s. Raw text (first 500 chars): %s",
