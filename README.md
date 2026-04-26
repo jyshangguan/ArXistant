@@ -139,4 +139,4 @@ python -m src.bot.server
 
 ## License
 
-Private project.
+[MIT](LICENSE)

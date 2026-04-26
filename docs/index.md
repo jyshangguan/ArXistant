@@ -136,4 +136,4 @@ Full developer guide: [doc/DOCS.md](../doc/DOCS.md)
 
 ## License
 
-Private project.
+[MIT](LICENSE)
