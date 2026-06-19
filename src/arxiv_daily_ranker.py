@@ -3,7 +3,7 @@
 Daily arXiv Astro-ph Paper Fetcher and Ranker
 
 Usage:
-    python arxiv_daily_ranker.py --interests-file interests.txt --output output.md
+    python src/arxiv_daily_ranker.py --interests-file local/interests.txt --output local/output.md
 
 The interests file should contain keywords, paper titles, or research topics
 that describe your research interests, one per line or as paragraphs.
@@ -168,8 +168,8 @@ def format_paper_list(scored_papers, date_str=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch and rank arXiv astro-ph papers')
-    parser.add_argument('--interests-file', default='interests.txt', help='Path to interests file')
-    parser.add_argument('--output', default='arxiv_ranked.md', help='Output markdown file')
+    parser.add_argument('--interests-file', default='local/interests.txt', help='Path to interests file')
+    parser.add_argument('--output', default='local/arxiv_ranked.md', help='Output markdown file')
     parser.add_argument('--date', help='Date to fetch (YYYYMMDD), default yesterday')
     parser.add_argument('--json-output', help='Optional JSON output path')
     args = parser.parse_args()

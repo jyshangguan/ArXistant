@@ -872,6 +872,6 @@ import os
 
 if __name__ == '__main__':
     import sys
-    db = sys.argv[1] if len(sys.argv) > 1 else 'arxiv_papers.db'
-    interests = sys.argv[2] if len(sys.argv) > 2 else 'interests.txt'
+    db = sys.argv[1] if len(sys.argv) > 1 else 'local/arxiv_papers.db'
+    interests = sys.argv[2] if len(sys.argv) > 2 else 'local/interests.txt'
     regenerate_interests(db, interests)

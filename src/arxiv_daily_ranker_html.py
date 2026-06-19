@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Daily arXiv Astro-ph Paper Fetcher and Ranker - HTML Output with Expandable Abstracts
+Daily arXiv Astro-ph Paper Fetcher and Ranker - HTML Output with Toggle Abstracts
 
 Usage:
-    python arxiv_daily_ranker_html.py --interests-file interests.txt --output output.html
+    python src/arxiv_daily_ranker_html.py --interests-file local/interests.txt --output local/output.html
 """
 
 import argparse
@@ -343,8 +343,8 @@ def format_paper_list_html(scored_papers, date_str=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch and rank arXiv astro-ph papers')
-    parser.add_argument('--interests-file', default='interests.txt', help='Path to interests file')
-    parser.add_argument('--output', default='arxiv_ranked.html', help='Output HTML file')
+    parser.add_argument('--interests-file', default='local/interests.txt', help='Path to interests file')
+    parser.add_argument('--output', default='local/arxiv_ranked.html', help='Output HTML file')
     parser.add_argument('--date', help='Date to fetch (YYYYMMDD), default yesterday')
     parser.add_argument('--json-output', help='Optional JSON output path')
     args = parser.parse_args()

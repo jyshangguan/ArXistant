@@ -20,14 +20,8 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Generated daily reports (recreated at runtime)
-arxiv_ranked*.html
-arxiv_ranked*.json
-arxiv_ranked*.md
-arxiv_papers_list.md
-arxiv_today.xml
-arxiv_papers.json
-server.log
+# All local data (database, generated reports, bib, metadata, logs, etc.)
+local/
 
-# One-off scripts
-fix_publications.py
+# One-off scripts kept in src but not meant to be run regularly
+src/fix_publications.py

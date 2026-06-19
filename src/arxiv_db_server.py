@@ -4,26 +4,28 @@ Lightweight HTTP server for arXiv paper database + My Publications database.
 Serves HTML pages and provides REST API for SQLite database.
 
 Usage:
-    python arxiv_db_server.py
+    python src/arxiv_db_server.py
     # Then open http://localhost:8765 in your browser
 """
 
 import json
 import os
 import sqlite3
+import sys
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arxiv_papers.db")
-DAILY_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arxiv_ranked_personalized.html")
-PUBLICATIONS_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shangguan_papers_metadata.json")
-BIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scix_library_20.bib")
-INTERESTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interests.txt")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+DB_PATH = os.path.join(PROJECT_ROOT, "local", "arxiv_papers.db")
+DAILY_HTML = os.path.join(PROJECT_ROOT, "local", "arxiv_ranked_personalized.html")
+PUBLICATIONS_JSON = os.path.join(PROJECT_ROOT, "local", "shangguan_papers_metadata.json")
+BIB_PATH = os.path.join(PROJECT_ROOT, "local", "scix_library_20.bib")
+INTERESTS_FILE = os.path.join(PROJECT_ROOT, "local", "interests.txt")
 
 # Import the weighted keyword extraction pipeline
-import sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
 import interest_generator
 
 
