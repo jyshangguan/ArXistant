@@ -1,7 +1,3 @@
-# Secrets
-.env
-Claude.local.md
-
 # Python
 __pycache__/
 *.py[cod]
@@ -24,9 +20,14 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Local data (generated at runtime)
-data/
-reports/
+# Generated daily reports (recreated at runtime)
+arxiv_ranked*.html
+arxiv_ranked*.json
+arxiv_ranked*.md
+arxiv_papers_list.md
+arxiv_today.xml
+arxiv_papers.json
+server.log
 
-# Dev notes (tracked in separate local repo)
-dev/
+# One-off scripts
+fix_publications.py
