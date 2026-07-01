@@ -391,7 +391,7 @@ def format_paper_list_html(scored_papers, date_str=None):
             abstract_id = f"abs-{paper['id']}".replace('.', '_')
 
             lines.append('  <div class="paper">')
-            lines.append(f'    <h2>{i}. <span class="arxiv-id"><a href="{arxiv_url}" target="_blank">arXiv:{paper["id"]}</a></span> — <a href="{arxiv_url}" target="_blank">{title_escaped}</a></h2>')
+            lines.append(f'    <h2>{i}. <span class="arxiv-id"><a href="{arxiv_url}" target="_blank">arXiv:{paper["id"]}</a></span> — <a href="https://alphaxiv.org/abs/{paper["id"]}" target="_blank">{title_escaped}</a></h2>')
             if norm_score > 0:
                 lines.append(f'    <span class="score">Relevance: {norm_score}/100</span>')
             lines.append(f'    <p class="authors"><strong>Authors:</strong> {author_str}</p>')
