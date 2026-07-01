@@ -20,6 +20,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DB_PATH = os.path.join(PROJECT_ROOT, "local", "arxiv_papers.db")
 DAILY_HTML = os.path.join(PROJECT_ROOT, "local", "arxiv_ranked_personalized.html")
+RECENT_HTML = os.path.join(PROJECT_ROOT, "local", "arxiv_recent_personalized.html")
 PUBLICATIONS_JSON = os.path.join(PROJECT_ROOT, "local", "shangguan_papers_metadata.json")
 BIB_PATH = os.path.join(PROJECT_ROOT, "local", "scix_library_20.bib")
 ML_FEATURES_HTML = os.path.join(PROJECT_ROOT, "local", "ml_features.html")
@@ -306,6 +307,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_html(html)
             else:
                 self._send_text("Daily paper list not found. Run the ranker first.", 404)
+
+        elif path == "/recent.html":
+            if os.path.exists(RECENT_HTML):
+                with open(RECENT_HTML, 'r', encoding='utf-8') as f:
+                    html = f.read()
+                if '<!-- save-button-embedded -->' not in html:
+                    html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
+                self._send_html(html)
+            else:
+                self._send_text("Recent paper list not found. Run the ranker with --recent first.", 404)
 
         elif path == "/database.html":
             self._send_html(DATABASE_VIEWER_HTML)
@@ -642,6 +653,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
 <body>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
+    <a href="/recent.html">📅 Recent Papers</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
   </div>
@@ -767,6 +779,7 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
 <body>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
+    <a href="/recent.html">📅 Recent Papers</a>
     <a href="/database.html">📂 Saved Papers</a>
     <a href="/ml-features.html">🧠 ML Features</a>
   </div>
@@ -837,7 +850,8 @@ def run_server(port=8765):
     init_db()
     server = HTTPServer(("localhost", port), Handler)
     print(f"Server running at http://localhost:{port}")
-    print(f"  Daily papers:    http://localhost:{port}/")
+    print(f"  Daily papers:     http://localhost:{port}/")
+    print(f"  Recent papers:    http://localhost:{port}/recent.html")
     print(f"  Saved papers:     http://localhost:{port}/database.html")
     print(f"  My publications:  http://localhost:{port}/publications.html")
     print(f"  My ML features:   http://localhost:{port}/ml-features.html")

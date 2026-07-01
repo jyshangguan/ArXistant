@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -178,15 +179,85 @@ def fetch_arxiv_papers_by_date(date_str):
     return papers
 
 
-def fetch_arxiv_papers(date_str=None):
-    """Fetch astro-ph papers. If date_str is None, fetch from arXiv 'new' page.
-    If date_str is provided, use submittedDate API query."""
+def fetch_arxiv_papers(date_str=None, recent=False):
+    """Fetch astro-ph papers. If recent is True, fetch from arXiv 'recent' page.
+    If date_str is provided, use submittedDate API query.
+    If date_str is None and recent is False, fetch from arXiv 'new' page."""
     if date_str is not None:
         return fetch_arxiv_papers_by_date(date_str)
     
+    if recent:
+        # Fetch from arXiv 'recent' page with show=2000 to get all papers
+        page_url = "https://arxiv.org/list/astro-ph/recent?show=2000"
+        req = urllib.request.Request(page_url, headers={'User-Agent': 'Mozilla/5.0'})
+        resp = urllib.request.urlopen(req)
+        html = resp.read().decode('utf-8')
+        
+        # Extract all arXiv IDs in order
+        id_pattern = re.compile(r'href\s*=\s*"/abs/(\d{4}\.\d{5,})"')
+        all_ids = []
+        for match in id_pattern.finditer(html):
+            paper_id = match.group(1)
+            if paper_id not in all_ids:  # deduplicate
+                all_ids.append(paper_id)
+        
+        if not all_ids:
+            print("Warning: no paper IDs found on arXiv recent page")
+            return []
+        
+        print(f"Found {len(all_ids)} paper IDs on arXiv recent page")
+        
+        # Fetch metadata via API in batches
+        papers = []
+        batch_size = 100
+        ns = {'atom': 'http://www.w3.org/2005/Atom'}
+        
+        for i in range(0, len(all_ids), batch_size):
+            batch = all_ids[i:i+batch_size]
+            id_list = ','.join(batch)
+            api_url = (
+                f"https://export.arxiv.org/api/query?"
+                f"id_list={id_list}&max_results={len(batch)}"
+            )
+            time.sleep(0.5)
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+            resp = urllib.request.urlopen(req)
+            data = resp.read().decode('utf-8')
+            
+            root = ET.fromstring(data)
+            entries = root.findall('atom:entry', ns)
+            
+            for entry in entries:
+                id_elem = entry.find('atom:id', ns)
+                title_elem = entry.find('atom:title', ns)
+                summary_elem = entry.find('atom:summary', ns)
+                
+                arxiv_id = id_elem.text if id_elem is not None else ''
+                short_id = arxiv_id.split('/')[-1].replace('abs/', '') if arxiv_id else ''
+                short_id = re.sub(r'v\d+$', '', short_id)
+                
+                title = title_elem.text.strip() if title_elem is not None else ''
+                abstract = summary_elem.text.strip() if summary_elem is not None else ''
+                
+                authors = []
+                for author in entry.findall('atom:author', ns):
+                    name = author.find('atom:name', ns)
+                    if name is not None:
+                        authors.append(name.text)
+                
+                papers.append({
+                    'id': short_id,
+                    'title': title,
+                    'authors': authors,
+                    'abstract': abstract,
+                    'section': 'Recent submissions'
+                })
+        
+        return papers
+    
     # Fetch exact paper list from arXiv 'new' page
-    new_page_url = "https://arxiv.org/list/astro-ph/new"
-    req = urllib.request.Request(new_page_url, headers={'User-Agent': 'Mozilla/5.0'})
+    page_url = "https://arxiv.org/list/astro-ph/new"
+    req = urllib.request.Request(page_url, headers={'User-Agent': 'Mozilla/5.0'})
     resp = urllib.request.urlopen(req)
     html = resp.read().decode('utf-8')
     
@@ -244,6 +315,7 @@ def fetch_arxiv_papers(date_str=None):
             f"https://export.arxiv.org/api/query?"
             f"id_list={id_list}&max_results={len(batch)}"
         )
+        time.sleep(0.5)
         req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
         resp = urllib.request.urlopen(req)
         data = resp.read().decode('utf-8')
@@ -309,10 +381,19 @@ def escape_html(text):
     return html_module.escape(text)
 
 
-def format_paper_list_html(scored_papers, date_str=None):
+def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     """Generate HTML output with toggle-abstract buttons, grouped by section."""
     if date_str is None:
         date_str = datetime.now().strftime('%Y-%m-%d')
+
+    if page_type == 'recent':
+        title_text = f'arXiv Astro-ph Recent Papers — {date_str}'
+        h1_text = f'arXiv Astro-ph Recent Papers — {date_str}'
+        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/daily.html" target="_blank">📅 Daily Papers</a>'
+    else:
+        title_text = f'arXiv Astro-ph New Papers — {date_str}'
+        h1_text = f'arXiv Astro-ph New Papers — {date_str}'
+        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/recent.html" target="_blank">📅 Recent Papers</a>'
 
     # Group papers by section
     sections = {}
@@ -328,7 +409,7 @@ def format_paper_list_html(scored_papers, date_str=None):
     lines.append('<head>')
     lines.append('  <meta charset="UTF-8">')
     lines.append('  <meta name="viewport" content="width=device-width, initial-scale=1.0">')
-    lines.append(f'  <title>arXiv Astro-ph New Papers — {date_str}</title>')
+    lines.append(f'  <title>{title_text}</title>')
     lines.append('  <style>')
     lines.append('    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }')
     lines.append('    h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }')
@@ -362,17 +443,22 @@ def format_paper_list_html(scored_papers, date_str=None):
     lines.append('  </style>')
     lines.append('</head>')
     lines.append('<body>')
-    lines.append(f'  <h1>arXiv Astro-ph New Papers — {date_str}</h1>')
+    lines.append(f'  <h1>{h1_text}</h1>')
     lines.append('  <div class="nav-bar">')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html" target="_blank">📚 My Database</a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html" target="_blank">📄 My Publications</a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html" target="_blank">🧠 ML Features</a>')
+    lines.append(nav_extra)
     lines.append('  </div>')
     lines.append(f'  <p class="total">Total papers: {len(scored_papers)}</p>')
 
-    for section in SECTION_ORDER:
-        if section not in sections:
-            continue
+    # Build ordered section list: SECTION_ORDER first, then any remaining sections
+    ordered_sections = [s for s in SECTION_ORDER if s in sections]
+    for s in sections:
+        if s not in ordered_sections:
+            ordered_sections.append(s)
+
+    for section in ordered_sections:
         section_papers = sections[section]
         lines.append(f'  <h2 class="section-header">{section} ({len(section_papers)} entries)</h2>')
 
@@ -403,6 +489,7 @@ def format_paper_list_html(scored_papers, date_str=None):
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html" target="_blank">📚 My Database</a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html" target="_blank">📄 My Publications</a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html" target="_blank">🧠 ML Features</a>')
+    lines.append(nav_extra)
     lines.append('  </div>')
     lines.append('  <button class="scroll-top" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="To the top">▲</button>')
     lines.append(SAVE_BUTTON_SCRIPT)
@@ -414,6 +501,7 @@ def format_paper_list_html(scored_papers, date_str=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch and rank arXiv astro-ph papers')
+    parser.add_argument('--recent', action='store_true', help='Fetch from arXiv recent page (last ~5 days) instead of new page')
     parser.add_argument('--interests-file', default='local/interests.txt', help='DEPRECATED: no longer used')
     parser.add_argument('--output', default='local/arxiv_ranked.html', help='Output HTML file')
     parser.add_argument('--date', help='Date to fetch (YYYYMMDD), default yesterday')
@@ -421,8 +509,12 @@ def main():
     parser.add_argument('--ml', action='store_true', help='DEPRECATED: ML is always used')
     args = parser.parse_args()
     
-    print(f"Fetching arXiv papers for: {args.date or 'today (new page)'}...")
-    papers = fetch_arxiv_papers(args.date)
+    if args.recent:
+        print("Fetching arXiv papers from recent page (last ~5 days)...")
+        papers = fetch_arxiv_papers(recent=True)
+    else:
+        print(f"Fetching arXiv papers for: {args.date or 'today (new page)'}...")
+        papers = fetch_arxiv_papers(args.date)
     print(f"Found {len(papers)} papers")
     
     if args.interests_file and args.interests_file != 'local/interests.txt':
@@ -430,7 +522,8 @@ def main():
     
     scored_papers = rank_papers(papers)
     
-    html = format_paper_list_html(scored_papers, args.date)
+    page_type = 'recent' if args.recent else 'new'
+    html = format_paper_list_html(scored_papers, args.date, page_type=page_type)
     with open(args.output, 'w', encoding='utf-8') as f:
         f.write(html)
     print(f"Saved ranked list to {args.output}")

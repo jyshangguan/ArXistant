@@ -886,6 +886,7 @@ def generate_features_html(output_path=None):
 <body>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
+    <a href="/recent.html">📅 Recent Papers</a>
     <a href="/database.html">📂 Saved Papers</a>
     <a href="/publications.html">📚 My Publications</a>
   </div>
