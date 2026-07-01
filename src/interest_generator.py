@@ -502,11 +502,51 @@ KNOWN_ACRONYMS = {
     'vos', 'vst', 'wfc', 'wfc3', 'wfirst', 'wise', 'wmap', 'xmm', 'xn', 'xs', 'xrism', 'xshooter',
     'xte', 'yso', 'ysos', 'zenith', '2mass', '2massxsc', '3d', 'allwise', 'cdfs', 'cosmos', 'goods',
 }
-
-
-# =============================================================================
-# NOUN PHRASE EXTRACTION (regex-based, no NLP libraries needed)
-# =============================================================================
+# Single-word astrophysics terms that are too generic to be useful as standalone
+# keywords — they match too many unrelated papers.  Use multi-word phrases instead.
+TOO_GENERIC_SINGLE_WORDS = {
+    'star', 'stars', 'gas', 'mass', 'black', 'white', 'brown', 'red', 'dark',
+    'hole', 'holes', 'disk', 'disc', 'disks', 'discs', 'dust', 'emission',
+    'stellar', 'galaxy', 'galaxies', 'energy', 'dwarf', 'dwarfs', 'model', 'models',
+    'field', 'fields', 'line', 'lines', 'flux', 'surface', 'object', 'objects',
+    'evolution', 'dynamics', 'frequency', 'frequencies', 'period', 'temperature',
+    'velocity', 'velocities', 'wavelength', 'wavelengths', 'shift', 'shifts',
+    'matter', 'sequence', 'motion', 'young', 'big', 'bang', 'self', 'chemistry',
+    'envelope', 'envelopes', 'epoch', 'equilibrium', 'equinox', 'erg', 'ergs',
+    'extinction', 'feedback', 'filament', 'filaments', 'flare', 'flares', 'frame',
+    'fusion', 'giant', 'giants', 'globular', 'gravitational', 'halo', 'halos', 'haloes',
+    'infrared', 'instability', 'instabilities', 'interferometer', 'interferometers',
+    'interferometric', 'interferometry', 'intergalactic', 'interstellar', 'ionization',
+    'ionized', 'jet', 'jets', 'jupiter', 'kepler', 'kinematics', 'kpc', 'lensing',
+    'lightcurve', 'lightcurves', 'luminosity', 'luminous', 'magnetic', 'magnetism',
+    'magnitude', 'magnitudes', 'merger', 'mergers', 'metal', 'metallicity', 'metallicities',
+    'meteor', 'meteors', 'meteorite', 'meteorites', 'millimeter', 'molecular', 'molecule',
+    'molecules', 'nebula', 'nebulae', 'nebulas', 'neutrino', 'neutrinos', 'neutron',
+    'nuclear', 'nuclei', 'nucleus', 'nucleosynthesis', 'observable', 'observational',
+    'observatory', 'optical', 'orbit', 'orbital', 'orbits', 'outflow', 'outflows',
+    'parallax', 'parsec', 'parsecs', 'perturbation', 'perturbations', 'photometry',
+    'photon', 'photons', 'planet', 'planets', 'planetary', 'plasma', 'plasmas',
+    'polarimetry', 'polarization', 'population', 'precession', 'progenitor', 'progenitors',
+    'prominence', 'prominences', 'proton', 'protons', 'protoplanetary', 'pulsar', 'pulsars',
+    'qso', 'qsos', 'quasar', 'quasars', 'radiation', 'radio', 'recombination', 'reionization',
+    'relativity', 'resolution', 'resonance', 'resonances', 'rotation', 'satellite', 'satellites',
+    'scattering', 'sed', 'seyfert', 'seyferts', 'shell', 'shells', 'shock', 'shocks',
+    'silicate', 'silicon', 'simbad', 'solar', 'space', 'spacetime', 'spectra', 'spectral',
+    'spectrograph', 'spectrographs', 'spectroscopy', 'spectrum', 'sphere', 'spiral', 'spirals',
+    'steward', 'submillimeter', 'sun', 'sunspot', 'sunspots', 'supercluster', 'superclusters',
+    'supergiant', 'supergiants', 'supernova', 'supernovae', 'supernovas', 'supershell', 'supershells',
+    'surveys', 'synchrotron', 'tauri', 'telescope', 'telescopes', 'temperatures', 'thermal',
+    'tidal', 'torus', 'tori', 'transit', 'transits', 'transiting', 'transmission', 'turbulence',
+    'turbulent', 'ultraviolet', 'universe', 'vapor', 'virial', 'viscosity', 'visible', 'void',
+    'voids', 'winds', 'xray', 'x-ray', 'xrays', 'x-rays', 'yellow', 'yield', 'zodiacal',
+    'zone', 'zones', 'atmosphere', 'atmospheric', 'bipolar', 'carbon', 'cassiopeia', 'centaurus',
+    'cepheid', 'cepheids', 'chandrasekhar', 'chandra', 'circumstellar', 'cluster', 'clusters',
+    'comet', 'comets', 'corona', 'coronal', 'crab', 'debris', 'degenerate', 'deuterium',
+    'doppler', 'eclipse', 'eclipses', 'eclipsing', 'eddington', 'einstein', 'electron', 'electrons',
+    'elliptical', 'exoplanet', 'exoplanets', 'fermi', 'fornax', 'herschel', 'hertzsprung', 'higgs',
+    'hypernova', 'hypernovae', 'iron', 'kilonova', 'kilonovae', 'lithium', 'mariner', 'mas', 'maser',
+    'masers', 'nova', 'novae', 'proplyd', 'proplyds', 'sagittarius', 'silicon',
+}
 
 def _clean_text(text):
     """Clean text for keyword extraction."""
@@ -718,6 +758,8 @@ def regenerate_interests(db_path, interests_file):
         if word_count == 1:
             if phrase not in ASTROPHYSICS_TERMS and phrase not in KNOWN_ACRONYMS:
                 continue
+            if phrase in TOO_GENERIC_SINGLE_WORDS:
+                continue
         
         # Multi-word: filter if any word is too generic or contains digits
         words = phrase.split()
@@ -795,9 +837,15 @@ def regenerate_interests(db_path, interests_file):
     
     # Sort by score descending, then alphabetically
     sorted_phrases = sorted(scaled.items(), key=lambda x: (-x[1], x[0]))
+    
+    # --- Deduplicate: remove prefix fragments, spelling variants, and plural forms ---
+    sorted_phrases, _ = deduplicate_phrases(sorted_phrases)
+    
     top_50 = sorted_phrases[:50]
     
     # --- Write to file ---
+    # Write auto-generated entries to *_auto.txt so manual edits in *_manual.txt are never overwritten.
+    auto_file = interests_file.replace('.txt', '_auto.txt')
     header = f"""# Research Interests — Auto-generated from saved papers + my publications
 # Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 #
@@ -809,13 +857,143 @@ def regenerate_interests(db_path, interests_file):
 
 """
     
-    with open(interests_file, 'w', encoding='utf-8') as f:
+    with open(auto_file, 'w', encoding='utf-8') as f:
         f.write(header)
         for phrase, weight in top_50:
             f.write(f"{phrase}\t{weight}\n")
     
-    print(f"Regenerated interests.txt with {len(top_50)} keywords (scores 1-10)")
+    # Merge auto + manual into the main interests.txt
+    merge_interests(interests_file)
+    
+    print(f"Regenerated interests_auto.txt with {len(top_50)} keywords (scores 1-10)")
     return len(top_50)
+
+
+def merge_interests(interests_file):
+    """Merge interests_auto.txt + interests_manual.txt → interests.txt.
+    
+    Manual entries in *_manual.txt are preserved and override auto-generated entries
+    with the same keyword.  This prevents the user's hand-curated edits from being lost.
+    """
+    auto_file = interests_file.replace('.txt', '_auto.txt')
+    manual_file = interests_file.replace('.txt', '_manual.txt')
+    
+    merged = {}
+    
+    # Load auto-generated entries first
+    if os.path.exists(auto_file):
+        with open(auto_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    keyword = parts[0].strip()
+                    try:
+                        weight = int(parts[1].strip())
+                    except ValueError:
+                        weight = 1
+                    merged[keyword] = weight
+    
+    # Overlay manual entries (these override auto-generated ones)
+    if os.path.exists(manual_file):
+        with open(manual_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    keyword = parts[0].strip()
+                    try:
+                        weight = int(parts[1].strip())
+                    except ValueError:
+                        weight = 1
+                    merged[keyword] = weight
+    
+    # Write merged file
+    header = f"""# Research Interests — Merged (auto-generated + manual overrides)
+# Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+#
+# Format: keyword<TAB>weight (1-10, 10 = highest relevance)
+#
+# This file is MERGED automatically from:
+#   - interests_auto.txt  (auto-generated, never edit directly — will be overwritten)
+#   - interests_manual.txt (user-edited, preserved across regenerations)
+#
+# To add or override a keyword permanently, edit interests_manual.txt.
+
+"""
+    
+    with open(interests_file, 'w', encoding='utf-8') as f:
+        f.write(header)
+        # Sort by weight descending, then alphabetically
+        for keyword, weight in sorted(merged.items(), key=lambda x: (-x[1], x[0])):
+            f.write(f"{keyword}\t{weight}\n")
+    
+    print(f"Merged {len(merged)} keywords into interests.txt")
+    return len(merged)
+
+
+def deduplicate_phrases(sorted_phrases):
+    """
+    Remove redundant phrases from a sorted list of (phrase, weight) tuples.
+    
+    Rules:
+    1. Prefix rule: if phrase A is a strict prefix of phrase B (A + ' ' starts B), drop A.
+       The longer phrase is more specific and captures the same meaning.
+    2. Spelling rule: normalize UK→US spelling (disc→disk, colour→color), keep US variant.
+    3. Singular/plural: if singular form exists in the list, drop the plural.
+    
+    Returns:
+        (deduplicated_list, removed_set)
+    """
+    phrases = [p for p, w in sorted_phrases]
+    to_remove = set()
+    phrase_set = set(phrases)
+    
+    # 1. Prefix rule: shorter phrase is a prefix of a longer one
+    for p in phrases:
+        for other in phrases:
+            if p == other:
+                continue
+            if other.startswith(p + ' '):
+                to_remove.add(p)
+                break
+    
+    # 2. Spelling normalization (UK → US)
+    uk_to_us = {'disc': 'disk', 'colour': 'color', 'neighbour': 'neighbor',
+                'centre': 'center', 'theatre': 'theater', 'metre': 'meter'}
+    for p in phrases:
+        if p in to_remove:
+            continue
+        for uk, us in uk_to_us.items():
+            if uk in p:
+                us_variant = p.replace(uk, us)
+                if us_variant in phrase_set and us_variant != p:
+                    to_remove.add(p)
+                    break
+    
+    # 3. Singular/plural: keep singular, drop plural
+    for p in phrases:
+        if p in to_remove:
+            continue
+        singular_candidates = []
+        # Simple English plural heuristics
+        if p.endswith('s'):
+            singular_candidates.append(p[:-1])
+        if p.endswith('es'):
+            singular_candidates.append(p[:-2])
+        if p.endswith('ies'):
+            singular_candidates.append(p[:-3] + 'y')
+        for cand in singular_candidates:
+            if cand in phrase_set and cand != p:
+                to_remove.add(p)
+                break
+    
+    result = [(p, w) for p, w in sorted_phrases if p not in to_remove]
+    return result, to_remove
 
 
 # =============================================================================

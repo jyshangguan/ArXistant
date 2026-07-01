@@ -19,6 +19,117 @@ import html as html_module
 SECTION_ORDER = ['New submissions', 'Cross submissions', 'Replacement submissions']
 
 
+SAVE_BUTTON_SCRIPT = """<script>
+async function togglePaper(arxivId, title, authors, abstract, score, dateFetched) {
+    const btn = document.getElementById('save-btn-' + arxivId);
+    const isSaved = btn.dataset.saved === 'true';
+
+    if (isSaved) {
+        if (!confirm('Remove this paper from your database?')) return;
+        try {
+            const resp = await fetch('http://localhost:8765/api/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ arxiv_id: arxivId })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                btn.textContent = '💾 Save to DB';
+                btn.style.background = '#b31b1b';
+                btn.dataset.saved = 'false';
+                fetch('http://localhost:8765/api/regenerate-interests', {method: 'POST'}).catch(() => {});
+            } else {
+                btn.textContent = '✗ Error';
+                btn.style.background = '#c62828';
+            }
+        } catch (e) {
+            if (window.location.protocol === 'file:') {
+                alert('Save button requires viewing via http://localhost:8765/ (server not accessible from file://).');
+            } else {
+                btn.textContent = '✗ Error';
+                btn.style.background = '#c62828';
+            }
+        }
+    } else {
+        try {
+            const resp = await fetch('http://localhost:8765/api/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    arxiv_id: arxivId,
+                    title: title,
+                    authors: authors,
+                    abstract: abstract,
+                    relevance_score: score,
+                    date_fetched: dateFetched
+                })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                btn.textContent = '✓ Saved';
+                btn.style.background = '#2e7d32';
+                btn.dataset.saved = 'true';
+            } else {
+                btn.textContent = '✗ Error';
+                btn.style.background = '#c62828';
+            }
+        } catch (e) {
+            if (window.location.protocol === 'file:') {
+                alert('Save button requires viewing via http://localhost:8765/ (server not accessible from file://).');
+            } else {
+                btn.textContent = '✗ Error';
+                btn.style.background = '#c62828';
+            }
+        }
+    }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    let savedIds = new Set();
+    try {
+        const resp = await fetch('http://localhost:8765/api/papers');
+        const data = await resp.json();
+        savedIds = new Set(data.papers.map(p => p.arxiv_id));
+    } catch (e) {
+        console.warn('Could not fetch saved papers (server may be off or CORS from file://):', e);
+    }
+
+    const papers = document.querySelectorAll('.paper');
+    const dateFetched = document.querySelector('h1').textContent;
+    papers.forEach((paper) => {
+        const link = paper.querySelector('h2 a');
+        const arxivId = link.href.split('/abs/')[1];
+        const title = link.textContent;
+        const authorsEl = paper.querySelector('.authors');
+        const authors = authorsEl ? authorsEl.textContent.replace('Authors:', '').trim() : '';
+        const abstractEl = paper.querySelector('.abstract-full');
+        const abstract = abstractEl ? abstractEl.textContent : '';
+        const scoreEl = paper.querySelector('.score');
+        const scoreText = scoreEl ? scoreEl.textContent.replace('Relevance: ', '') : '0';
+        const score = parseInt(scoreText) || 0;
+
+        const btn = document.createElement('button');
+        btn.id = 'save-btn-' + arxivId;
+        btn.className = 'save-btn';
+        btn.style.cssText = 'margin-top:8px;padding:4px 12px;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.85em;';
+
+        if (savedIds.has(arxivId)) {
+            btn.textContent = '✓ Saved';
+            btn.style.background = '#2e7d32';
+            btn.dataset.saved = 'true';
+        } else {
+            btn.textContent = '💾 Save to DB';
+            btn.style.background = '#b31b1b';
+            btn.dataset.saved = 'false';
+        }
+        btn.onclick = () => togglePaper(arxivId, title, authors, abstract, score, dateFetched);
+        paper.appendChild(btn);
+    });
+});
+</script>
+<!-- save-button-embedded -->"""
+
+
 def fetch_arxiv_papers_by_date(date_str):
     """Fetch astro-ph papers submitted on the given date (YYYYMMDD)."""
     start = f"{date_str}0000"
@@ -171,69 +282,26 @@ def fetch_arxiv_papers(date_str=None):
     return papers
 
 
-def load_interests(interests_file):
-    """Load weighted interests from a text file. Returns list of (keyword, weight) tuples."""
-    if not os.path.exists(interests_file):
-        return []
-    interests = []
-    with open(interests_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = line.split('\t')
-            if len(parts) >= 2:
-                keyword = parts[0].strip()
-                try:
-                    weight = int(parts[1].strip())
-                except ValueError:
-                    weight = 1
-            else:
-                keyword = line
-                weight = 1
-            if keyword:
-                interests.append((keyword, weight))
-    return interests
-
-
-def score_paper(paper, interests):
-    """Score a paper using weighted keyword matching (title=3×, abstract=1×)."""
-    if not interests:
-        return 0
+def rank_papers(papers):
+    """Rank papers using ML-based scoring, normalized to 0-100."""
+    try:
+        import arxiv_ml_ranker
+        scored = arxiv_ml_ranker.score_papers(papers)
+        if scored:
+            probs = [s[0] for s in scored]
+            max_p = max(probs)
+            min_p = min(probs)
+            range_p = max_p - min_p if max_p > min_p else 1.0
+            normalized = []
+            for prob, paper in scored:
+                norm_score = round(((prob - min_p) / range_p) * 100) if range_p > 0 else 0
+                raw_score = round(prob * 100)
+                normalized.append((norm_score, raw_score, paper))
+            return normalized
+    except Exception as e:
+        print(f"WARNING: ML scoring failed ({e}).")
     
-    title_lower = paper['title'].lower()
-    text_lower = (paper['title'] + ' ' + paper['abstract']).lower()
-    score = 0
-    
-    for keyword, weight in interests:
-        keyword_lower = keyword.lower()
-        if keyword_lower in title_lower:
-            score += 3 * weight
-        elif keyword_lower in text_lower:
-            score += 1 * weight
-    
-    return score
-
-
-def rank_papers(papers, interests):
-    """Rank papers by relevance score, normalized to 0-100."""
-    scored = []
-    for paper in papers:
-        raw_score = score_paper(paper, interests)
-        scored.append((raw_score, paper))
-    
-    # Normalize to 0-100 for comprehensibility
-    max_score = max((s for s, _ in scored), default=0)
-    normalized = []
-    for raw_score, paper in scored:
-        if max_score > 0:
-            norm_score = round((raw_score / max_score) * 100)
-        else:
-            norm_score = 0
-        normalized.append((norm_score, raw_score, paper))
-    
-    normalized.sort(key=lambda x: (-x[0], x[2]['id']))
-    return normalized
+    return [(0, 0, p) for p in papers]
 
 
 def escape_html(text):
@@ -289,6 +357,8 @@ def format_paper_list_html(scored_papers, date_str=None):
     lines.append('    .nav-btn-secondary:hover { background: #333; }')
     lines.append('    .scroll-top { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; background: #b31b1b; color: white; text-decoration: none; border-radius: 50%; font-size: 1.1em; font-weight: bold; cursor: pointer; border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 1000; transition: background 0.2s; }')
     lines.append('    .scroll-top:hover { background: #8a1515; }')
+    lines.append('    .save-btn { margin-top: 8px; padding: 4px 12px; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: background 0.2s; }')
+    lines.append('    .save-btn:hover { opacity: 0.9; }')
     lines.append('  </style>')
     lines.append('</head>')
     lines.append('<body>')
@@ -296,7 +366,7 @@ def format_paper_list_html(scored_papers, date_str=None):
     lines.append('  <div class="nav-bar">')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html" target="_blank">📚 My Database</a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html" target="_blank">📄 My Publications</a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/interests.html" target="_blank">⚙️ My Interests</a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html" target="_blank">🧠 ML Features</a>')
     lines.append('  </div>')
     lines.append(f'  <p class="total">Total papers: {len(scored_papers)}</p>')
 
@@ -332,9 +402,10 @@ def format_paper_list_html(scored_papers, date_str=None):
     lines.append('  <div class="nav-bar-bottom">')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html" target="_blank">📚 My Database</a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html" target="_blank">📄 My Publications</a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/interests.html" target="_blank">⚙️ My Interests</a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html" target="_blank">🧠 ML Features</a>')
     lines.append('  </div>')
     lines.append('  <button class="scroll-top" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="To the top">▲</button>')
+    lines.append(SAVE_BUTTON_SCRIPT)
     lines.append('</body>')
     lines.append('</html>')
 
@@ -343,20 +414,21 @@ def format_paper_list_html(scored_papers, date_str=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch and rank arXiv astro-ph papers')
-    parser.add_argument('--interests-file', default='local/interests.txt', help='Path to interests file')
+    parser.add_argument('--interests-file', default='local/interests.txt', help='DEPRECATED: no longer used')
     parser.add_argument('--output', default='local/arxiv_ranked.html', help='Output HTML file')
     parser.add_argument('--date', help='Date to fetch (YYYYMMDD), default yesterday')
     parser.add_argument('--json-output', help='Optional JSON output path')
+    parser.add_argument('--ml', action='store_true', help='DEPRECATED: ML is always used')
     args = parser.parse_args()
     
     print(f"Fetching arXiv papers for: {args.date or 'today (new page)'}...")
     papers = fetch_arxiv_papers(args.date)
     print(f"Found {len(papers)} papers")
     
-    interests = load_interests(args.interests_file)
-    print(f"Loaded {len(interests)} interest keywords from {args.interests_file}")
+    if args.interests_file and args.interests_file != 'local/interests.txt':
+        print("NOTE: --interests-file is deprecated and ignored. ML scoring is always used.")
     
-    scored_papers = rank_papers(papers, interests)
+    scored_papers = rank_papers(papers)
     
     html = format_paper_list_html(scored_papers, args.date)
     with open(args.output, 'w', encoding='utf-8') as f:

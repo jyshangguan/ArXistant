@@ -22,16 +22,114 @@ DB_PATH = os.path.join(PROJECT_ROOT, "local", "arxiv_papers.db")
 DAILY_HTML = os.path.join(PROJECT_ROOT, "local", "arxiv_ranked_personalized.html")
 PUBLICATIONS_JSON = os.path.join(PROJECT_ROOT, "local", "shangguan_papers_metadata.json")
 BIB_PATH = os.path.join(PROJECT_ROOT, "local", "scix_library_20.bib")
-INTERESTS_FILE = os.path.join(PROJECT_ROOT, "local", "interests.txt")
-
-# Import the weighted keyword extraction pipeline
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
-import interest_generator
+ML_FEATURES_HTML = os.path.join(PROJECT_ROOT, "local", "ml_features.html")
+BLACKLIST_PATH = os.path.join(PROJECT_ROOT, "local", "ml_ranker", "feature_blacklist.json")
 
 
-def regenerate_interests():
-    """Regenerate interests.txt using the weighted keyword extraction pipeline."""
-    return interest_generator.regenerate_interests(DB_PATH, INTERESTS_FILE)
+def load_blacklist():
+    if not os.path.exists(BLACKLIST_PATH):
+        return set()
+    with open(BLACKLIST_PATH, 'r', encoding='utf-8') as f:
+        return set(json.load(f))
+
+
+def save_blacklist(blacklist):
+    with open(BLACKLIST_PATH, 'w', encoding='utf-8') as f:
+        json.dump(sorted(list(blacklist)), f, indent=2)
+
+
+def add_to_blacklist(feature_name):
+    blacklist = load_blacklist()
+    blacklist.add(feature_name)
+    save_blacklist(blacklist)
+    return True
+
+
+def remove_from_blacklist(feature_name):
+    blacklist = load_blacklist()
+    if feature_name in blacklist:
+        blacklist.remove(feature_name)
+        save_blacklist(blacklist)
+        return True
+    return False
+
+
+# Custom positive/negative keyword helpers (mirror arxiv_ml_ranker functions)
+CUSTOM_POSITIVE_PATH = os.path.join(PROJECT_ROOT, "local", "ml_ranker", "custom_positive.json")
+CUSTOM_NEGATIVE_PATH = os.path.join(PROJECT_ROOT, "local", "ml_ranker", "custom_negative.json")
+
+
+def load_custom_positive():
+    if not os.path.exists(CUSTOM_POSITIVE_PATH):
+        return []
+    with open(CUSTOM_POSITIVE_PATH, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def load_custom_negative():
+    if not os.path.exists(CUSTOM_NEGATIVE_PATH):
+        return []
+    with open(CUSTOM_NEGATIVE_PATH, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def save_custom_positive(keywords):
+    with open(CUSTOM_POSITIVE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(keywords, f, indent=2)
+
+
+def save_custom_negative(keywords):
+    with open(CUSTOM_NEGATIVE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(keywords, f, indent=2)
+
+
+def add_custom_positive(keyword):
+    keywords = load_custom_positive()
+    keyword = keyword.strip().lower()
+    if keyword and keyword not in keywords:
+        keywords.append(keyword)
+        save_custom_positive(keywords)
+    return True
+
+
+def add_custom_negative(keyword):
+    keywords = load_custom_negative()
+    keyword = keyword.strip().lower()
+    if keyword and keyword not in keywords:
+        keywords.append(keyword)
+        save_custom_negative(keywords)
+    return True
+
+
+def remove_custom_positive(keyword):
+    keywords = load_custom_positive()
+    keyword = keyword.strip().lower()
+    if keyword in keywords:
+        keywords.remove(keyword)
+        save_custom_positive(keywords)
+        return True
+    return False
+
+
+def remove_custom_negative(keyword):
+    keywords = load_custom_negative()
+    keyword = keyword.strip().lower()
+    if keyword in keywords:
+        keywords.remove(keyword)
+        save_custom_negative(keywords)
+        return True
+    return False
+
+
+def deduplicate_custom_keywords():
+    """Remove from negative any keywords that also exist in positive. Positive wins."""
+    pos = load_custom_positive()
+    neg = load_custom_negative()
+    pos_set = set(pos)
+    new_neg = [w for w in neg if w not in pos_set]
+    if len(new_neg) != len(neg):
+        save_custom_negative(new_neg)
+    return pos, new_neg
 
 
 def init_db():
@@ -150,9 +248,6 @@ def populate_publications():
     conn.commit()
     conn.close()
     print(f"Populated {len(all_papers)} publications into my_publications table")
-    
-    # Regenerate interests.txt from all database content
-    regenerate_interests()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -196,7 +291,17 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.exists(DAILY_HTML):
                 with open(DAILY_HTML, 'r', encoding='utf-8') as f:
                     html = f.read()
-                if 'saveToDatabase' not in html:
+                if '<!-- save-button-embedded -->' not in html:
+                    html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
+                self._send_html(html)
+            else:
+                self._send_text("Daily paper list not found. Run the ranker first.", 404)
+
+        elif path == "/daily.html":
+            if os.path.exists(DAILY_HTML):
+                with open(DAILY_HTML, 'r', encoding='utf-8') as f:
+                    html = f.read()
+                if '<!-- save-button-embedded -->' not in html:
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
                 self._send_html(html)
             else:
@@ -208,16 +313,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/publications.html":
             self._send_html(PUBLICATIONS_VIEWER_HTML)
 
-        elif path == "/interests.html":
-            self._send_html(INTERESTS_EDITOR_HTML)
-
-        elif path == "/api/interests":
-            if os.path.exists(INTERESTS_FILE):
-                with open(INTERESTS_FILE, 'r', encoding='utf-8') as f:
-                    content = f.read()
+        elif path == "/ml-features.html":
+            if os.path.exists(ML_FEATURES_HTML):
+                with open(ML_FEATURES_HTML, 'r', encoding='utf-8') as f:
+                    self._send_html(f.read())
             else:
-                content = ""
-            self._send_json({"content": content, "count": len([l for l in content.splitlines() if l.strip() and not l.strip().startswith('#')])})
+                self._send_text("ML features page not found. Run the model training first.", 404)
 
         elif path == "/api/papers":
             conn = sqlite3.connect(DB_PATH)
@@ -265,6 +366,15 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             self._send_json({"publications": rows, "count": len(rows), "query": q})
 
+        elif path == "/api/blacklist":
+            self._send_json({"blacklist": sorted(list(load_blacklist()))})
+
+        elif path == "/api/custom-positive":
+            self._send_json({"keywords": load_custom_positive()})
+
+        elif path == "/api/custom-negative":
+            self._send_json({"keywords": load_custom_negative()})
+
         else:
             self._send_text("Not found", 404)
 
@@ -295,12 +405,6 @@ class Handler(BaseHTTPRequestHandler):
                 ))
                 conn.commit()
                 self._send_json({"success": True, "message": "Paper saved"})
-                
-                # Regenerate interests.txt in background (non-blocking)
-                try:
-                    regenerate_interests()
-                except Exception as e:
-                    print(f"Warning: failed to regenerate interests.txt: {e}")
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)}, 500)
             finally:
@@ -313,12 +417,6 @@ class Handler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
             self._send_json({"success": True, "message": "Paper deleted"})
-            
-            # Regenerate interests.txt after deletion too
-            try:
-                regenerate_interests()
-            except Exception as e:
-                print(f"Warning: failed to regenerate interests.txt: {e}")
 
         elif path == "/api/update_notes":
             conn = sqlite3.connect(DB_PATH)
@@ -329,18 +427,69 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             self._send_json({"success": True, "message": "Notes updated"})
 
-        elif path == "/api/regenerate-interests":
-            try:
-                regenerate_interests()
-                self._send_json({"success": True, "message": "Interests regenerated"})
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
+        elif path == "/api/blacklist":
+            feature = data.get("feature", "")
+            if feature:
+                add_to_blacklist(feature)
+                self._send_json({"success": True, "message": f"Feature '{feature}' blacklisted"})
+            else:
+                self._send_json({"success": False, "error": "No feature provided"}, 400)
 
-        elif path == "/api/interests":
+        elif path == "/api/blacklist/remove":
+            feature = data.get("feature", "")
+            if feature:
+                if remove_from_blacklist(feature):
+                    self._send_json({"success": True, "message": f"Feature '{feature}' removed from blacklist"})
+                else:
+                    self._send_json({"success": False, "error": f"Feature '{feature}' not in blacklist"}, 404)
+            else:
+                self._send_json({"success": False, "error": "No feature provided"}, 400)
+
+        elif path == "/api/custom-positive":
+            keyword = data.get("keyword", "")
+            if keyword:
+                add_custom_positive(keyword)
+                self._send_json({"success": True, "message": f"Keyword '{keyword}' added to custom positive"})
+            else:
+                self._send_json({"success": False, "error": "No keyword provided"}, 400)
+
+        elif path == "/api/custom-negative":
+            keyword = data.get("keyword", "")
+            if keyword:
+                add_custom_negative(keyword)
+                self._send_json({"success": True, "message": f"Keyword '{keyword}' added to custom negative"})
+            else:
+                self._send_json({"success": False, "error": "No keyword provided"}, 400)
+
+        elif path == "/api/custom-positive/remove":
+            keyword = data.get("keyword", "")
+            if keyword:
+                if remove_custom_positive(keyword):
+                    self._send_json({"success": True, "message": f"Keyword '{keyword}' removed from custom positive"})
+                else:
+                    self._send_json({"success": False, "error": f"Keyword '{keyword}' not in custom positive"}, 404)
+            else:
+                self._send_json({"success": False, "error": "No keyword provided"}, 400)
+
+        elif path == "/api/custom-negative/remove":
+            keyword = data.get("keyword", "")
+            if keyword:
+                if remove_custom_negative(keyword):
+                    self._send_json({"success": True, "message": f"Keyword '{keyword}' removed from custom negative"})
+                else:
+                    self._send_json({"success": False, "error": f"Keyword '{keyword}' not in custom negative"}, 404)
+            else:
+                self._send_json({"success": False, "error": "No keyword provided"}, 400)
+
+        elif path == "/api/regenerate-features":
             try:
-                with open(INTERESTS_FILE, 'w', encoding='utf-8') as f:
-                    f.write(data.get("content", ""))
-                self._send_json({"success": True, "message": "Interests saved"})
+                # Deduplicate: positive wins over negative
+                deduplicate_custom_keywords()
+                import sys
+                sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
+                import arxiv_ml_ranker
+                arxiv_ml_ranker.generate_features_html()
+                self._send_json({"success": True, "message": "Features HTML regenerated (deduplicated)"})
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)}, 500)
 
@@ -369,8 +518,6 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
                 btn.style.background = '#b31b1b';
                 btn.style.cursor = 'pointer';
                 btn.dataset.saved = 'false';
-                // Regenerate interests.txt in background
-                fetch('/api/regenerate-interests', {method: 'POST'}).catch(() => {});
             } else {
                 btn.textContent = '✗ Error';
                 btn.style.background = '#c62828';
@@ -494,9 +641,9 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="nav">
-    <a href="/">← Daily Papers</a>
+    <a href="/daily.html">← Daily Papers</a>
     <a href="/publications.html">📚 My Publications</a>
-    <a href="/interests.html">⚙️ My Interests</a>
+    <a href="/ml-features.html">🧠 ML Features</a>
   </div>
   <h1>My arXiv Paper Database</h1>
   <input type="text" class="search-box" id="searchInput" placeholder="Search by title, author, abstract, or notes..." oninput="searchPapers()">
@@ -619,9 +766,9 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="nav">
-    <a href="/">← Daily Papers</a>
+    <a href="/daily.html">← Daily Papers</a>
     <a href="/database.html">📂 Saved Papers</a>
-    <a href="/interests.html">⚙️ My Interests</a>
+    <a href="/ml-features.html">🧠 ML Features</a>
   </div>
   <h1>📚 My Publications — Jinyi Shangguan</h1>
   <input type="text" class="search-box" id="searchInput" placeholder="Search my publications by title, author, abstract, or keywords..." oninput="searchPubs()">
@@ -686,112 +833,6 @@ function renderPubs(pubs) {
 """
 
 
-INTERESTS_EDITOR_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>My Research Interests</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
-    h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
-    .nav { margin-bottom: 20px; display: flex; gap: 16px; }
-    .nav a { color: #b31b1b; text-decoration: none; font-weight: bold; }
-    .nav a:hover { text-decoration: underline; }
-    textarea { width: 100%; min-height: 500px; padding: 12px; font-family: monospace; font-size: 0.9em; border: 2px solid #ddd; border-radius: 6px; box-sizing: border-box; line-height: 1.5; }
-    textarea:focus { outline: none; border-color: #b31b1b; }
-    .toolbar { display: flex; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
-    button { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em; font-weight: 500; }
-    .btn-save { background: #b31b1b; color: white; }
-    .btn-save:hover { background: #8a1515; }
-    .btn-regenerate { background: #555; color: white; }
-    .btn-regenerate:hover { background: #333; }
-    .status { padding: 10px 14px; border-radius: 6px; margin-top: 12px; font-size: 0.9em; display: none; }
-    .status.ok { display: block; background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
-    .status.error { display: block; background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
-    .stats { color: #666; margin-bottom: 12px; font-size: 0.9em; }
-    .hint { color: #888; font-size: 0.85em; margin-top: 8px; }
-  </style>
-</head>
-<body>
-  <div class="nav">
-    <a href="/">← Daily Papers</a>
-    <a href="/database.html">📂 Saved Papers</a>
-    <a href="/publications.html">📚 My Publications</a>
-  </div>
-  <h1>My Research Interests</h1>
-  <p class="stats" id="stats">Loading...</p>
-  <div class="toolbar">
-    <button class="btn-save" onclick="saveInterests()">💾 Save</button>
-    <button class="btn-regenerate" onclick="regenerateInterests()">🔄 Regenerate from DB</button>
-  </div>
-  <textarea id="interestsText" placeholder="# Add your research interests here, one per line..."></textarea>
-  <p class="hint">Lines starting with # are comments. Each non-empty line is a keyword used for ranking. Save to apply changes.</p>
-  <div class="status" id="status"></div>
-
-  <script>
-    async function loadInterests() {
-      try {
-        const resp = await fetch('/api/interests');
-        const data = await resp.json();
-        document.getElementById('interestsText').value = data.content;
-        document.getElementById('stats').textContent = data.count + ' keywords loaded';
-      } catch (e) {
-        showStatus('Failed to load interests', true);
-      }
-    }
-
-    async function saveInterests() {
-      const content = document.getElementById('interestsText').value;
-      try {
-        const resp = await fetch('/api/interests', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({content: content})
-        });
-        const data = await resp.json();
-        if (data.success) {
-          showStatus('Saved! Refresh the daily paper page to see new rankings.', false);
-          const count = content.split('\\n').filter(l => l.trim() && !l.trim().startsWith('#')).length;
-          document.getElementById('stats').textContent = count + ' keywords';
-        } else {
-          showStatus('Save failed: ' + (data.error || 'unknown'), true);
-        }
-      } catch (e) {
-        showStatus('Save failed: ' + e.message, true);
-      }
-    }
-
-    async function regenerateInterests() {
-      if (!confirm('This will regenerate the list from saved papers + your publications. Custom keywords you added will be preserved. Continue?')) return;
-      try {
-        const resp = await fetch('/api/regenerate-interests', {method: 'POST'});
-        const data = await resp.json();
-        if (data.success) {
-          showStatus('Regenerated! Reloading...', false);
-          setTimeout(loadInterests, 500);
-        } else {
-          showStatus('Regeneration failed: ' + (data.error || 'unknown'), true);
-        }
-      } catch (e) {
-        showStatus('Regeneration failed: ' + e.message, true);
-      }
-    }
-
-    function showStatus(msg, isError) {
-      const el = document.getElementById('status');
-      el.textContent = msg;
-      el.className = 'status ' + (isError ? 'error' : 'ok');
-      setTimeout(() => el.className = 'status', 3000);
-    }
-
-    loadInterests();
-  </script>
-</body>
-</html>
-"""
-
-
 def run_server(port=8765):
     init_db()
     server = HTTPServer(("localhost", port), Handler)
@@ -799,7 +840,7 @@ def run_server(port=8765):
     print(f"  Daily papers:    http://localhost:{port}/")
     print(f"  Saved papers:     http://localhost:{port}/database.html")
     print(f"  My publications:  http://localhost:{port}/publications.html")
-    print(f"  My interests:     http://localhost:{port}/interests.html")
+    print(f"  My ML features:   http://localhost:{port}/ml-features.html")
     print("Press Ctrl+C to stop")
     try:
         server.serve_forever()
