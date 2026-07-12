@@ -10,9 +10,13 @@ Usage:
 
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import urllib.parse
+import urllib.request
+import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
@@ -25,6 +29,104 @@ PUBLICATIONS_JSON = os.path.join(PROJECT_ROOT, "local", "shangguan_papers_metada
 BIB_PATH = os.path.join(PROJECT_ROOT, "local", "scix_library_20.bib")
 ML_FEATURES_HTML = os.path.join(PROJECT_ROOT, "local", "ml_features.html")
 BLACKLIST_PATH = os.path.join(PROJECT_ROOT, "local", "ml_ranker", "feature_blacklist.json")
+CHAT_HTML = os.path.join(PROJECT_ROOT, "local", "chat.html")
+ADS_TOKEN_PATH = os.path.join(PROJECT_ROOT, "local", "ads_token.txt")
+SCIX_CONFIG_PATH = os.path.join(PROJECT_ROOT, "local", "scix_config.json")
+
+
+def load_scix_config():
+    if not os.path.exists(SCIX_CONFIG_PATH):
+        return {"scix_link": ""}
+    with open(SCIX_CONFIG_PATH, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def save_scix_config(config):
+    with open(SCIX_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
+
+
+def load_ads_token():
+    if not os.path.exists(ADS_TOKEN_PATH):
+        return ""
+    with open(ADS_TOKEN_PATH, 'r', encoding='utf-8') as f:
+        return f.read().strip()
+
+
+SCIXPLORER_LIBRARY_RE = re.compile(r'scixplorer\.org/user/libraries/([a-zA-Z0-9_-]+)')
+
+
+def extract_library_id(scix_link):
+    m = SCIXPLORER_LIBRARY_RE.search(scix_link)
+    return m.group(1) if m else ""
+
+
+def fetch_scix_library(library_id):
+    """Fetch all papers from an ADS library by its ID. Returns list of paper dicts."""
+    token = load_ads_token()
+    if not token:
+        return None, "ADS API token not configured. Add token to local/ads_token.txt"
+
+    # Step 1: get all bibcodes from the library
+    lib_url = f"https://api.adsabs.harvard.edu/v1/biblib/libraries/{library_id}?rows=500"
+    req = urllib.request.Request(lib_url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            lib_data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        return None, f"ADS library error ({e.code}): {body}"
+    except Exception as e:
+        return None, f"Failed to fetch library: {e}"
+
+    bibcodes = lib_data.get("documents", [])
+    if not bibcodes:
+        return None, "No papers found in this library"
+
+    # Step 2: batch-fetch metadata via ADS Search API
+    papers = []
+    batch_size = 100
+    for i in range(0, len(bibcodes), batch_size):
+        batch = bibcodes[i:i + batch_size]
+        q = " OR ".join(f"bibcode:{b}" for b in batch)
+        params = urllib.parse.urlencode({
+            "q": q,
+            "fl": "bibcode,title,author,abstract,year,keyword,alternate_bibcode",
+            "rows": batch_size
+        })
+        search_url = f"https://api.adsabs.harvard.edu/v1/search/query?{params}"
+        req = urllib.request.Request(search_url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                search_data = json.loads(resp.read().decode())
+        except Exception:
+            continue
+
+        for doc in search_data.get("response", {}).get("docs", []):
+            title = doc.get("title", [""])[0] if isinstance(doc.get("title"), list) else doc.get("title", "")
+            authors = ", ".join(doc.get("author", [])) if isinstance(doc.get("author"), list) else str(doc.get("author", ""))
+            keywords = ", ".join(doc.get("keyword", [])) if isinstance(doc.get("keyword"), list) else str(doc.get("keyword", ""))
+            year = str(doc.get("year", ""))
+
+            arxiv_id = ""
+            alt_bibcodes = doc.get("alternate_bibcode", [])
+            if isinstance(alt_bibcodes, list):
+                for ab in alt_bibcodes:
+                    if "arXiv" in ab:
+                        arxiv_id = ab.split("arXiv:")[-1].strip()
+                        break
+
+            papers.append({
+                "bibcode": doc.get("bibcode", ""),
+                "title": title,
+                "authors": authors,
+                "abstract": doc.get("abstract", ""),
+                "keywords": keywords,
+                "year": year,
+                "arxiv_id": arxiv_id
+            })
+
+    return papers, None
 
 
 def load_blacklist():
@@ -132,6 +234,117 @@ def deduplicate_custom_keywords():
         save_custom_negative(new_neg)
     return pos, new_neg
 
+
+
+
+def load_ads_token():
+    """Load ADS API token from local file."""
+    if not os.path.exists(ADS_TOKEN_PATH):
+        return None
+    with open(ADS_TOKEN_PATH, 'r', encoding='utf-8') as f:
+        return f.read().strip()
+
+
+def search_arxiv_api(query, max_results=20):
+    """Search arXiv API and return list of paper dicts."""
+    import xml.etree.ElementTree as ET
+    encoded_q = urllib.parse.quote(query)
+    url = (
+        f"https://export.arxiv.org/api/query?"
+        f"search_query=all:{encoded_q}&max_results={max_results}"
+        f"&sortBy=relevance&sortOrder=descending"
+    )
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    resp = urllib.request.urlopen(req, timeout=30)
+    data = resp.read().decode('utf-8')
+
+    ns = {'atom': 'http://www.w3.org/2005/Atom'}
+    root = ET.fromstring(data)
+    entries = root.findall('atom:entry', ns)
+
+    papers = []
+    for entry in entries:
+        id_elem = entry.find('atom:id', ns)
+        title_elem = entry.find('atom:title', ns)
+        summary_elem = entry.find('atom:summary', ns)
+        published_elem = entry.find('atom:published', ns)
+
+        arxiv_id = id_elem.text if id_elem is not None else ''
+        short_id = arxiv_id.split('/')[-1].replace('abs/', '') if arxiv_id else ''
+        short_id = __import__('re').sub(r'v\d+$', '', short_id)
+
+        title = title_elem.text.strip() if title_elem is not None else ''
+        abstract = summary_elem.text.strip() if summary_elem is not None else ''
+        year = published_elem.text[:4] if published_elem is not None and published_elem.text else ''
+
+        authors = []
+        for author in entry.findall('atom:author', ns):
+            name = author.find('atom:name', ns)
+            if name is not None:
+                authors.append(name.text)
+
+        papers.append({
+            'id': short_id,
+            'title': title,
+            'authors': authors,
+            'abstract': abstract,
+            'year': year,
+            'source': 'arxiv'
+        })
+
+    return papers
+
+
+def search_ads_api(query, token, max_results=20):
+    """Search ADS API and return list of paper dicts."""
+    url = "https://api.adsabs.harvard.edu/v1/search/query"
+    params = {
+        'q': query,
+        'rows': max_results,
+        'fl': 'title,author,abstract,bibcode,year,arxiv,doi,citation_count,pubdate',
+        'sort': 'score desc'
+    }
+    query_str = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        f"{url}?{query_str}",
+        headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Authorization': f'Bearer {token}'
+        }
+    )
+    resp = urllib.request.urlopen(req, timeout=30)
+    data = json.loads(resp.read().decode('utf-8'))
+
+    papers = []
+    for doc in data.get('response', {}).get('docs', []):
+        title = doc.get('title', [''])[0] if isinstance(doc.get('title'), list) else doc.get('title', '')
+        authors = doc.get('author', []) or []
+        abstract = doc.get('abstract', '') or ''
+        bibcode = doc.get('bibcode', '')
+        year = str(doc.get('year', ''))
+        arxiv = doc.get('arxiv', '')
+        doi = doc.get('doi', [''])[0] if isinstance(doc.get('doi'), list) else doc.get('doi', '')
+        citation_count = doc.get('citation_count', 0)
+        pubdate = doc.get('pubdate', '')
+
+        arxiv_id = ''
+        if arxiv:
+            arxiv_id = arxiv if '.' in arxiv else ''
+
+        papers.append({
+            'id': arxiv_id,
+            'title': title,
+            'authors': authors,
+            'abstract': abstract,
+            'year': year,
+            'bibcode': bibcode,
+            'doi': doi,
+            'citation_count': citation_count,
+            'pubdate': pubdate,
+            'source': 'ads'
+        })
+
+    return papers
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -331,6 +544,43 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_text("ML features page not found. Run the model training first.", 404)
 
+
+        elif path == "/chat.html":
+            if os.path.exists(CHAT_HTML):
+                with open(CHAT_HTML, 'r', encoding='utf-8') as f:
+                    self._send_html(f.read())
+            else:
+                self._send_text("Chat page not found.", 404)
+
+        elif path == "/search-arxiv.html":
+            self._send_html(SEARCH_ARXIV_HTML)
+
+        elif path == "/api/arxiv/search":
+            q = query.get("q", [""])[0]
+            if not q:
+                self._send_json({"papers": [], "count": 0, "query": "", "source": "arxiv"})
+                return
+            try:
+                papers = search_arxiv_api(q)
+                self._send_json({"papers": papers, "count": len(papers), "query": q, "source": "arxiv"})
+            except Exception as e:
+                self._send_json({"error": str(e), "papers": [], "count": 0, "query": q, "source": "arxiv"}, 502)
+
+        elif path == "/api/ads/search":
+            q = query.get("q", [""])[0]
+            if not q:
+                self._send_json({"papers": [], "count": 0, "query": "", "source": "ads"})
+                return
+            token = load_ads_token()
+            if not token:
+                self._send_json({"error": "ADS token not configured", "papers": [], "count": 0, "query": q, "source": "ads"}, 503)
+                return
+            try:
+                papers = search_ads_api(q, token)
+                self._send_json({"papers": papers, "count": len(papers), "query": q, "source": "ads"})
+            except Exception as e:
+                self._send_json({"error": str(e), "papers": [], "count": 0, "query": q, "source": "ads"}, 502)
+
         elif path == "/api/papers":
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
@@ -377,6 +627,9 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             self._send_json({"publications": rows, "count": len(rows), "query": q})
 
+        elif path == "/api/scix-link":
+            self._send_json(load_scix_config())
+
         elif path == "/api/blacklist":
             self._send_json({"blacklist": sorted(list(load_blacklist()))})
 
@@ -397,7 +650,88 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length).decode('utf-8')
         data = json.loads(body) if body else {}
 
-        if path == "/api/save":
+        if path == "/api/scix/fetch":
+            scix_link = data.get("scix_link", "").strip()
+            if not scix_link:
+                self._send_json({"success": False, "error": "No SciX link provided"}, 400)
+                return
+            library_id = extract_library_id(scix_link)
+            if not library_id:
+                self._send_json({"success": False, "error": "Could not extract library ID from link. Expected URL like https://scixplorer.org/user/libraries/XXX"}, 400)
+                return
+            papers, error = fetch_scix_library(library_id)
+            if error:
+                self._send_json({"success": False, "error": error}, 500)
+                return
+            # Save the link
+            config = load_scix_config()
+            config["scix_link"] = scix_link
+            save_scix_config(config)
+            self._send_json({"success": True, "papers": papers, "count": len(papers)})
+
+        elif path == "/api/publications/add":
+            papers_to_add = data.get("papers", [])
+            if not papers_to_add:
+                self._send_json({"success": False, "error": "No papers provided"}, 400)
+                return
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            # Gather all existing bibcodes, normalized titles, and arxiv_ids for duplicate checking
+            c.execute("SELECT bibcode, LOWER(TRIM(title)) as title_lower FROM my_publications")
+            existing = c.fetchall()
+            existing_bibcodes = {row[0] for row in existing}
+            existing_titles = {row[1] for row in existing}
+            added = 0
+            skipped = 0
+            for p in papers_to_add:
+                bibcode = p.get("bibcode", "").strip()
+                title = (p.get("title") or "").strip()
+                title_lower = title.lower()
+                arxiv_id = (p.get("arxiv_id") or "").strip()
+                # Duplicate check: same bibcode, same title (case-insensitive), or same arxiv_id via bibcode
+                if bibcode and bibcode in existing_bibcodes:
+                    skipped += 1
+                    continue
+                if title_lower and title_lower in existing_titles:
+                    skipped += 1
+                    continue
+                if arxiv_id:
+                    if arxiv_id in existing_bibcodes or f"arXiv:{arxiv_id}" in existing_bibcodes:
+                        skipped += 1
+                        continue
+                years = str(p.get("year", ""))
+                authors = (p.get("authors") or "")[:5000]
+                abstracts = (p.get("abstract") or "")[:20000]
+                keywords = (p.get("keywords") or "")[:2000]
+                try:
+                    c.execute('''
+                        INSERT OR IGNORE INTO my_publications (bibcode, title, authors, abstract, keywords, year)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (bibcode, title, authors, abstracts, keywords, years))
+                    if c.rowcount > 0:
+                        added += 1
+                    else:
+                        skipped += 1
+                except Exception:
+                    skipped += 1
+            conn.commit()
+            conn.close()
+            self._send_json({"success": True, "added": added, "skipped": skipped})
+
+        elif path == "/api/publications/remove":
+            bibcode = data.get("bibcode", "").strip()
+            if not bibcode:
+                self._send_json({"success": False, "error": "No bibcode provided"}, 400)
+                return
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("DELETE FROM my_publications WHERE bibcode = ?", (bibcode,))
+            removed = c.rowcount > 0
+            conn.commit()
+            conn.close()
+            self._send_json({"success": True, "removed": removed, "bibcode": bibcode})
+
+        elif path == "/api/save":
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             try:
@@ -496,7 +830,6 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 # Deduplicate: positive wins over negative
                 deduplicate_custom_keywords()
-                import sys
                 sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
                 import arxiv_ml_ranker
                 arxiv_ml_ranker.generate_features_html()
@@ -504,9 +837,294 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)}, 500)
 
+        elif path == "/api/refresh-daily":
+            try:
+                env = os.environ.copy()
+                env['PYTHONPATH'] = os.path.join(PROJECT_ROOT, 'src')
+                result = subprocess.run(
+                    [sys.executable, os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
+                     '--output', DAILY_HTML],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env=env
+                )
+                if result.returncode == 0:
+                    self._send_json({"success": True, "output": result.stdout})
+                else:
+                    self._send_json({"success": False, "error": result.stderr}, 500)
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)}, 500)
+
+        elif path == "/api/refresh-recent":
+            try:
+                env = os.environ.copy()
+                env['PYTHONPATH'] = os.path.join(PROJECT_ROOT, 'src')
+                result = subprocess.run(
+                    [sys.executable, os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
+                     '--recent', '--output', RECENT_HTML],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env=env
+                )
+                if result.returncode == 0:
+                    self._send_json({"success": True, "output": result.stdout})
+                else:
+                    self._send_json({"success": False, "error": result.stderr}, 500)
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)}, 500)
+
         else:
             self._send_text("Not found", 404)
 
+
+SEARCH_ARXIV_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Search arXiv / ADS</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
+    h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
+    .search-box { width: 100%; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; margin-bottom: 12px; box-sizing: border-box; }
+    .search-box:focus { outline: none; border-color: #b31b1b; }
+    .search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; flex-wrap: wrap; }
+    .source-toggle { display: flex; gap: 16px; align-items: center; }
+    .source-toggle label { cursor: pointer; font-size: 0.95em; }
+    .source-toggle input { margin-right: 4px; cursor: pointer; }
+    .search-btn { padding: 8px 20px; background: #b31b1b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95em; font-weight: bold; }
+    .search-btn:hover { background: #8a1515; }
+    .search-btn:disabled { background: #ccc; cursor: not-allowed; }
+    .stats { color: #666; margin-bottom: 20px; }
+    .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
+    .paper:hover { background: #f5f5f5; }
+    h2 { font-size: 1.1em; margin-top: 0; }
+    h2 a { color: #b31b1b; text-decoration: none; }
+    h2 a:hover { text-decoration: underline; }
+    .authors { color: #555; font-size: 0.95em; margin: 8px 0; }
+    .meta { font-size: 0.85em; color: #888; margin: 4px 0; }
+    .year { display: inline-block; background: #b31b1b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-right: 6px; }
+    .bibcode { font-family: monospace; font-size: 0.85em; color: #666; }
+    .arxiv-id { font-family: monospace; font-size: 0.85em; color: #666; }
+    .citations { display: inline-block; background: #1976d2; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-right: 6px; }
+    .source-badge { display: inline-block; background: #555; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; margin-right: 6px; }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: #666; font-size: 0.9em; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::before { content: "▸ "; color: #b31b1b; }
+    details[open] summary::before { content: "▾ "; }
+    .abstract-full { color: #333; font-size: 0.95em; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc; }
+    .nav { margin-bottom: 20px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .nav a { color: #b31b1b; text-decoration: none; font-weight: bold; }
+    .nav a:hover { text-decoration: underline; }
+    .empty { color: #888; font-style: italic; text-align: center; padding: 40px; }
+    .save-btn { margin-top: 8px; padding: 4px 12px; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: background 0.2s; }
+    .save-btn:hover { opacity: 0.9; }
+    .no-arxiv { color: #888; font-size: 0.85em; font-style: italic; }
+    .error { color: #c62828; background: #ffebee; padding: 12px; border-radius: 6px; margin-bottom: 16px; }
+    .scroll-top { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; background: #b31b1b; color: white; text-decoration: none; border-radius: 50%; font-size: 1.1em; font-weight: bold; cursor: pointer; border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 1000; transition: background 0.2s; }
+    .scroll-top:hover { background: #8a1515; }
+    .loading { color: #666; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="/daily.html">← Daily Papers</a>
+    <a href="/recent.html">📅 Recent Papers</a>
+    <a href="/chat.html">💬 Chat</a>
+    <a href="/database.html">📂 Saved Papers</a>
+    <a href="/publications.html">📚 My Publications</a>
+    <a href="/ml-features.html">🧠 ML Features</a>
+  </div>
+  <h1>🔍 Search arXiv / ADS</h1>
+
+  <div class="search-row">
+    <input type="text" class="search-box" id="searchInput" placeholder="Enter keywords, title, author, arXiv ID..." onkeydown="if(event.key==='Enter')doSearch()">
+    <button class="search-btn" id="searchBtn" onclick="doSearch()">🔍 Search</button>
+  </div>
+  <div class="source-toggle">
+    <label><input type="radio" name="source" value="arxiv" checked> arXiv API</label>
+    <label><input type="radio" name="source" value="ads"> ADS / SciX</label>
+  </div>
+
+  <p class="stats" id="stats">Enter a query and click Search.</p>
+  <div id="results"></div>
+
+  <button class="scroll-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="To the top">▲</button>
+
+  <script>
+    let savedIds = new Set();
+    let currentPapers = [];
+
+    async function loadSavedIds() {
+      try {
+        const resp = await fetch('/api/papers');
+        const data = await resp.json();
+        savedIds = new Set(data.papers.map(p => p.arxiv_id));
+      } catch (e) {
+        console.warn('Could not fetch saved papers:', e);
+      }
+    }
+
+    async function doSearch() {
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) return;
+      const source = document.querySelector('input[name="source"]:checked').value;
+      const btn = document.getElementById('searchBtn');
+      const stats = document.getElementById('stats');
+      const results = document.getElementById('results');
+
+      btn.disabled = true;
+      stats.textContent = 'Searching ' + source.toUpperCase() + '...';
+      results.innerHTML = '<p class="loading">Loading results...</p>';
+
+      try {
+        const resp = await fetch('/api/' + source + '/search?q=' + encodeURIComponent(q));
+        const data = await resp.json();
+
+        if (data.error) {
+          stats.textContent = 'Error: ' + data.error;
+          results.innerHTML = '<p class="error">' + escapeHtml(data.error) + '</p>';
+          btn.disabled = false;
+          return;
+        }
+
+        currentPapers = data.papers || [];
+        stats.textContent = data.count + ' result' + (data.count !== 1 ? 's' : '') + ' from ' + source.toUpperCase();
+        renderResults(data.papers, source);
+      } catch (e) {
+        stats.textContent = 'Search failed.';
+        results.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+      }
+      btn.disabled = false;
+    }
+
+    function renderResults(papers, source) {
+      const container = document.getElementById('results');
+      if (!papers || papers.length === 0) {
+        container.innerHTML = '<p class="empty">No papers found. Try a different query.</p>';
+        return;
+      }
+
+      const dateFetched = new Date().toISOString().split('T')[0];
+
+      container.innerHTML = papers.map((p, i) => {
+        const arxivId = p.id || '';
+        const hasArxiv = arxivId && arxivId.includes('.');
+        const title = escapeHtml(p.title || '');
+        const abstract = escapeHtml(p.abstract || '');
+        const authors = Array.isArray(p.authors) ? p.authors : (p.authors || '').split(',').map(a => a.trim());
+        const authorStr = authors.length <= 5 ? authors.join(', ') : authors.slice(0,5).join(', ') + ', et al.';
+        const authorStrEscaped = escapeHtml(authorStr);
+        const year = p.year || '';
+        const bibcode = p.bibcode || '';
+        const citationCount = p.citation_count || 0;
+        const doi = p.doi || '';
+
+        let links = '';
+        if (hasArxiv) {
+          links = `<a href="https://arxiv.org/abs/${arxivId}" target="_blank">arXiv:${arxivId}</a>`;
+          if (doi) links += ` | <a href="https://doi.org/${escapeHtml(doi)}" target="_blank">DOI</a>`;
+          links += ` | <a href="https://alphaxiv.org/abs/${arxivId}" target="_blank">AlphaXiv</a>`;
+        } else if (bibcode) {
+          links = `<span class="bibcode">${escapeHtml(bibcode)}</span>`;
+          if (doi) links += ` | <a href="https://doi.org/${escapeHtml(doi)}" target="_blank">DOI</a>`;
+          links += ` | <a href="https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract" target="_blank">ADS</a>`;
+        } else if (doi) {
+          links = `<a href="https://doi.org/${escapeHtml(doi)}" target="_blank">DOI</a>`;
+        }
+
+        let badges = `<span class="source-badge">${source.toUpperCase()}</span>`;
+        if (year) badges += `<span class="year">${escapeHtml(year)}</span>`;
+        if (citationCount) badges += `<span class="citations">${citationCount} citations</span>`;
+
+        let saveBtn = '';
+        if (hasArxiv) {
+          const isSaved = savedIds.has(arxivId);
+          const btnText = isSaved ? '✓ Saved' : '💾 Save to DB';
+          const btnBg = isSaved ? '#2e7d32' : '#b31b1b';
+          const btnData = isSaved ? 'true' : 'false';
+          // Store paper data as JSON in data-paper attribute to avoid onclick quoting issues
+          const paperData = JSON.stringify({id: arxivId, title: p.title || '', authors: authorStr, abstract: p.abstract || '', dateFetched: dateFetched}).replace(/"/g, '&quot;');
+          saveBtn = `<button class="save-btn" style="background:${btnBg};" data-saved="${btnData}" data-paper="${paperData}">${btnText}</button>`;
+        } else {
+          saveBtn = '<span class="no-arxiv">No arXiv ID — cannot save to DB</span>';
+        }
+
+        return `
+          <div class="paper" data-idx="${i}">
+            <h2>${i+1}. ${badges} <a href="${hasArxiv ? 'https://arxiv.org/abs/' + arxivId : (bibcode ? 'https://ui.adsabs.harvard.edu/abs/' + bibcode + '/abstract' : '#')}" target="_blank">${title}</a></h2>
+            <p class="meta">${links}</p>
+            <p class="authors"><strong>Authors:</strong> ${authorStrEscaped}</p>
+            <details>
+              <summary><strong style="color:#b31b1b;">View abstract</strong></summary>
+              <p class="abstract-full">${abstract || 'Abstract not available.'}</p>
+            </details>
+            ${saveBtn}
+          </div>
+        `;
+      }).join('');
+
+      // Attach click handlers via event delegation
+      container.addEventListener('click', handleResultClick);
+    }
+
+    async function handleResultClick(e) {
+      const btn = e.target.closest('.save-btn');
+      if (!btn) return;
+      e.preventDefault();
+
+      const paperData = JSON.parse(btn.dataset.paper.replace(/&quot;/g, '"'));
+      const arxivId = paperData.id;
+      const isSaved = btn.dataset.saved === 'true';
+
+      if (isSaved) {
+        if (!confirm('Remove this paper from your database?')) return;
+        try {
+          const resp = await fetch('/api/delete', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ arxiv_id: arxivId })
+          });
+          const data = await resp.json();
+          if (data.success) {
+            btn.textContent = '💾'; btn.style.background = '#b31b1b'; btn.dataset.saved = 'false';
+            savedIds.delete(arxivId);
+          } else { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
+        } catch (e) { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
+      } else {
+        try {
+          const resp = await fetch('/api/save', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              arxiv_id: arxivId, title: paperData.title, authors: paperData.authors,
+              abstract: paperData.abstract, relevance_score: 0, date_fetched: paperData.dateFetched
+            })
+          });
+          const data = await resp.json();
+          if (data.success) {
+            btn.textContent = '✓'; btn.style.background = '#2e7d32'; btn.dataset.saved = 'true';
+            savedIds.add(arxivId);
+          } else { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
+        } catch (e) { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
+      }
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    loadSavedIds();
+  </script>
+</body>
+</html>
+"""
 
 SAVE_BUTTON_SCRIPT = """
 <script>
@@ -525,7 +1143,7 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
             });
             const data = await resp.json();
             if (data.success) {
-                btn.textContent = '💾 Save to DB';
+                btn.textContent = '💾';
                 btn.style.background = '#b31b1b';
                 btn.style.cursor = 'pointer';
                 btn.dataset.saved = 'false';
@@ -554,7 +1172,7 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
             });
             const data = await resp.json();
             if (data.success) {
-                btn.textContent = '✓ Saved';
+                btn.textContent = '✓';
                 btn.style.background = '#2e7d32';
                 btn.style.cursor = 'pointer';
                 btn.dataset.saved = 'true';
@@ -596,14 +1214,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         const btn = document.createElement('button');
         btn.id = 'save-btn-' + arxivId;
         btn.className = 'save-btn';
-        btn.style.cssText = 'margin-top:8px;padding:4px 12px;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.85em;';
+        btn.style.cssText = 'margin-top:6px;padding:1px 6px;color:white;border:none;border-radius:3px;cursor:pointer;font-size:0.7em;white-space:nowrap;';
 
         if (savedIds.has(arxivId)) {
-            btn.textContent = '✓ Saved';
+            btn.textContent = '✓';
             btn.style.background = '#2e7d32';
             btn.dataset.saved = 'true';
         } else {
-            btn.textContent = '💾 Save to DB';
+            btn.textContent = '💾';
             btn.style.background = '#b31b1b';
             btn.dataset.saved = 'false';
         }
@@ -654,6 +1272,8 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
+    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/chat.html">💬 Chat</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
   </div>
@@ -748,16 +1368,16 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>My Publications — Jinyi Shangguan</title>
+  <title>My Publications</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
     h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
     .search-box { width: 100%; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; margin-bottom: 20px; box-sizing: border-box; }
     .search-box:focus { outline: none; border-color: #b31b1b; }
     .stats { color: #666; margin-bottom: 20px; }
-    .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
+    .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; position: relative; }
     .paper:hover { background: #f5f5f5; }
-    h2 { font-size: 1.1em; margin-top: 0; }
+    h2 { font-size: 1.1em; margin-top: 0; padding-right: 80px; }
     .authors { color: #555; font-size: 0.95em; margin: 8px 0; }
     .meta { font-size: 0.85em; color: #888; margin: 4px 0; }
     .year { display: inline-block; background: #b31b1b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
@@ -770,26 +1390,52 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
     .abstract-full { color: #333; font-size: 0.95em; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc; }
     .keywords { font-size: 0.85em; color: #666; margin-top: 6px; }
     .keywords strong { color: #b31b1b; }
-    .nav { margin-bottom: 20px; display: flex; gap: 16px; }
+    .nav { margin-bottom: 20px; display: flex; gap: 16px; flex-wrap: wrap; }
     .nav a { color: #b31b1b; text-decoration: none; font-weight: bold; }
     .nav a:hover { text-decoration: underline; }
     .empty { color: #888; font-style: italic; text-align: center; padding: 40px; }
+    .scix-bar { background: #f0f4f8; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .scix-bar label { font-weight: bold; white-space: nowrap; color: #333; }
+    .scix-bar input { flex: 1; min-width: 260px; padding: 8px 12px; border: 2px solid #d0d7de; border-radius: 6px; font-size: 0.95em; }
+    .btn { padding: 8px 18px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 0.95em; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-generate { background: #b31b1b; }
+    .btn-add { background: #2da44e; }
+    .btn-remove { position: absolute; top: 12px; right: 12px; padding: 4px 10px; background: #cf222e; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+    .btn-remove:hover { background: #a40e26; }
+    .preview-section { margin-bottom: 20px; border: 2px solid #2da44e; border-radius: 8px; padding: 16px; background: #f6fef6; }
+    .preview-section h3 { margin-top: 0; color: #1a7f37; }
+    .preview-item { padding: 8px 0; border-bottom: 1px solid #d0e8d0; font-size: 0.95em; }
+    .preview-item:last-child { border-bottom: none; }
+    .preview-item .bibcode { margin-left: 8px; }
+    .status-msg { font-size: 0.85em; min-width: 100px; }
   </style>
 </head>
 <body>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
+    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/chat.html">💬 Chat</a>
     <a href="/database.html">📂 Saved Papers</a>
     <a href="/ml-features.html">🧠 ML Features</a>
   </div>
-  <h1>📚 My Publications — Jinyi Shangguan</h1>
+  <h1>📚 My Publications</h1>
+  <div class="scix-bar">
+    <label for="scixLinkInput">SciX Library Link:</label>
+    <input type="text" id="scixLinkInput" placeholder="https://scixplorer.org/user/libraries/...">
+    <button id="generateBtn" class="btn btn-generate" onclick="generatePapers()">Fetch</button>
+    <button id="addBtn" class="btn btn-add" onclick="addPapers()" disabled>Add</button>
+    <span id="scixStatus" class="status-msg"></span>
+  </div>
+  <div id="previewSection" class="preview-section" style="display:none;"></div>
   <input type="text" class="search-box" id="searchInput" placeholder="Search my publications by title, author, abstract, or keywords..." oninput="searchPubs()">
   <p class="stats" id="stats">Loading...</p>
   <div id="pubList"></div>
 
   <script>
     let allPubs = [];
+    let fetchedPapers = [];
 
     async function loadPubs() {
       const resp = await fetch('/api/publications');
@@ -809,17 +1455,18 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
       renderPubs(data.publications);
     }
 
-function renderPubs(pubs) {
+    function renderPubs(pubs) {
       const container = document.getElementById('pubList');
-      document.getElementById('stats').textContent = pubs.length + ' publication' + (pubs.length !== 1 ? 's' : '') + ' found';
-      
+      document.getElementById('stats').textContent = pubs.length + ' publication' + (pubs.length !== 1 ? 's' : '') + ' in database';
+
       if (pubs.length === 0) {
-        container.innerHTML = '<p class="empty">No publications found matching your search.</p>';
+        container.innerHTML = '<p class="empty">No publications in the database. Paste a SciX library link above and click "Fetch".</p>';
         return;
       }
-      
+
       container.innerHTML = pubs.map(p => `
-        <div class="paper">
+        <div class="paper" id="paper-${escapeHtml(p.bibcode)}">
+          <button class="btn-remove" onclick="removePaper('${escapeHtml(p.bibcode)}')" title="Remove this paper">✕</button>
           <h2>${escapeHtml(p.title)}</h2>
           <span class="year">${p.year || 'N/A'}</span>
           <span class="bibcode">${escapeHtml(p.bibcode)}</span>
@@ -839,6 +1486,140 @@ function renderPubs(pubs) {
       return div.innerHTML;
     }
 
+    async function loadScixLink() {
+      try {
+        const resp = await fetch('/api/scix-link');
+        const data = await resp.json();
+        if (data.scix_link) {
+          document.getElementById('scixLinkInput').value = data.scix_link;
+        }
+      } catch (e) {
+        console.error('Failed to load SciX link:', e);
+      }
+    }
+
+    async function generatePapers() {
+      const link = document.getElementById('scixLinkInput').value.trim();
+      const statusEl = document.getElementById('scixStatus');
+      const genBtn = document.getElementById('generateBtn');
+      const addBtn = document.getElementById('addBtn');
+      const previewSection = document.getElementById('previewSection');
+
+      if (!link) {
+        statusEl.textContent = 'Please enter a SciX link';
+        statusEl.style.color = '#cf222e';
+        return;
+      }
+
+      genBtn.disabled = true;
+      addBtn.disabled = true;
+      statusEl.textContent = 'Fetching papers from SciX...';
+      statusEl.style.color = '#666';
+
+      try {
+        const resp = await fetch('/api/scix/fetch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({scix_link: link})
+        });
+        const data = await resp.json();
+        if (data.success) {
+          fetchedPapers = data.papers;
+          statusEl.textContent = 'Found ' + data.count + ' papers';
+          statusEl.style.color = '#2da44e';
+          renderPreview(fetchedPapers);
+          addBtn.disabled = false;
+        } else {
+          fetchedPapers = [];
+          statusEl.textContent = 'Error: ' + (data.error || 'Unknown error');
+          statusEl.style.color = '#cf222e';
+          previewSection.style.display = 'none';
+        }
+      } catch (e) {
+        fetchedPapers = [];
+        statusEl.textContent = 'Network error';
+        statusEl.style.color = '#cf222e';
+        previewSection.style.display = 'none';
+      }
+      genBtn.disabled = false;
+    }
+
+    function renderPreview(papers) {
+      const section = document.getElementById('previewSection');
+      if (papers.length === 0) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = 'block';
+      const existingBibcodes = new Set(allPubs.map(p => p.bibcode));
+      const existingTitles = new Set(allPubs.map(p => p.title.toLowerCase().trim()));
+      let newCount = 0;
+      let dupCount = 0;
+      const items = papers.map(p => {
+        const isDup = existingBibcodes.has(p.bibcode) || existingTitles.has((p.title || '').toLowerCase().trim());
+        if (isDup) dupCount++; else newCount++;
+        return `<div class="preview-item" style="color:${isDup ? '#888' : '#333'}">
+          ${isDup ? '[duplicate]' : '[new]'}
+          <strong>${escapeHtml(p.title)}</strong>
+          <span class="bibcode">${escapeHtml(p.bibcode)}</span>
+          <span class="year">${p.year || ''}</span>
+        </div>`;
+      }).join('');
+      section.innerHTML = `<h3>Preview — ${papers.length} papers from SciX (${newCount} new, ${dupCount} duplicates)</h3>${items}`;
+    }
+
+    async function addPapers() {
+      if (fetchedPapers.length === 0) return;
+      const addBtn = document.getElementById('addBtn');
+      const statusEl = document.getElementById('scixStatus');
+      addBtn.disabled = true;
+      statusEl.textContent = 'Adding papers...';
+      statusEl.style.color = '#666';
+
+      try {
+        const resp = await fetch('/api/publications/add', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({papers: fetchedPapers})
+        });
+        const data = await resp.json();
+        if (data.success) {
+          statusEl.textContent = 'Added ' + data.added + ', skipped ' + data.skipped + ' duplicates';
+          statusEl.style.color = '#2da44e';
+          document.getElementById('previewSection').style.display = 'none';
+          fetchedPapers = [];
+          addBtn.disabled = true;
+          await loadPubs();
+        } else {
+          statusEl.textContent = 'Error: ' + (data.error || 'Unknown');
+          statusEl.style.color = '#cf222e';
+        }
+      } catch (e) {
+        statusEl.textContent = 'Network error';
+        statusEl.style.color = '#cf222e';
+      }
+      addBtn.disabled = false;
+    }
+
+    async function removePaper(bibcode) {
+      if (!confirm('Remove this paper from the database?')) return;
+      try {
+        const resp = await fetch('/api/publications/remove', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({bibcode: bibcode})
+        });
+        const data = await resp.json();
+        if (data.removed) {
+          allPubs = allPubs.filter(p => p.bibcode !== bibcode);
+          renderPubs(allPubs);
+        }
+      } catch (e) {
+        console.error('Failed to remove paper:', e);
+      }
+    }
+
+    loadScixLink();
     loadPubs();
   </script>
 </body>
@@ -855,6 +1636,8 @@ def run_server(port=8765):
     print(f"  Saved papers:     http://localhost:{port}/database.html")
     print(f"  My publications:  http://localhost:{port}/publications.html")
     print(f"  My ML features:   http://localhost:{port}/ml-features.html")
+    print(f"  Search arXiv/ADS: http://localhost:{port}/search-arxiv.html")
+    print(f"  Chat with papers: http://localhost:{port}/chat.html")
     print("Press Ctrl+C to stop")
     try:
         server.serve_forever()

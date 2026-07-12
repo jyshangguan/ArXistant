@@ -10,6 +10,8 @@ import argparse
 import json
 import os
 import re
+import ssl
+import subprocess
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -17,7 +19,31 @@ from datetime import datetime, timedelta
 import html as html_module
 
 
+def _fetch_url(url, timeout=120):
+    """Fetch URL content using curl (Python urllib has SSL issues on macOS LibreSSL)."""
+    result = subprocess.run(
+        ['curl', '-s', '--max-time', str(timeout), '-A', 'Mozilla/5.0', url],
+        capture_output=True, text=True, timeout=timeout + 15
+    )
+    if result.returncode != 0:
+        raise urllib.error.URLError(f'curl failed with rc={result.returncode}: {result.stderr[:200]}')
+    return result.stdout
+
+
 SECTION_ORDER = ['New submissions', 'Cross submissions', 'Replacement submissions']
+
+
+def get_arxiv_release_date(dt=None):
+    """Return the most recent arXiv release date (Mon-Fri)."""
+    if dt is None:
+        dt = datetime.now()
+    weekday = dt.weekday()  # Monday=0, Sunday=6
+    if weekday < 5:  # Mon-Fri
+        return dt.strftime('%Y-%m-%d')
+    # Saturday or Sunday: go back to Friday
+    days_back = weekday - 4
+    friday = dt - timedelta(days=days_back)
+    return friday.strftime('%Y-%m-%d')
 
 
 SAVE_BUTTON_SCRIPT = """<script>
@@ -35,7 +61,8 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
             });
             const data = await resp.json();
             if (data.success) {
-                btn.textContent = '💾 Save to DB';
+                btn.textContent = '💾';
+                btn.title = 'Save to database';
                 btn.style.background = '#b31b1b';
                 btn.dataset.saved = 'false';
                 fetch('http://localhost:8765/api/regenerate-interests', {method: 'POST'}).catch(() => {});
@@ -67,7 +94,8 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
             });
             const data = await resp.json();
             if (data.success) {
-                btn.textContent = '✓ Saved';
+                btn.textContent = '✓';
+                btn.title = 'Saved to database';
                 btn.style.background = '#2e7d32';
                 btn.dataset.saved = 'true';
             } else {
@@ -112,14 +140,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         const btn = document.createElement('button');
         btn.id = 'save-btn-' + arxivId;
         btn.className = 'save-btn';
-        btn.style.cssText = 'margin-top:8px;padding:4px 12px;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.85em;';
+        btn.style.cssText = 'margin-top:6px;padding:1px 6px;color:white;border:none;border-radius:3px;cursor:pointer;font-size:0.7em;white-space:nowrap;';
 
         if (savedIds.has(arxivId)) {
-            btn.textContent = '✓ Saved';
+            btn.textContent = '✓';
+            btn.title = 'Saved to database';
             btn.style.background = '#2e7d32';
             btn.dataset.saved = 'true';
         } else {
-            btn.textContent = '💾 Save to DB';
+            btn.textContent = '💾';
+            btn.title = 'Save to database';
             btn.style.background = '#b31b1b';
             btn.dataset.saved = 'false';
         }
@@ -141,9 +171,7 @@ def fetch_arxiv_papers_by_date(date_str):
         f"&start=0&max_results=200&sortBy=submittedDate&sortOrder=descending"
     )
     
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    resp = urllib.request.urlopen(req)
-    data = resp.read().decode('utf-8')
+    data = _fetch_url(url)
     
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
     root = ET.fromstring(data)
@@ -189,9 +217,7 @@ def fetch_arxiv_papers(date_str=None, recent=False):
     if recent:
         # Fetch from arXiv 'recent' page with show=2000 to get all papers
         page_url = "https://arxiv.org/list/astro-ph/recent?show=2000"
-        req = urllib.request.Request(page_url, headers={'User-Agent': 'Mozilla/5.0'})
-        resp = urllib.request.urlopen(req)
-        html = resp.read().decode('utf-8')
+        html = _fetch_url(page_url)
         
         # Extract all arXiv IDs in order
         id_pattern = re.compile(r'href\s*=\s*"/abs/(\d{4}\.\d{5,})"')
@@ -220,9 +246,7 @@ def fetch_arxiv_papers(date_str=None, recent=False):
                 f"id_list={id_list}&max_results={len(batch)}"
             )
             time.sleep(0.5)
-            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-            resp = urllib.request.urlopen(req)
-            data = resp.read().decode('utf-8')
+            data = _fetch_url(api_url)
             
             root = ET.fromstring(data)
             entries = root.findall('atom:entry', ns)
@@ -257,10 +281,8 @@ def fetch_arxiv_papers(date_str=None, recent=False):
     
     # Fetch exact paper list from arXiv 'new' page
     page_url = "https://arxiv.org/list/astro-ph/new"
-    req = urllib.request.Request(page_url, headers={'User-Agent': 'Mozilla/5.0'})
-    resp = urllib.request.urlopen(req)
-    html = resp.read().decode('utf-8')
-    
+    html = _fetch_url(page_url)
+
     # Parse HTML to determine sections for each item
     item_section_map = {}
     current_section = 'New submissions'
@@ -316,9 +338,7 @@ def fetch_arxiv_papers(date_str=None, recent=False):
             f"id_list={id_list}&max_results={len(batch)}"
         )
         time.sleep(0.5)
-        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-        resp = urllib.request.urlopen(req)
-        data = resp.read().decode('utf-8')
+        data = _fetch_url(api_url)
         
         root = ET.fromstring(data)
         entries = root.findall('atom:entry', ns)
@@ -383,17 +403,22 @@ def escape_html(text):
 
 def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     """Generate HTML output with toggle-abstract buttons, grouped by section."""
-    if date_str is None:
-        date_str = datetime.now().strftime('%Y-%m-%d')
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     if page_type == 'recent':
+        if date_str is None:
+            date_str = datetime.now().strftime('%Y-%m-%d')
         title_text = f'arXiv Astro-ph Recent Papers — {date_str}'
         h1_text = f'arXiv Astro-ph Recent Papers — {date_str}'
-        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/daily.html" target="_blank">📅 Daily Papers</a>'
+        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/daily.html"><span class="icon">📅</span><span class="label">Daily Papers</span></a>'
+        refresh_onclick = 'refreshRecent()'
     else:
-        title_text = f'arXiv Astro-ph New Papers — {date_str}'
-        h1_text = f'arXiv Astro-ph New Papers — {date_str}'
-        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/recent.html" target="_blank">📅 Recent Papers</a>'
+        # Use most recent arXiv release date (weekdays only)
+        display_date = get_arxiv_release_date()
+        title_text = f'arXiv Astro-ph New Papers — {display_date}'
+        h1_text = f'arXiv Astro-ph New Papers — {display_date}'
+        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/recent.html"><span class="icon">📅</span><span class="label">Recent Papers</span></a>'
+        refresh_onclick = 'refreshDaily()'
 
     # Group papers by section
     sections = {}
@@ -432,25 +457,35 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('    .arxiv-id a:hover { text-decoration: underline; }')
     lines.append('    .nav-bar { display: flex; gap: 12px; margin: 12px 0 20px 0; flex-wrap: wrap; }')
     lines.append('    .nav-bar-bottom { display: flex; gap: 12px; margin: 30px 0 10px 0; flex-wrap: wrap; }')
-    lines.append('    .nav-btn { display: inline-block; padding: 8px 16px; background: #b31b1b; color: white; text-decoration: none; border-radius: 6px; font-size: 0.9em; font-weight: 500; transition: background 0.2s; }')
-    lines.append('    .nav-btn:hover { background: #8a1515; }')
-    lines.append('    .nav-btn-secondary { display: inline-block; padding: 8px 16px; background: #555; color: white; text-decoration: none; border-radius: 6px; font-size: 0.9em; font-weight: 500; transition: background 0.2s; }')
-    lines.append('    .nav-btn-secondary:hover { background: #333; }')
+    lines.append('    .nav-btn { display: inline-block; padding: 6px 10px; background: #b31b1b; color: white; text-decoration: none; border-radius: 6px; font-size: 1em; font-weight: 500; transition: background 0.2s, padding 0.5s ease; overflow: hidden; white-space: nowrap; }')
+    lines.append('    .nav-btn:hover { background: #8a1515; padding: 6px 14px; }')
+    lines.append('    .nav-btn-secondary { display: inline-block; padding: 6px 10px; background: #555; color: white; text-decoration: none; border-radius: 6px; font-size: 1em; font-weight: 500; transition: background 0.2s, padding 0.5s ease; overflow: hidden; white-space: nowrap; }')
+    lines.append('    .nav-btn-secondary:hover { background: #333; padding: 6px 14px; }')
+    lines.append('    .nav-btn .icon, .nav-btn-secondary .icon, .refresh-btn .icon { display: inline-block; vertical-align: middle; font-size: 1.2em; }')
+    lines.append('    .nav-btn .label, .nav-btn-secondary .label, .refresh-btn .label { display: inline-block; max-width: 0; overflow: hidden; white-space: nowrap; vertical-align: middle; opacity: 0; transition: max-width 0.5s ease, opacity 0.5s ease, padding 0.5s ease; padding-left: 0; }')
+    lines.append('    .nav-btn:hover .label, .nav-btn-secondary:hover .label, .refresh-btn:hover .label { max-width: 200px; opacity: 1; padding-left: 6px; }')
     lines.append('    .scroll-top { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; background: #b31b1b; color: white; text-decoration: none; border-radius: 50%; font-size: 1.1em; font-weight: bold; cursor: pointer; border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 1000; transition: background 0.2s; }')
     lines.append('    .scroll-top:hover { background: #8a1515; }')
-    lines.append('    .save-btn { margin-top: 8px; padding: 4px 12px; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: background 0.2s; }')
+    lines.append('    .save-btn { margin-top: 6px; padding: 1px 6px; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7em; white-space: nowrap; transition: background 0.2s; }')
     lines.append('    .save-btn:hover { opacity: 0.9; }')
+    lines.append('    .refresh-btn { display: inline-block; padding: 6px 10px; background: #1976d2; color: white; border: none; border-radius: 6px; font-size: 1em; font-weight: 500; cursor: pointer; transition: background 0.2s, padding 0.5s ease; overflow: hidden; white-space: nowrap; }')
+    lines.append('    .refresh-btn:hover { background: #1565c0; padding: 6px 14px; }')
+    lines.append('    .refresh-btn:disabled { background: #90a4ae; cursor: not-allowed; }')
+    lines.append('    .footnote { font-size: 0.8em; color: #888; margin-top: 30px; padding-top: 10px; border-top: 1px solid #e0e0e0; }')
     lines.append('  </style>')
     lines.append('</head>')
     lines.append('<body>')
-    lines.append(f'  <h1>{h1_text}</h1>')
     lines.append('  <div class="nav-bar">')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html" target="_blank">📚 My Database</a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html" target="_blank">📄 My Publications</a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html" target="_blank">🧠 ML Features</a>')
+    lines.append('    <button class="refresh-btn" id="refreshBtn" onclick="' + refresh_onclick + '"><span class="icon">🔄</span><span class="label">Refresh</span></button>')
     lines.append(nav_extra)
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/search-arxiv.html"><span class="icon">🔍</span><span class="label">Search arXiv</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/chat.html"><span class="icon">💬</span><span class="label">Chat</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html"><span class="icon">📂</span><span class="label">Saved Papers</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html"><span class="icon">📚</span><span class="label">My Publications</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html"><span class="icon">🧠</span><span class="label">ML Features</span></a>')
     lines.append('  </div>')
-    lines.append(f'  <p class="total">Total papers: {len(scored_papers)}</p>')
+    lines.append(f'  <h1>{h1_text}</h1>')
+    lines.append(f'  <p class="total">Total papers: {len(scored_papers)} <span class="footnote" style="margin-left: 12px; border: none; padding: 0;">(generated: {generated_at})</span></p>')
 
     # Build ordered section list: SECTION_ORDER first, then any remaining sections
     ordered_sections = [s for s in SECTION_ORDER if s in sections]
@@ -486,12 +521,60 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
             lines.append('  </div>')
 
     lines.append('  <div class="nav-bar-bottom">')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html" target="_blank">📚 My Database</a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html" target="_blank">📄 My Publications</a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html" target="_blank">🧠 ML Features</a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/search-arxiv.html"><span class="icon">🔍</span><span class="label">Search arXiv</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/chat.html"><span class="icon">💬</span><span class="label">Chat</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html"><span class="icon">📂</span><span class="label">Saved Papers</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html"><span class="icon">📚</span><span class="label">My Publications</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html"><span class="icon">🧠</span><span class="label">ML Features</span></a>')
     lines.append(nav_extra)
     lines.append('  </div>')
     lines.append('  <button class="scroll-top" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="To the top">▲</button>')
+    lines.append('''<script>
+async function refreshDaily() {
+    if (!confirm('Re-fetch and re-rank papers from arXiv?')) return;
+    const btn = document.getElementById('refreshBtn');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span class="icon">⏳</span><span class="label">Refreshing...</span>';
+    btn.disabled = true;
+    try {
+        const resp = await fetch('/api/refresh-daily', {method: 'POST'});
+        const data = await resp.json();
+        if (data.success) {
+            window.location.reload();
+        } else {
+            alert('Refresh failed: ' + (data.error || 'Unknown error'));
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('Refresh failed: ' + e.message);
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+async function refreshRecent() {
+    if (!confirm('Re-fetch and re-rank recent papers from arXiv?')) return;
+    const btn = document.getElementById('refreshBtn');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span class="icon">⏳</span><span class="label">Refreshing...</span>';
+    btn.disabled = true;
+    try {
+        const resp = await fetch('/api/refresh-recent', {method: 'POST'});
+        const data = await resp.json();
+        if (data.success) {
+            window.location.reload();
+        } else {
+            alert('Refresh failed: ' + (data.error || 'Unknown error'));
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('Refresh failed: ' + e.message);
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>''')
     lines.append(SAVE_BUTTON_SCRIPT)
     lines.append('</body>')
     lines.append('</html>')
