@@ -10,6 +10,55 @@
 
 ---
 
+## How to use ArXistant (Chrome Extension)
+
+The **Chrome extension** is the primary way to use ArXistant. Install it once, then everything is one click away.
+
+### 1. Install the extension
+
+```bash
+cd /path/to/ArXistant/chrome-extension
+```
+
+1. Open Chrome → `chrome://extensions/`
+2. Toggle **Developer mode** ON
+3. Click **"Load unpacked"**
+4. Select the `chrome-extension/` folder
+
+### 2. Register the server launcher (macOS)
+
+The extension can start the ArXistant server for you. Double-click this app once to register it with macOS:
+
+```
+chrome-extension/ArXistantServer.app
+```
+
+> If macOS shows a security warning, go to **System Settings → Privacy & Security** and click **"Open Anyway"**.
+
+### 3. Daily workflow
+
+| Action | How |
+|--------|-----|
+| **Check today's papers** | Click the ArXistant icon → "Open Daily Papers" |
+| **Server is offline** | Click "Start Server" in the popup — it launches automatically |
+| **Mark as visited** | Click "✓ Mark as visited today" to dismiss the daily reminder |
+| **Browse recent papers** | Click "Open Recent Papers" (~5 days) |
+| **Search arXiv/ADS** | Click "🔍 Search arXiv" |
+| **View saved papers** | Click "📂 Saved Papers" |
+| **View publications** | Click "📚 My Publications" |
+| **Inspect ML model** | Click "🧠 ML Features" |
+| **Change reminder time** | Click "⚙️ Settings" |
+
+### 4. Daily reminder
+
+The extension shows a browser notification at your configured time (default 10:30 AM) **only if you haven't visited the daily page yet**. Click the notification to open the papers.
+
+### 5. Save papers
+
+On any paper list, click the **💾** button next to a paper to save it to your database. Saved papers feed the ML model — the more you save, the better the rankings get.
+
+---
+
 ## What it does
 
 ### 1. Daily arXiv fetch & ML ranking
@@ -40,7 +89,30 @@ Paste your SciX library link (e.g. `https://scixplorer.org/user/libraries/...`) 
 
 ---
 
-## Quick start
+## Chrome Extension Architecture
+
+```
+chrome-extension/
+├── manifest.json              # Extension metadata & permissions
+├── background.js              # Service worker: alarms, notifications, tracking
+├── popup.html + popup.js      # Click icon → status, buttons, server control
+├── popup.css                  # Popup styles
+├── options.html + options.js  # Settings: server URL, reminder time
+├── icons/                     # Red "A" icons (16, 48, 128 px)
+└── ArXistantServer.app/       # macOS helper app (launches server)
+    ├── Contents/
+    │   ├── Info.plist         # App metadata + arxistant:// URL scheme
+    │   ├── MacOS/
+    │   │   └── ArXistantServer
+    │   └── Resources/
+    │       └── icon.png
+```
+
+The extension communicates with your local server at `http://localhost:8765`. When the server is offline, the popup shows a **"Start Server"** button that launches `ArXistantServer.app` via the `arxistant://start` URL scheme.
+
+---
+
+## Quick start (without extension)
 
 ### Prerequisites
 
@@ -163,6 +235,16 @@ ArXistant/
 │   │   ├── custom_positive.json       # User-defined positive keywords
 │   │   └── custom_negative.json       # User-defined negative keywords
 │   └── ...
+├── chrome-extension/                  # Chrome extension (primary UI)
+│   ├── manifest.json
+│   ├── background.js
+│   ├── popup.html + popup.js + popup.css
+│   ├── options.html + options.js
+│   ├── icons/
+│   │   ├── icon16.png
+│   │   ├── icon48.png
+│   │   └── icon128.png
+│   └── ArXistantServer.app/           # macOS helper to launch server
 ├── docs/
 │   └── logo0.5.jpg
 ├── start_server.sh                    # Launch server in background

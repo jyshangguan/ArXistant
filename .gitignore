@@ -26,5 +26,12 @@ local/
 # One-off scripts kept in src but not meant to be run regularly
 src/fix_publications.py
 
+# Chrome extension (personal, loaded unpacked locally)
+chrome-extension/
+
+# Claude Code project config (personal, not part of the package)
+.claude/
+src/fix_publications.py
+
 # Claude Code project config (personal, not part of the package)
 .claude/
