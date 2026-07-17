@@ -41,17 +41,20 @@ chrome-extension/ArXistantServer.app
 |--------|-----|
 | **Check today's papers** | Click the ArXistant icon → "Open Daily Papers" |
 | **Server is offline** | Click "Start Server" in the popup — it launches automatically |
-| **Mark as visited** | Click "✓ Mark as visited today" to dismiss the daily reminder |
 | **Browse recent papers** | Click "Open Recent Papers" (~5 days) |
 | **Search arXiv/ADS** | Click "🔍 Search arXiv" |
 | **View saved papers** | Click "📂 Saved Papers" |
 | **View publications** | Click "📚 My Publications" |
 | **Inspect ML model** | Click "🧠 ML Features" |
-| **Change reminder time** | Click "⚙️ Settings" |
+| **Change reminder times** | Click "⚙️ Settings" to add or remove daily times |
 
 ### 4. Daily reminder
 
-The extension shows a browser notification at your configured time (default 10:30 AM) **only if you haven't visited the daily page yet**. Click the notification to open the papers.
+The extension shows a browser notification at every configured time (default
+10:30 AM). Reminders are not suppressed after visiting a paper page. Click a
+notification to open the daily papers. The settings page shows Chrome's
+notification permission and the exact next scheduled occurrence of each alarm;
+its test button can be used to verify macOS notification delivery.
 
 ### 5. Save papers
 

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ArXistant</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon48.png" alt="ArXistant" class="logo">
+    <h1>ArXistant</h1>
+  </div>
+
+  <div id="server-section" class="server-section" style="display: none;">
+    <div class="server-offline">
+      <span class="server-icon">🔴</span>
+      <span class="server-text">Server is offline</span>
+    </div>
+    <button id="btn-start-server" class="btn btn-start">
+      <span class="icon">▶️</span>
+      <span class="label">Start Server</span>
+    </button>
+  </div>
+
+  <div class="actions">
+    <button id="btn-daily" class="btn btn-primary">
+      <span class="icon">📅</span>
+      <span class="label">Open Daily Papers</span>
+    </button>
+
+    <button id="btn-recent" class="btn btn-secondary">
+      <span class="icon">📆</span>
+      <span class="label">Open Recent Papers</span>
+    </button>
+
+    <button id="btn-ml" class="btn btn-secondary">
+      <span class="icon">🧠</span>
+      <span class="label">ML Features</span>
+    </button>
+
+    <button id="btn-db" class="btn btn-secondary">
+      <span class="icon">📂</span>
+      <span class="label">Saved Papers</span>
+    </button>
+  </div>
+
+  <div class="quick-links">
+    <a href="#" id="link-pubs">📚 My Publications</a>
+    <a href="#" id="link-search">🔍 Search arXiv</a>
+  </div>
+
+  <div class="footer">
+    <a href="#" id="link-options" class="link-options">⚙️ Settings</a>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

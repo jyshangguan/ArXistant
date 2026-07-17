@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# Keep all environment handling in the canonical launcher.  In particular,
+# start_server.sh uses env -i so Launch Services/Kimi variables do not reach
+# Python and interfere with numpy imports.
+exec /bin/bash "/Users/shangguan/Softwares/my_modules/ArXistant/start_server.sh"

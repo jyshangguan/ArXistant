@@ -26,8 +26,9 @@ local/
 # One-off scripts kept in src but not meant to be run regularly
 src/fix_publications.py
 
-# Chrome extension (personal, loaded unpacked locally)
-chrome-extension/
+# Obsolete local Chrome-extension launcher experiments
+chrome-extension/native-host/
+chrome-extension/start-server.sh
 
 # Claude Code project config (personal, not part of the package)
 .claude/

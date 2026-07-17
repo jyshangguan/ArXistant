@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ArXistant Settings</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      color: #333;
+      background: #f5f5f5;
+      padding: 40px 20px;
+    }
+
+    .container {
+      max-width: 480px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      padding: 28px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid #b31b1b;
+    }
+
+    .header img {
+      width: 36px;
+      height: 36px;
+      border-radius: 4px;
+    }
+
+    .header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: #555;
+      margin-bottom: 6px;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    input[type="text"],
+    input[type="time"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus,
+    input[type="time"]:focus {
+      outline: none;
+      border-color: #b31b1b;
+    }
+
+    .reminder-time-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .reminder-time-row input {
+      flex: 1;
+    }
+
+    .btn-remove-time {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 0 12px;
+      background: white;
+      color: #777;
+      cursor: pointer;
+    }
+
+    .btn-remove-time:hover {
+      border-color: #b31b1b;
+      color: #b31b1b;
+    }
+
+    .alarm-status {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 6px;
+      background: #f8f9fa;
+      color: #666;
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid #e8e8e8;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-primary {
+      background: #b31b1b;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #8a1515;
+    }
+
+    .btn-secondary {
+      background: #f0f0f0;
+      color: #333;
+    }
+
+    .btn-secondary:hover {
+      background: #e0e0e0;
+    }
+
+    .save-status {
+      margin-top: 12px;
+      font-size: 13px;
+      font-weight: 500;
+      min-height: 20px;
+    }
+
+    .save-status.success {
+      color: #2e7d32;
+    }
+
+    .save-status.error {
+      color: #c62828;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #333;
+      margin: 24px 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+
+    .info-box {
+      background: #f8f9fa;
+      border-left: 3px solid #b31b1b;
+      padding: 12px 14px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 20px;
+    }
+
+    .info-box p {
+      font-size: 12px;
+      color: #666;
+      line-height: 1.6;
+    }
+
+    .info-box code {
+      background: #eee;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: "SF Mono", Monaco, monospace;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="icons/icon48.png" alt="ArXistant">
+      <h1>ArXistant Settings</h1>
+    </div>
+
+    <div class="info-box">
+      <p>
+        Configure when and where ArXistant reminds you to check your daily arXiv papers.
+        Every configured reminder is shown, even if you already opened a paper page that day.
+      </p>
+    </div>
+
+    <div class="section-title">Server</div>
+
+    <div class="form-group">
+      <label for="server-url">ArXistant Server URL</label>
+      <input type="text" id="server-url" value="http://localhost:8765/daily.html" placeholder="http://localhost:8765/daily.html">
+      <p class="hint">The URL of your local ArXistant server. Default is <code>http://localhost:8765/daily.html</code>.</p>
+    </div>
+
+    <div class="section-title">Reminder Times</div>
+
+    <div class="form-group">
+      <label>Daily Reminder Times</label>
+      <div id="reminder-times"></div>
+      <button type="button" id="btn-add-time" class="btn btn-secondary">+ Add reminder</button>
+      <p class="hint">Add as many local reminder times as you need.</p>
+      <pre id="alarm-status" class="alarm-status">Loading scheduled reminders…</pre>
+    </div>
+
+    <div class="section-title">Debug</div>
+
+    <div class="form-group">
+      <label>Test Notification</label>
+      <p class="hint">Click to trigger a test notification immediately. Useful for verifying macOS notification permissions.</p>
+      <button id="btn-test-notify" class="btn btn-secondary" style="margin-top:8px;">🔔 Test Notification</button>
+      <p id="test-status" class="hint" style="margin-top:8px;"></p>
+      <div class="info-box" style="margin-top:12px; margin-bottom:0;">
+        <p>
+          If Chrome accepts the test but no banner appears, open
+          <strong>System Settings → Notifications → Google Chrome</strong> and
+          enable notifications with alert style <strong>Banners</strong> or
+          <strong>Alerts</strong>. Also turn off Focus/Do Not Disturb while
+          testing.
+        </p>
+        <a class="btn btn-secondary" style="display:inline-block; width:auto; margin-top:8px; text-decoration:none;"
+           href="x-apple.systempreferences:com.apple.Notifications-Settings.extension?com.google.Chrome">
+          Open macOS Notification Settings
+        </a>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="btn-save" class="btn btn-primary">Save Settings</button>
+      <button id="btn-reset" class="btn btn-secondary">Reset to Defaults</button>
+    </div>
+
+    <div id="save-status" class="save-status"></div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
