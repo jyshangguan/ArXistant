@@ -830,10 +830,34 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 # Deduplicate: positive wins over negative
                 deduplicate_custom_keywords()
-                sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
-                import arxiv_ml_ranker
-                arxiv_ml_ranker.generate_features_html()
-                self._send_json({"success": True, "message": "Features HTML regenerated (deduplicated)"})
+                # Run ML generation in a fresh interpreter. macOS can attach
+                # __PYVENV_LAUNCHER__ to app-launched Python processes; a clean
+                # subprocess prevents that state from breaking a late numpy
+                # import inside this long-running HTTP server.
+                clean_env = {
+                    "HOME": "/Users/shangguan",
+                    "USER": "shangguan",
+                    "LOGNAME": "shangguan",
+                    "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                    "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+                    "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+                }
+                result = subprocess.run(
+                    ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
+                     os.path.join(PROJECT_ROOT, "src", "arxiv_ml_ranker.py"), "features"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    env=clean_env,
+                )
+                if result.returncode == 0:
+                    self._send_json({"success": True, "message": "Features HTML regenerated (deduplicated)"})
+                else:
+                    error = result.stderr.strip() or result.stdout.strip() or "Feature generation failed"
+                    self._send_json({"success": False, "error": error}, 500)
+            except subprocess.TimeoutExpired:
+                self._send_json({"success": False, "error": "Feature generation timed out"}, 504)
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)}, 500)
 

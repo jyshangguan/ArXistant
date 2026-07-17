@@ -1141,12 +1141,14 @@ def generate_features_html(output_path=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ML-based arXiv paper ranking')
-    parser.add_argument('command', choices=['train', 'score'], help='Command to run')
+    parser.add_argument('command', choices=['train', 'score', 'features'], help='Command to run')
     parser.add_argument('input_file', nargs='?', help='JSON file for scoring (required for score)')
     args = parser.parse_args()
     
     if args.command == 'train':
         train_model()
+    elif args.command == 'features':
+        generate_features_html()
     elif args.command == 'score':
         if not args.input_file:
             print("ERROR: input_file required for score command")

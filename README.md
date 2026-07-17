@@ -110,6 +110,13 @@ chrome-extension/
 
 The extension communicates with your local server at `http://localhost:8765`. When the server is offline, the popup shows a **"Start Server"** button that launches `ArXistantServer.app` via the `arxistant://start` URL scheme.
 
+On Apple Silicon Macs, the launcher explicitly starts the system Python as
+ARM64. This is necessary when Chrome or its parent application is running
+through Rosetta: otherwise macOS may select the x86_64 slice of the universal
+Python executable, which cannot load an ARM64 NumPy installation. The launcher
+also uses a minimal environment so application-specific `PYTHONPATH`,
+`__PYVENV_LAUNCHER__`, and similar variables do not affect Python imports.
+
 ---
 
 ## Quick start (without extension)
@@ -262,6 +269,18 @@ ArXistant/
 ./start_server.sh
 # Server runs on http://localhost:8765, logs to local/server.log
 ```
+
+The script safely returns when the server is already running. On Apple Silicon
+it uses `/usr/bin/arch -arm64 /usr/bin/python3`, detaches the server from the
+launcher process, and supplies only the environment variables the server needs.
+
+### NumPy architecture errors on macOS
+
+If NumPy reports `incompatible architecture (have 'arm64', need 'x86_64')`,
+stop any server process started with an older launcher and run
+`./start_server.sh` again. Feature-page regeneration runs in a fresh ARM64
+Python subprocess, so it remains isolated from the Chrome helper's architecture
+and environment.
 
 ---
 
