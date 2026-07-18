@@ -3,6 +3,7 @@
 const DEFAULT_SERVER_URL = 'http://localhost:8765/daily.html';
 const DEFAULT_REMINDER_TIMES = ['10:30'];
 const DEFAULT_SKIP_WEEKENDS = true;
+const DEFAULT_RETRAIN_AFTER_CHANGES = 5;
 const LEGACY_ALARM_NAME = 'daily-arxiv-reminder';
 const ALARM_PREFIX = 'arxistant-reminder:';
 const STORAGE_KEY_SETTINGS = 'settings';
@@ -38,7 +39,10 @@ async function getSettings() {
     reminderTimes: reminderTimes.length ? reminderTimes : DEFAULT_REMINDER_TIMES,
     // Missing means this setting predates weekend support, so use the new
     // default. Only an explicit false enables Saturday/Sunday reminders.
-    skipWeekends: stored.skipWeekends !== false
+    skipWeekends: stored.skipWeekends !== false,
+    retrainAfterChanges: Number.isInteger(stored.retrainAfterChanges)
+      ? Math.min(100, Math.max(1, stored.retrainAfterChanges))
+      : DEFAULT_RETRAIN_AFTER_CHANGES
   };
 }
 
@@ -46,10 +50,40 @@ async function saveSettings(settings) {
   const normalized = {
     serverUrl: settings.serverUrl || DEFAULT_SERVER_URL,
     reminderTimes: normalizeReminderTimes(settings.reminderTimes),
-    skipWeekends: settings.skipWeekends !== false
+    skipWeekends: settings.skipWeekends !== false,
+    retrainAfterChanges: Math.min(100, Math.max(1,
+      Number.parseInt(settings.retrainAfterChanges, 10) || DEFAULT_RETRAIN_AFTER_CHANGES))
   };
   await chrome.storage.local.set({ [STORAGE_KEY_SETTINGS]: normalized });
   return normalized;
+}
+
+function serverApiUrl(serverUrl, path) {
+  return new URL(path, serverUrl).toString();
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const responseText = await response.text();
+  let data;
+  try {
+    data = JSON.parse(responseText);
+  } catch (_) {
+    if (response.status === 404) {
+      throw new Error('The running ArXistant server is outdated. Restart the server and try again.');
+    }
+    throw new Error(responseText.trim() || `Server returned ${response.status}`);
+  }
+  if (!response.ok || data.success === false) throw new Error(data.error || `Server returned ${response.status}`);
+  return data;
+}
+
+async function syncRetrainingSetting(settings) {
+  return fetchJson(serverApiUrl(settings.serverUrl, '/api/ml-retraining/settings'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ retrain_after_changes: settings.retrainAfterChanges })
+  });
 }
 
 function nextOccurrence(time, skipWeekends = DEFAULT_SKIP_WEEKENDS, now = new Date()) {
@@ -173,7 +207,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'saveSettings': {
         const settings = await saveSettings(message.settings);
         await syncReminderAlarms();
-        return { success: true, settings };
+        let retrainingSync;
+        try {
+          retrainingSync = { success: true, state: await syncRetrainingSetting(settings) };
+        } catch (error) {
+          retrainingSync = { success: false, error: error.message };
+        }
+        return { success: true, settings, retrainingSync };
+      }
+      case 'getMLRetrainingStatus': {
+        const settings = await getSettings();
+        await syncRetrainingSetting(settings);
+        return { success: true, state: await fetchJson(serverApiUrl(settings.serverUrl, '/api/ml-retraining')) };
       }
       case 'getReminderStatus': {
         const alarms = (await chrome.alarms.getAll())

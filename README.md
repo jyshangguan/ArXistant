@@ -8,24 +8,48 @@
   <strong>Personalized arXiv Daily Paper Ranker + Local Paper Database + Publication Manager</strong>
 </p>
 
+<p align="center"><strong>Version 0.1.0</strong></p>
+
 ---
 
 ## How to use ArXistant (Chrome Extension)
 
 The **Chrome extension** is the primary way to use ArXistant. Install it once, then everything is one click away.
 
-### 1. Install the extension
+### 1. Prepare ArXistant
 
 ```bash
-cd /path/to/ArXistant/chrome-extension
+git clone https://github.com/jyshangguan/ArXistant.git
+cd ArXistant
+/usr/bin/python3 -m pip install --user numpy scikit-learn
 ```
 
-1. Open Chrome → `chrome://extensions/`
-2. Toggle **Developer mode** ON
-3. Click **"Load unpacked"**
-4. Select the `chrome-extension/` folder
+The bundled macOS launcher currently points to this project's development
+location. If the repository is installed elsewhere, update `PROJECT_ROOT` in
+`start_server.sh` and the path in
+`chrome-extension/ArXistantServer.app/Contents/MacOS/ArXistantServer` before
+registering the launcher.
 
-### 2. Register the server launcher (macOS)
+### 2. Load the extension in Chrome
+
+1. Enter `chrome://extensions/` in Chrome's address bar.
+2. Enable **Developer mode** in the upper-right corner.
+3. Click **Load unpacked**.
+4. In the folder chooser, select the `chrome-extension` directory itself—not
+   the repository root and not an individual file.
+5. Confirm that **ArXistant Daily Reminder** appears without an error badge.
+6. Optional: open Chrome's Extensions menu (the puzzle-piece icon) and pin
+   ArXistant so its red **A** icon remains visible in the toolbar.
+
+```text
+ArXistant/                 ← do not select this level
+└── chrome-extension/      ← select this folder in “Load unpacked”
+    ├── manifest.json
+    ├── popup.html
+    └── background.js
+```
+
+### 3. Register the server launcher (macOS)
 
 The extension can start the ArXistant server for you. Double-click this app once to register it with macOS:
 
@@ -35,7 +59,36 @@ chrome-extension/ArXistantServer.app
 
 > If macOS shows a security warning, go to **System Settings → Privacy & Security** and click **"Open Anyway"**.
 
-### 3. Daily workflow
+After registration, Chrome may ask whether it can open links with
+**ArXistantServer** the first time you click **Start Server**. Approve that
+prompt. The helper has no Dock window; it starts the local server in the
+background.
+
+### 4. Launch ArXistant for the first time
+
+1. Click the red **A** extension icon.
+2. If the popup reports that the server is offline, click **Start Server**.
+3. Wait briefly for the offline panel to disappear.
+4. Click **Open Daily Papers**. ArXistant opens
+   `http://localhost:8765/daily.html` in a normal Chrome tab.
+5. Use **Settings** to configure reminder times, weekend behavior, automatic
+   ML retraining, and test macOS notification delivery.
+
+```mermaid
+flowchart LR
+    A["Click ArXistant icon"] --> B{"Server online?"}
+    B -- "No" --> C["Click Start Server"]
+    C --> D["macOS helper starts localhost:8765"]
+    B -- "Yes" --> E["Click Open Daily Papers"]
+    D --> E
+    E --> F["Daily papers open in Chrome"]
+```
+
+If the page does not open, visit `http://localhost:8765/daily.html` directly.
+If Chrome shows “This site can't be reached,” inspect `local/server.log` and
+see the macOS troubleshooting notes under **Shell script** below.
+
+### 5. Daily workflow
 
 | Action | How |
 |--------|-----|
@@ -48,7 +101,7 @@ chrome-extension/ArXistantServer.app
 | **Inspect ML model** | Click "🧠 ML Features" |
 | **Change reminder times** | Click "⚙️ Settings" to add or remove daily times |
 
-### 4. Daily reminder
+### 6. Daily reminder
 
 The extension shows a browser notification at every configured time (default
 10:30 AM). Reminders are not suppressed after visiting a paper page. Click a
@@ -58,7 +111,7 @@ its test button can be used to verify macOS notification delivery. Reminders
 skip Saturday and Sunday by default; this can be disabled in Settings when
 weekend reminders are desired.
 
-### 5. Save papers
+### 7. Save papers
 
 On any paper list, click the **💾** button next to a paper to save it to your database. Saved papers feed the ML model — the more you save, the better the rankings get.
 
@@ -81,7 +134,7 @@ A lightweight HTTP server (`src/arxiv_db_server.py`) running on `http://localhos
 | **Saved Papers** | `/database.html` | Search, view notes, and delete saved papers |
 | **My Publications** | `/publications.html` | Your publication bibliography, imported from SciX/ADS |
 | **Search arXiv/ADS** | `/search-arxiv.html` | Search arXiv API or ADS API and save papers |
-| **ML Features** | `/ml-features.html` | Inspect ML model features, manage blacklist and custom keywords |
+| **ML Features** | `/ml-features.html` | Inspect stable model features and manage ranking keywords |
 | **Chat** | `/chat.html` | Chat interface for discussing papers |
 
 ### 3. SciX / ADS publication import
@@ -174,9 +227,13 @@ The ML ranker (`src/arxiv_ml_ranker.py`) trains a **Logistic Regression** classi
 - **Positive samples**: papers you've saved to the database
 - **Negative samples**: random recent arXiv papers (up to 2:1 ratio)
 - **Text features**: cleaned title + abstract (LaTeX, HTML, math mode stripped)
-- **Feature engineering**: unigrams + bigrams, top 10,000 features, sublinear TF scaling
+- **Feature engineering**: unigrams + bigrams, top 10,000 features, sublinear TF scaling, adaptive `min_df` (1% of documents, bounded to 2–5), and `max_df=0.85`
 
-The model is persisted to `local/ml_ranker/model.pkl` and `local/ml_ranker/vectorizer.pkl`.
+The model is persisted to `local/ml_ranker/model.pkl` and
+`local/ml_ranker/vectorizer.pkl`. Training also writes
+`local/ml_ranker/feature_stability.json`, containing selection frequencies from
+30 stratified 80% subsamples. Existing models still load, but must be retrained
+once before stability filtering becomes available.
 
 Train or re-train the model:
 
@@ -184,10 +241,25 @@ Train or re-train the model:
 python3 src/arxiv_ml_ranker.py train
 ```
 
+ArXistant also retrains automatically after five saved-paper changes by
+default. Saving a paper that was not already saved or removing a saved paper
+counts as one change; repeated no-op clicks do not. Change the threshold
+(1–100) under **Extension Settings → ML Retraining**. To start a background
+training run manually, use **Train Model Now** on `/ml-features.html`.
+
+Training is asynchronous, so saving/removing papers and browsing remain
+responsive. Changes made while training is already running are preserved for
+the next threshold. A successful run regenerates the ML Features page; a failed
+run keeps the accumulated count and reports the error in the status display.
+
 The **ML Features page** (`/ml-features.html`) lets you:
-- Inspect the top 50 positive and 30 negative features the model learned
-- Blacklist noisy/uninformative features
-- Add custom positive/negative keywords to bias the model
+- Start model training manually and monitor its progress
+- Inspect 30 positive and 30 negative keywords in total. Custom keywords take priority and stable model-learned features fill the remaining slots (for example, 4 custom positive + 26 automatic positive)
+- Collapse conservative singular/plural variants (for example, `quasar` and `quasars`) into one displayed feature without changing model scores
+- Prefer longer stable phrases over contiguous components in the inspector (for example, `active galactic nuclei` suppresses `active galactic`, `galactic nuclei`, and their individual words, while model scoring remains unchanged)
+- Add custom positive keywords that increase matching papers' model log-odds by 0.75 per keyword
+- Add custom negative keywords that decrease matching papers' model log-odds by 0.75 per keyword; use this when a learned positive term is unhelpful
+- Apply at most three manual keyword matches in each direction per paper, preventing an excessive override
 
 ---
 
@@ -243,7 +315,7 @@ ArXistant/
 │   ├── ml_ranker/                     # ML model artifacts
 │   │   ├── model.pkl                  # Trained LogisticRegression
 │   │   ├── vectorizer.pkl             # Trained TfidfVectorizer
-│   │   ├── feature_blacklist.json     # Suppressed features
+│   │   ├── feature_stability.json     # Subsample selection frequencies
 │   │   ├── custom_positive.json       # User-defined positive keywords
 │   │   └── custom_negative.json       # User-defined negative keywords
 │   └── ...

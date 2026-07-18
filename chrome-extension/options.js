@@ -3,7 +3,8 @@
 const DEFAULT_SETTINGS = {
   serverUrl: 'http://localhost:8765/daily.html',
   reminderTimes: ['10:30'],
-  skipWeekends: true
+  skipWeekends: true,
+  retrainAfterChanges: 5
 };
 
 const serverUrlInput = document.getElementById('server-url');
@@ -16,6 +17,8 @@ const saveStatus = document.getElementById('save-status');
 const btnTestNotify = document.getElementById('btn-test-notify');
 const testStatus = document.getElementById('test-status');
 const alarmStatus = document.getElementById('alarm-status');
+const retrainAfterChangesInput = document.getElementById('retrain-after-changes');
+const retrainingStatus = document.getElementById('retraining-status');
 
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
@@ -54,7 +57,9 @@ async function loadSettings() {
     serverUrlInput.value = settings.serverUrl || DEFAULT_SETTINGS.serverUrl;
     renderTimes(settings.reminderTimes || DEFAULT_SETTINGS.reminderTimes);
     skipWeekendsInput.checked = settings.skipWeekends !== false;
+    retrainAfterChangesInput.value = settings.retrainAfterChanges || DEFAULT_SETTINGS.retrainAfterChanges;
     await updateAlarmStatus();
+    await updateRetrainingStatus();
   } catch (error) {
     console.error('Failed to load settings:', error);
     renderTimes(DEFAULT_SETTINGS.reminderTimes);
@@ -66,18 +71,26 @@ async function saveSettings() {
   const serverUrl = serverUrlInput.value.trim();
   const reminderTimes = collectTimes();
   const skipWeekends = skipWeekendsInput.checked;
+  const retrainAfterChanges = Number.parseInt(retrainAfterChangesInput.value, 10);
   if (!serverUrl) return showStatus('Server URL cannot be empty.', 'error');
   if (!reminderTimes.length) return showStatus('Add at least one reminder time.', 'error');
+  if (!Number.isInteger(retrainAfterChanges) || retrainAfterChanges < 1 || retrainAfterChanges > 100) {
+    return showStatus('Retraining threshold must be between 1 and 100.', 'error');
+  }
 
   try {
     const response = await chrome.runtime.sendMessage({
       action: 'saveSettings',
-      settings: { serverUrl, reminderTimes, skipWeekends }
+      settings: { serverUrl, reminderTimes, skipWeekends, retrainAfterChanges }
     });
     if (!response.success) throw new Error(response.error || 'Failed to save settings');
     renderTimes(response.settings.reminderTimes);
-    showStatus('Settings saved and reminders rescheduled.', 'success');
+    showStatus(response.retrainingSync?.success === false
+      ? `Settings saved locally, but the ML server is unavailable: ${response.retrainingSync.error}`
+      : 'Settings saved, reminders rescheduled, and ML threshold updated.',
+      response.retrainingSync?.success === false ? 'error' : 'success');
     await updateAlarmStatus();
+    await updateRetrainingStatus();
   } catch (error) {
     showStatus(`Error saving settings: ${error.message}`, 'error');
   }
@@ -87,7 +100,29 @@ async function resetSettings() {
   serverUrlInput.value = DEFAULT_SETTINGS.serverUrl;
   renderTimes(DEFAULT_SETTINGS.reminderTimes);
   skipWeekendsInput.checked = DEFAULT_SETTINGS.skipWeekends;
+  retrainAfterChangesInput.value = DEFAULT_SETTINGS.retrainAfterChanges;
   await saveSettings();
+}
+
+function formatRetrainingState(state) {
+  const progress = `${state.changes_since_training} / ${state.retrain_after_changes} saved-set changes`;
+  const activity = state.training ? 'Training now…' : 'Idle';
+  const trained = state.last_trained_at
+    ? `Last trained: ${new Date(state.last_trained_at).toLocaleString()}`
+    : 'Last trained: not recorded';
+  const error = state.last_error ? `\nLast error: ${state.last_error}` : '';
+  return `${activity}\n${progress}\n${trained}${error}`;
+}
+
+async function updateRetrainingStatus() {
+  retrainingStatus.textContent = 'Loading ML retraining status…';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getMLRetrainingStatus' });
+    if (!response.success) throw new Error(response.error || 'Status unavailable');
+    retrainingStatus.textContent = formatRetrainingState(response.state);
+  } catch (error) {
+    retrainingStatus.textContent = `ML server unavailable: ${error.message}`;
+  }
 }
 
 async function updateAlarmStatus() {

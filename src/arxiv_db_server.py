@@ -14,6 +14,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -28,10 +29,145 @@ RECENT_HTML = os.path.join(PROJECT_ROOT, "local", "arxiv_recent_personalized.htm
 PUBLICATIONS_JSON = os.path.join(PROJECT_ROOT, "local", "shangguan_papers_metadata.json")
 BIB_PATH = os.path.join(PROJECT_ROOT, "local", "scix_library_20.bib")
 ML_FEATURES_HTML = os.path.join(PROJECT_ROOT, "local", "ml_features.html")
-BLACKLIST_PATH = os.path.join(PROJECT_ROOT, "local", "ml_ranker", "feature_blacklist.json")
 CHAT_HTML = os.path.join(PROJECT_ROOT, "local", "chat.html")
 ADS_TOKEN_PATH = os.path.join(PROJECT_ROOT, "local", "ads_token.txt")
 SCIX_CONFIG_PATH = os.path.join(PROJECT_ROOT, "local", "scix_config.json")
+ML_RANKER_DIR = os.path.join(PROJECT_ROOT, "local", "ml_ranker")
+RETRAIN_STATE_PATH = os.path.join(ML_RANKER_DIR, "retrain_state.json")
+DEFAULT_RETRAIN_AFTER_CHANGES = 5
+RETRAIN_STATE_LOCK = threading.Lock()
+
+
+def clean_python_env():
+    """Environment for an arm64 system-Python child launched from macOS apps."""
+    return {
+        "HOME": os.path.expanduser("~"),
+        "USER": os.environ.get("USER", ""),
+        "LOGNAME": os.environ.get("LOGNAME", os.environ.get("USER", "")),
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+    }
+
+
+def _default_retrain_state():
+    return {
+        "changes_since_training": 0,
+        "retrain_after_changes": DEFAULT_RETRAIN_AFTER_CHANGES,
+        "training": False,
+        "last_training_started_at": None,
+        "last_trained_at": None,
+        "last_error": None,
+    }
+
+
+def _load_retrain_state():
+    state = _default_retrain_state()
+    try:
+        with open(RETRAIN_STATE_PATH, "r", encoding="utf-8") as f:
+            state.update(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    state["changes_since_training"] = max(0, int(state.get("changes_since_training", 0)))
+    state["retrain_after_changes"] = min(100, max(1, int(
+        state.get("retrain_after_changes", DEFAULT_RETRAIN_AFTER_CHANGES))))
+    # A persisted true value can only belong to a server process that stopped.
+    state["training"] = False
+    return state
+
+
+RETRAIN_STATE = _load_retrain_state()
+
+
+def _save_retrain_state_locked():
+    os.makedirs(ML_RANKER_DIR, exist_ok=True)
+    temp_path = RETRAIN_STATE_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(RETRAIN_STATE, f, indent=2)
+    os.replace(temp_path, RETRAIN_STATE_PATH)
+
+
+def get_retrain_state():
+    with RETRAIN_STATE_LOCK:
+        return dict(RETRAIN_STATE)
+
+
+def _run_training(included_changes):
+    error = None
+    training_succeeded = False
+    try:
+        command = ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
+                   os.path.join(PROJECT_ROOT, "src", "arxiv_ml_ranker.py")]
+        result = subprocess.run(command + ["train"], cwd=PROJECT_ROOT,
+                                capture_output=True, text=True, timeout=900,
+                                env=clean_python_env())
+        if result.returncode != 0:
+            error = result.stderr.strip() or result.stdout.strip() or "Training failed"
+        else:
+            training_succeeded = True
+            features = subprocess.run(command + ["features"], cwd=PROJECT_ROOT,
+                                      capture_output=True, text=True, timeout=120,
+                                      env=clean_python_env())
+            if features.returncode != 0:
+                error = (features.stderr.strip() or features.stdout.strip()
+                         or "Training succeeded, but feature-page generation failed")
+    except subprocess.TimeoutExpired:
+        error = "Model training timed out"
+    except Exception as exc:
+        error = str(exc)
+
+    with RETRAIN_STATE_LOCK:
+        if training_succeeded:
+            RETRAIN_STATE["changes_since_training"] = max(
+                0, RETRAIN_STATE["changes_since_training"] - included_changes)
+            RETRAIN_STATE["last_trained_at"] = datetime.now().astimezone().isoformat()
+        RETRAIN_STATE["training"] = False
+        RETRAIN_STATE["last_error"] = error
+        _save_retrain_state_locked()
+
+
+def start_training(manual=False):
+    with RETRAIN_STATE_LOCK:
+        if RETRAIN_STATE["training"]:
+            return False, dict(RETRAIN_STATE)
+        included_changes = RETRAIN_STATE["changes_since_training"]
+        RETRAIN_STATE["training"] = True
+        RETRAIN_STATE["last_training_started_at"] = datetime.now().astimezone().isoformat()
+        RETRAIN_STATE["last_error"] = None
+        _save_retrain_state_locked()
+        state = dict(RETRAIN_STATE)
+    threading.Thread(target=_run_training, args=(included_changes,),
+                     name="arxistant-ml-training", daemon=True).start()
+    return True, state
+
+
+def record_training_change():
+    should_start = False
+    with RETRAIN_STATE_LOCK:
+        RETRAIN_STATE["changes_since_training"] += 1
+        should_start = (not RETRAIN_STATE["training"] and
+                        RETRAIN_STATE["changes_since_training"] >=
+                        RETRAIN_STATE["retrain_after_changes"])
+        _save_retrain_state_locked()
+        state = dict(RETRAIN_STATE)
+    if should_start:
+        _, state = start_training()
+    return state
+
+
+def set_retrain_threshold(value):
+    value = int(value)
+    if value < 1 or value > 100:
+        raise ValueError("Retraining threshold must be between 1 and 100")
+    with RETRAIN_STATE_LOCK:
+        RETRAIN_STATE["retrain_after_changes"] = value
+        should_start = (not RETRAIN_STATE["training"] and
+                        RETRAIN_STATE["changes_since_training"] >= value)
+        _save_retrain_state_locked()
+        state = dict(RETRAIN_STATE)
+    if should_start:
+        _, state = start_training()
+    return state
 
 
 def load_scix_config():
@@ -127,34 +263,6 @@ def fetch_scix_library(library_id):
             })
 
     return papers, None
-
-
-def load_blacklist():
-    if not os.path.exists(BLACKLIST_PATH):
-        return set()
-    with open(BLACKLIST_PATH, 'r', encoding='utf-8') as f:
-        return set(json.load(f))
-
-
-def save_blacklist(blacklist):
-    with open(BLACKLIST_PATH, 'w', encoding='utf-8') as f:
-        json.dump(sorted(list(blacklist)), f, indent=2)
-
-
-def add_to_blacklist(feature_name):
-    blacklist = load_blacklist()
-    blacklist.add(feature_name)
-    save_blacklist(blacklist)
-    return True
-
-
-def remove_from_blacklist(feature_name):
-    blacklist = load_blacklist()
-    if feature_name in blacklist:
-        blacklist.remove(feature_name)
-        save_blacklist(blacklist)
-        return True
-    return False
 
 
 # Custom positive/negative keyword helpers (mirror arxiv_ml_ranker functions)
@@ -630,14 +738,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/scix-link":
             self._send_json(load_scix_config())
 
-        elif path == "/api/blacklist":
-            self._send_json({"blacklist": sorted(list(load_blacklist()))})
-
         elif path == "/api/custom-positive":
             self._send_json({"keywords": load_custom_positive()})
 
         elif path == "/api/custom-negative":
             self._send_json({"keywords": load_custom_negative()})
+
+        elif path == "/api/ml-retraining":
+            self._send_json(get_retrain_state())
 
         else:
             self._send_text("Not found", 404)
@@ -735,12 +843,15 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             try:
+                arxiv_id = data.get("arxiv_id", "")
+                c.execute("SELECT 1 FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
+                was_saved = c.fetchone() is not None
                 c.execute('''
                     INSERT OR REPLACE INTO saved_papers 
                     (arxiv_id, title, authors, abstract, relevance_score, date_fetched, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    data.get("arxiv_id", ""),
+                    arxiv_id,
                     data.get("title", ""),
                     data.get("authors", ""),
                     data.get("abstract", ""),
@@ -749,7 +860,10 @@ class Handler(BaseHTTPRequestHandler):
                     data.get("notes", "")
                 ))
                 conn.commit()
-                self._send_json({"success": True, "message": "Paper saved"})
+                retraining = get_retrain_state() if was_saved else record_training_change()
+                self._send_json({"success": True, "message": "Paper saved",
+                                 "preference_changed": not was_saved,
+                                 "retraining": retraining})
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)}, 500)
             finally:
@@ -759,9 +873,13 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             c.execute("DELETE FROM saved_papers WHERE arxiv_id = ?", (data.get("arxiv_id"),))
+            removed = c.rowcount > 0
             conn.commit()
             conn.close()
-            self._send_json({"success": True, "message": "Paper deleted"})
+            retraining = record_training_change() if removed else get_retrain_state()
+            self._send_json({"success": True, "message": "Paper deleted",
+                             "preference_changed": removed,
+                             "retraining": retraining})
 
         elif path == "/api/update_notes":
             conn = sqlite3.connect(DB_PATH)
@@ -771,24 +889,6 @@ class Handler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
             self._send_json({"success": True, "message": "Notes updated"})
-
-        elif path == "/api/blacklist":
-            feature = data.get("feature", "")
-            if feature:
-                add_to_blacklist(feature)
-                self._send_json({"success": True, "message": f"Feature '{feature}' blacklisted"})
-            else:
-                self._send_json({"success": False, "error": "No feature provided"}, 400)
-
-        elif path == "/api/blacklist/remove":
-            feature = data.get("feature", "")
-            if feature:
-                if remove_from_blacklist(feature):
-                    self._send_json({"success": True, "message": f"Feature '{feature}' removed from blacklist"})
-                else:
-                    self._send_json({"success": False, "error": f"Feature '{feature}' not in blacklist"}, 404)
-            else:
-                self._send_json({"success": False, "error": "No feature provided"}, 400)
 
         elif path == "/api/custom-positive":
             keyword = data.get("keyword", "")
@@ -834,14 +934,6 @@ class Handler(BaseHTTPRequestHandler):
                 # __PYVENV_LAUNCHER__ to app-launched Python processes; a clean
                 # subprocess prevents that state from breaking a late numpy
                 # import inside this long-running HTTP server.
-                clean_env = {
-                    "HOME": "/Users/shangguan",
-                    "USER": "shangguan",
-                    "LOGNAME": "shangguan",
-                    "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                    "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-                    "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
-                }
                 result = subprocess.run(
                     ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
                      os.path.join(PROJECT_ROOT, "src", "arxiv_ml_ranker.py"), "features"],
@@ -849,7 +941,7 @@ class Handler(BaseHTTPRequestHandler):
                     capture_output=True,
                     text=True,
                     timeout=120,
-                    env=clean_env,
+                    env=clean_python_env(),
                 )
                 if result.returncode == 0:
                     self._send_json({"success": True, "message": "Features HTML regenerated (deduplicated)"})
@@ -860,6 +952,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"success": False, "error": "Feature generation timed out"}, 504)
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)}, 500)
+
+        elif path == "/api/ml-retraining/settings":
+            try:
+                state = set_retrain_threshold(data.get("retrain_after_changes"))
+                self._send_json({"success": True, **state})
+            except (TypeError, ValueError) as e:
+                self._send_json({"success": False, "error": str(e)}, 400)
+
+        elif path == "/api/ml-retraining/train":
+            started, state = start_training(manual=True)
+            self._send_json({"success": True, "started": started, **state})
 
         elif path == "/api/refresh-daily":
             try:

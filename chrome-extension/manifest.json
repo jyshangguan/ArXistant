@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ArXistant Daily Reminder",
-  "version": "1.3",
+  "version": "0.1.0",
   "description": "Daily reminder to check your personalized arXiv astro-ph paper feed",
   "permissions": [
     "alarms",
