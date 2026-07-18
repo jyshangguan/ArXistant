@@ -2,11 +2,13 @@
 
 const DEFAULT_SETTINGS = {
   serverUrl: 'http://localhost:8765/daily.html',
-  reminderTimes: ['10:30']
+  reminderTimes: ['10:30'],
+  skipWeekends: true
 };
 
 const serverUrlInput = document.getElementById('server-url');
 const reminderTimesList = document.getElementById('reminder-times');
+const skipWeekendsInput = document.getElementById('skip-weekends');
 const btnAddTime = document.getElementById('btn-add-time');
 const btnSave = document.getElementById('btn-save');
 const btnReset = document.getElementById('btn-reset');
@@ -51,6 +53,7 @@ async function loadSettings() {
     const settings = response.settings || DEFAULT_SETTINGS;
     serverUrlInput.value = settings.serverUrl || DEFAULT_SETTINGS.serverUrl;
     renderTimes(settings.reminderTimes || DEFAULT_SETTINGS.reminderTimes);
+    skipWeekendsInput.checked = settings.skipWeekends !== false;
     await updateAlarmStatus();
   } catch (error) {
     console.error('Failed to load settings:', error);
@@ -62,13 +65,14 @@ async function loadSettings() {
 async function saveSettings() {
   const serverUrl = serverUrlInput.value.trim();
   const reminderTimes = collectTimes();
+  const skipWeekends = skipWeekendsInput.checked;
   if (!serverUrl) return showStatus('Server URL cannot be empty.', 'error');
   if (!reminderTimes.length) return showStatus('Add at least one reminder time.', 'error');
 
   try {
     const response = await chrome.runtime.sendMessage({
       action: 'saveSettings',
-      settings: { serverUrl, reminderTimes }
+      settings: { serverUrl, reminderTimes, skipWeekends }
     });
     if (!response.success) throw new Error(response.error || 'Failed to save settings');
     renderTimes(response.settings.reminderTimes);
@@ -82,6 +86,7 @@ async function saveSettings() {
 async function resetSettings() {
   serverUrlInput.value = DEFAULT_SETTINGS.serverUrl;
   renderTimes(DEFAULT_SETTINGS.reminderTimes);
+  skipWeekendsInput.checked = DEFAULT_SETTINGS.skipWeekends;
   await saveSettings();
 }
 

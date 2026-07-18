@@ -2,6 +2,7 @@
 
 const DEFAULT_SERVER_URL = 'http://localhost:8765/daily.html';
 const DEFAULT_REMINDER_TIMES = ['10:30'];
+const DEFAULT_SKIP_WEEKENDS = true;
 const LEGACY_ALARM_NAME = 'daily-arxiv-reminder';
 const ALARM_PREFIX = 'arxistant-reminder:';
 const STORAGE_KEY_SETTINGS = 'settings';
@@ -34,28 +35,37 @@ async function getSettings() {
 
   return {
     serverUrl: stored.serverUrl || DEFAULT_SERVER_URL,
-    reminderTimes: reminderTimes.length ? reminderTimes : DEFAULT_REMINDER_TIMES
+    reminderTimes: reminderTimes.length ? reminderTimes : DEFAULT_REMINDER_TIMES,
+    // Missing means this setting predates weekend support, so use the new
+    // default. Only an explicit false enables Saturday/Sunday reminders.
+    skipWeekends: stored.skipWeekends !== false
   };
 }
 
 async function saveSettings(settings) {
   const normalized = {
     serverUrl: settings.serverUrl || DEFAULT_SERVER_URL,
-    reminderTimes: normalizeReminderTimes(settings.reminderTimes)
+    reminderTimes: normalizeReminderTimes(settings.reminderTimes),
+    skipWeekends: settings.skipWeekends !== false
   };
   await chrome.storage.local.set({ [STORAGE_KEY_SETTINGS]: normalized });
   return normalized;
 }
 
-function nextOccurrence(time, now = new Date()) {
+function nextOccurrence(time, skipWeekends = DEFAULT_SKIP_WEEKENDS, now = new Date()) {
   const [hour, minute] = time.split(':').map(Number);
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
   if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  if (skipWeekends) {
+    while (next.getDay() === 0 || next.getDay() === 6) {
+      next.setDate(next.getDate() + 1);
+    }
+  }
   return next;
 }
 
-async function scheduleReminder(time) {
-  const when = nextOccurrence(time);
+async function scheduleReminder(time, skipWeekends = DEFAULT_SKIP_WEEKENDS) {
+  const when = nextOccurrence(time, skipWeekends);
   await chrome.alarms.create(ALARM_PREFIX + time, { when: when.getTime() });
   console.log(`[ArXistant] Reminder ${time} scheduled for ${when.toLocaleString()}`);
 }
@@ -68,7 +78,7 @@ async function syncReminderAlarms() {
       .filter(alarm => alarm.name === LEGACY_ALARM_NAME || alarm.name.startsWith(ALARM_PREFIX))
       .map(alarm => chrome.alarms.clear(alarm.name))
   );
-  await Promise.all(settings.reminderTimes.map(scheduleReminder));
+  await Promise.all(settings.reminderTimes.map(time => scheduleReminder(time, settings.skipWeekends)));
 }
 
 async function ensureReminderAlarms() {
@@ -78,7 +88,7 @@ async function ensureReminderAlarms() {
   await Promise.all(
     settings.reminderTimes
       .filter(time => !existing.has(ALARM_PREFIX + time))
-      .map(scheduleReminder)
+      .map(time => scheduleReminder(time, settings.skipWeekends))
   );
 }
 
@@ -86,13 +96,20 @@ chrome.alarms.onAlarm.addListener(async alarm => {
   if (!alarm.name.startsWith(ALARM_PREFIX)) return;
   const time = alarm.name.slice(ALARM_PREFIX.length);
   console.log(`[ArXistant] Reminder ${time} fired`);
+  const settings = await getSettings();
+  const today = new Date().getDay();
+  const isWeekend = today === 0 || today === 6;
 
   try {
-    await showReminderNotification(time);
+    if (settings.skipWeekends && isWeekend) {
+      console.log(`[ArXistant] Reminder ${time} skipped for the weekend`);
+    } else {
+      await showReminderNotification(time);
+    }
   } finally {
     // Schedule by local calendar day rather than adding 24 hours, which avoids
     // daylight-saving drift and restores one-shot alarms after browser sleep.
-    await scheduleReminder(time);
+    await scheduleReminder(time, settings.skipWeekends);
   }
 });
 

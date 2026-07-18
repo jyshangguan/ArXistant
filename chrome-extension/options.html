@@ -232,6 +232,11 @@
       <div id="reminder-times"></div>
       <button type="button" id="btn-add-time" class="btn btn-secondary">+ Add reminder</button>
       <p class="hint">Add as many local reminder times as you need.</p>
+      <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
+        <input type="checkbox" id="skip-weekends" checked>
+        <span>Skip reminders on Saturday and Sunday</span>
+      </label>
+      <p class="hint">Enabled by default. Weekend alarms resume automatically on Monday.</p>
       <pre id="alarm-status" class="alarm-status">Loading scheduled reminders…</pre>
     </div>
 

@@ -54,7 +54,9 @@ The extension shows a browser notification at every configured time (default
 10:30 AM). Reminders are not suppressed after visiting a paper page. Click a
 notification to open the daily papers. The settings page shows Chrome's
 notification permission and the exact next scheduled occurrence of each alarm;
-its test button can be used to verify macOS notification delivery.
+its test button can be used to verify macOS notification delivery. Reminders
+skip Saturday and Sunday by default; this can be disabled in Settings when
+weekend reminders are desired.
 
 ### 5. Save papers
 
