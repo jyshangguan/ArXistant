@@ -12,6 +12,17 @@
 
 ---
 
+## What it does
+
+- Fetches daily and recent arXiv astro-ph papers and ranks them for you.
+- Learns your interests from saved papers using a local ML model.
+- Lets you save, search, annotate, and remove papers in a local database.
+- Provides editable positive and negative ranking keywords with model diagnostics.
+- Imports your publications from SciX/ADS and avoids duplicate records.
+- Sends configurable Chrome reminders and refreshes papers at the first daily reminder.
+
+---
+
 ## How to use ArXistant (Chrome Extension)
 
 The **Chrome extension** is the primary way to use ArXistant. Install it once, then everything is one click away.
@@ -121,7 +132,7 @@ On any paper list, click the **💾** button next to a paper to save it to your 
 
 ---
 
-## What it does
+## Feature details
 
 ### 1. Daily arXiv fetch & ML ranking
 
