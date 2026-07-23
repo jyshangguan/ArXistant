@@ -7,6 +7,8 @@ const DEFAULT_RETRAIN_AFTER_CHANGES = 5;
 const LEGACY_ALARM_NAME = 'daily-arxiv-reminder';
 const ALARM_PREFIX = 'arxistant-reminder:';
 const STORAGE_KEY_SETTINGS = 'settings';
+const STORAGE_KEY_LAST_DAILY_REFRESH = 'lastDailyRefreshDate';
+let dailyRefreshInFlight = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   syncReminderAlarms().catch(error => console.error('[ArXistant] Alarm setup failed:', error));
@@ -86,6 +88,37 @@ async function syncRetrainingSetting(settings) {
   });
 }
 
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function refreshDailyAtFirstReminder(settings, reminderTime, now = new Date()) {
+  const firstReminder = normalizeReminderTimes(settings.reminderTimes)[0];
+  if (!firstReminder || reminderTime !== firstReminder) return { skipped: 'not-first-reminder' };
+
+  const today = localDateKey(now);
+  const stored = await chrome.storage.local.get(STORAGE_KEY_LAST_DAILY_REFRESH);
+  if (stored[STORAGE_KEY_LAST_DAILY_REFRESH] === today) return { skipped: 'already-refreshed' };
+
+  // Coalesce duplicate alarm delivery while a refresh request is still active.
+  if (!dailyRefreshInFlight) {
+    dailyRefreshInFlight = (async () => {
+      const result = await fetchJson(serverApiUrl(settings.serverUrl, '/api/refresh-daily'), {
+        method: 'POST'
+      });
+      await chrome.storage.local.set({ [STORAGE_KEY_LAST_DAILY_REFRESH]: today });
+      console.log(`[ArXistant] Daily papers refreshed at first reminder ${reminderTime}`);
+      return result;
+    })().finally(() => {
+      dailyRefreshInFlight = null;
+    });
+  }
+  return dailyRefreshInFlight;
+}
+
 function nextOccurrence(time, skipWeekends = DEFAULT_SKIP_WEEKENDS, now = new Date()) {
   const [hour, minute] = time.split(':').map(Number);
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
@@ -138,6 +171,12 @@ chrome.alarms.onAlarm.addListener(async alarm => {
     if (settings.skipWeekends && isWeekend) {
       console.log(`[ArXistant] Reminder ${time} skipped for the weekend`);
     } else {
+      try {
+        await refreshDailyAtFirstReminder(settings, time);
+      } catch (error) {
+        // A network/server failure must not suppress the user's reminder.
+        console.error('[ArXistant] Automatic daily refresh failed:', error);
+      }
       await showReminderNotification(time);
     }
   } finally {

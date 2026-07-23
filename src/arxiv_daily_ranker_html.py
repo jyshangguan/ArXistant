@@ -19,15 +19,31 @@ from datetime import datetime, timedelta
 import html as html_module
 
 
-def _fetch_url(url, timeout=120):
-    """Fetch URL content using curl (Python urllib has SSL issues on macOS LibreSSL)."""
-    result = subprocess.run(
-        ['curl', '-s', '--max-time', str(timeout), '-A', 'Mozilla/5.0', url],
-        capture_output=True, text=True, timeout=timeout + 15
+def _fetch_url(url, timeout=45, attempts=3):
+    """Fetch a URL with bounded retries and useful arXiv error reporting."""
+    last_error = "unknown network error"
+    for attempt in range(1, attempts + 1):
+        try:
+            result = subprocess.run(
+                [
+                    'curl', '--silent', '--show-error', '--fail-with-body',
+                    '--connect-timeout', '15', '--max-time', str(timeout),
+                    '-A', 'ArXistant/0.1.0 (personal arXiv reader)', url,
+                ],
+                capture_output=True, text=True, timeout=timeout + 5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+            detail = result.stderr.strip() or result.stdout.strip()[:200]
+            last_error = f"curl exit {result.returncode}: {detail}"
+        except subprocess.TimeoutExpired:
+            last_error = f"request exceeded {timeout} seconds"
+        if attempt < attempts:
+            time.sleep(3 * attempt)
+    raise RuntimeError(
+        f"arXiv did not respond after {attempts} attempts ({last_error}). "
+        "Please wait a few minutes and refresh again."
     )
-    if result.returncode != 0:
-        raise urllib.error.URLError(f'curl failed with rc={result.returncode}: {result.stderr[:200]}')
-    return result.stdout
 
 
 SECTION_ORDER = ['New submissions', 'Cross submissions', 'Replacement submissions']
@@ -207,90 +223,20 @@ def fetch_arxiv_papers_by_date(date_str):
     return papers
 
 
-def fetch_arxiv_papers(date_str=None, recent=False):
-    """Fetch astro-ph papers. If recent is True, fetch from arXiv 'recent' page.
-    If date_str is provided, use submittedDate API query.
-    If date_str is None and recent is False, fetch from arXiv 'new' page."""
-    if date_str is not None:
-        return fetch_arxiv_papers_by_date(date_str)
-    
-    if recent:
-        # Fetch from arXiv 'recent' page with show=2000 to get all papers
-        page_url = "https://arxiv.org/list/astro-ph/recent?show=2000"
-        html = _fetch_url(page_url)
-        
-        # Extract all arXiv IDs in order
-        id_pattern = re.compile(r'href\s*=\s*"/abs/(\d{4}\.\d{5,})"')
-        all_ids = []
-        for match in id_pattern.finditer(html):
-            paper_id = match.group(1)
-            if paper_id not in all_ids:  # deduplicate
-                all_ids.append(paper_id)
-        
-        if not all_ids:
-            print("Warning: no paper IDs found on arXiv recent page")
-            return []
-        
-        print(f"Found {len(all_ids)} paper IDs on arXiv recent page")
-        
-        # Fetch metadata via API in batches
-        papers = []
-        batch_size = 100
-        ns = {'atom': 'http://www.w3.org/2005/Atom'}
-        
-        for i in range(0, len(all_ids), batch_size):
-            batch = all_ids[i:i+batch_size]
-            id_list = ','.join(batch)
-            api_url = (
-                f"https://export.arxiv.org/api/query?"
-                f"id_list={id_list}&max_results={len(batch)}"
-            )
-            time.sleep(0.5)
-            data = _fetch_url(api_url)
-            
-            root = ET.fromstring(data)
-            entries = root.findall('atom:entry', ns)
-            
-            for entry in entries:
-                id_elem = entry.find('atom:id', ns)
-                title_elem = entry.find('atom:title', ns)
-                summary_elem = entry.find('atom:summary', ns)
-                
-                arxiv_id = id_elem.text if id_elem is not None else ''
-                short_id = arxiv_id.split('/')[-1].replace('abs/', '') if arxiv_id else ''
-                short_id = re.sub(r'v\d+$', '', short_id)
-                
-                title = title_elem.text.strip() if title_elem is not None else ''
-                abstract = summary_elem.text.strip() if summary_elem is not None else ''
-                
-                authors = []
-                for author in entry.findall('atom:author', ns):
-                    name = author.find('atom:name', ns)
-                    if name is not None:
-                        authors.append(name.text)
-                
-                papers.append({
-                    'id': short_id,
-                    'title': title,
-                    'authors': authors,
-                    'abstract': abstract,
-                    'section': 'Recent submissions'
-                })
-        
-        return papers
-    
-    # Fetch exact paper list from arXiv 'new' page
-    page_url = "https://arxiv.org/list/astro-ph/new"
-    html = _fetch_url(page_url)
+def _plain_html(fragment):
+    """Convert a small arXiv listing fragment to normalized plain text."""
+    without_tags = re.sub(r'<[^>]+>', ' ', fragment)
+    return re.sub(r'\s+', ' ', html_module.unescape(without_tags)).strip()
 
-    # Parse HTML to determine sections for each item
+
+def parse_arxiv_listing(page_html, recent=False):
+    """Parse complete paper metadata directly from an arXiv listing page."""
     item_section_map = {}
-    current_section = 'New submissions'
-    
+    current_section = 'Recent submissions' if recent else 'New submissions'
     for match in re.finditer(
         r'(?:<h3>(New submissions|Cross submissions|Replacement submissions)[^<]*</h3>)'
         r'|(?:<a name=["\']item(\d+)["\'])',
-        html
+        page_html
     ):
         section_name = match.group(1)
         item_num = match.group(2)
@@ -298,79 +244,75 @@ def fetch_arxiv_papers(date_str=None, recent=False):
             current_section = section_name
         elif item_num:
             item_section_map[int(item_num)] = current_section
-    
-    # Extract arXiv IDs in order, along with their item numbers and sections
-    id_pattern = re.compile(r'href\s*=\s*"/abs/(\d{4}\.\d{5,})"')
-    ids_with_items = []
-    item_num = 1
-    for match in id_pattern.finditer(html):
-        paper_id = match.group(1)
-        section = item_section_map.get(item_num, 'New submissions')
-        ids_with_items.append((paper_id, item_num, section))
-        item_num += 1
-    
-    if not ids_with_items:
-        print("Warning: no paper IDs found on arXiv new page, falling back to yesterday's API query")
+
+    papers = []
+    seen_ids = set()
+    blocks = re.finditer(
+        r'<dt>(?P<dt>.*?)</dt>\s*<dd>(?P<dd>.*?)</dd>',
+        page_html, re.DOTALL | re.IGNORECASE
+    )
+    for item_num, block in enumerate(blocks, start=1):
+        id_match = re.search(r'href\s*=\s*["\']/abs/(\d{4}\.\d{5,})', block.group('dt'))
+        if not id_match or id_match.group(1) in seen_ids:
+            continue
+        paper_id = id_match.group(1)
+        seen_ids.add(paper_id)
+        metadata = block.group('dd')
+        title_match = re.search(
+            r'<div class=["\']list-title[^"\']*["\']>.*?</span>(.*?)</div>',
+            metadata, re.DOTALL | re.IGNORECASE
+        )
+        authors_match = re.search(
+            r'<div class=["\']list-authors["\']>(.*?)</div>',
+            metadata, re.DOTALL | re.IGNORECASE
+        )
+        abstract_match = re.search(
+            r'<p class=["\']mathjax["\']>(.*?)</p>',
+            metadata, re.DOTALL | re.IGNORECASE
+        )
+        author_names = (
+            [_plain_html(name) for name in re.findall(r'<a\b[^>]*>(.*?)</a>',
+                                                       authors_match.group(1),
+                                                       re.DOTALL | re.IGNORECASE)]
+            if authors_match else []
+        )
+        papers.append({
+            'id': paper_id,
+            'title': _plain_html(title_match.group(1)) if title_match else '',
+            'authors': author_names,
+            'abstract': _plain_html(abstract_match.group(1)) if abstract_match else '',
+            'section': ('Recent submissions' if recent else
+                        item_section_map.get(item_num, 'New submissions')),
+        })
+    return papers
+
+
+def fetch_arxiv_papers(date_str=None, recent=False):
+    """Fetch astro-ph papers from a listing page, or the API for an exact date."""
+    if date_str is not None:
+        return fetch_arxiv_papers_by_date(date_str)
+
+    page_url = (
+        "https://arxiv.org/list/astro-ph/recent?show=2000"
+        if recent else "https://arxiv.org/list/astro-ph/new"
+    )
+    page_html = _fetch_url(page_url)
+    papers = parse_arxiv_listing(page_html, recent=recent)
+    if not papers:
+        if recent:
+            print("Warning: no papers found on arXiv recent page")
+            return []
+        print("Warning: no papers found on arXiv new page; falling back to yesterday's API query")
         yesterday = datetime.now() - timedelta(days=1)
         return fetch_arxiv_papers_by_date(yesterday.strftime('%Y%m%d'))
-    
-    print(f"Found {len(ids_with_items)} paper IDs on arXiv new page")
+
+    print(f"Found {len(papers)} papers on arXiv {'recent' if recent else 'new'} page")
     section_counts = {}
-    for _, _, section in ids_with_items:
+    for paper in papers:
+        section = paper['section']
         section_counts[section] = section_counts.get(section, 0) + 1
     for section, count in section_counts.items():
         print(f"  {section}: {count}")
-    
-    # Build ID → section lookup
-    id_to_section = {pid: sec for pid, _, sec in ids_with_items}
-    
-    # Fetch metadata via API in batches
-    papers = []
-    batch_size = 100
-    ns = {'atom': 'http://www.w3.org/2005/Atom'}
-    
-    all_ids = [pid for pid, _, _ in ids_with_items]
-    for i in range(0, len(all_ids), batch_size):
-        batch = all_ids[i:i+batch_size]
-        id_list = ','.join(batch)
-        api_url = (
-            f"https://export.arxiv.org/api/query?"
-            f"id_list={id_list}&max_results={len(batch)}"
-        )
-        time.sleep(0.5)
-        data = _fetch_url(api_url)
-        
-        root = ET.fromstring(data)
-        entries = root.findall('atom:entry', ns)
-        
-        for entry in entries:
-            id_elem = entry.find('atom:id', ns)
-            title_elem = entry.find('atom:title', ns)
-            summary_elem = entry.find('atom:summary', ns)
-            
-            arxiv_id = id_elem.text if id_elem is not None else ''
-            short_id = arxiv_id.split('/')[-1].replace('abs/', '') if arxiv_id else ''
-            short_id = re.sub(r'v\d+$', '', short_id)
-            
-            title = title_elem.text.strip() if title_elem is not None else ''
-            abstract = summary_elem.text.strip() if summary_elem is not None else ''
-            
-            authors = []
-            for author in entry.findall('atom:author', ns):
-                name = author.find('atom:name', ns)
-                if name is not None:
-                    authors.append(name.text)
-            
-            section = id_to_section.get(short_id, 'New submissions')
-            
-            papers.append({
-                'id': short_id,
-                'title': title,
-                'authors': authors,
-                'abstract': abstract,
-                'section': section
-            })
-    
     return papers
 
 

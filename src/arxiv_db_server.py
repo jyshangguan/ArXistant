@@ -13,7 +13,6 @@ import os
 import re
 import sqlite3
 import subprocess
-import sys
 import threading
 import urllib.parse
 import urllib.request
@@ -966,16 +965,15 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/refresh-daily":
             try:
-                env = os.environ.copy()
-                env['PYTHONPATH'] = os.path.join(PROJECT_ROOT, 'src')
                 result = subprocess.run(
-                    [sys.executable, os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
+                    ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
+                     os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
                      '--output', DAILY_HTML],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                     timeout=300,
-                    env=env
+                    env=clean_python_env()
                 )
                 if result.returncode == 0:
                     self._send_json({"success": True, "output": result.stdout})
@@ -986,16 +984,15 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/refresh-recent":
             try:
-                env = os.environ.copy()
-                env['PYTHONPATH'] = os.path.join(PROJECT_ROOT, 'src')
                 result = subprocess.run(
-                    [sys.executable, os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
+                    ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
+                     os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
                      '--recent', '--output', RECENT_HTML],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                     timeout=300,
-                    env=env
+                    env=clean_python_env()
                 )
                 if result.returncode == 0:
                     self._send_json({"success": True, "output": result.stdout})
