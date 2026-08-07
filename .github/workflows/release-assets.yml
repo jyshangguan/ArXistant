@@ -1,0 +1,37 @@
+name: Build release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Build Debian package
+        run: ./packaging/linux/build-deb.sh "${TAG#v}"
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Build Chrome extension archive
+        run: zip -q -r "dist/arxistant-chrome-extension-${TAG#v}.zip" chrome-extension -x '*.DS_Store' '*/__MACOSX/*'
+        env:
+          TAG: ${{ inputs.tag }}
+
+      - name: Upload release assets
+        run: gh release upload "$TAG" "dist/arxistant_${TAG#v}_all.deb" "dist/arxistant-chrome-extension-${TAG#v}.zip" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
