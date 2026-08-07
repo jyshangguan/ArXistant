@@ -116,9 +116,11 @@ see the macOS troubleshooting notes under **Shell script** below.
 
 The extension shows a browser notification at every configured time (default
 10:30 AM). At the first configured reminder each day, the extension refreshes
-the daily paper list before showing the notification. Later reminders notify
-without refreshing again. A failed refresh does not suppress the reminder and
-remains eligible to retry the next day. Reminders are not suppressed after
+the daily paper list before showing the notification. If that alarm was missed
+while Chrome was closed or the computer was asleep, the next reminder catches
+up. After a successful refresh, later reminders notify without refreshing
+again. A failed refresh does not suppress the reminder and can retry at a later
+reminder. Reminders are not suppressed after
 visiting a paper page. Click a notification to open the daily papers. The
 settings page shows Chrome's notification permission and the exact next
 scheduled occurrence of each alarm;

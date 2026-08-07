@@ -16,7 +16,10 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  syncReminderAlarms().catch(error => console.error('[ArXistant] Alarm setup failed:', error));
+  // Keep overdue alarms intact so Chrome can deliver them after the browser
+  // was closed or the device was asleep. Clearing them here can discard the
+  // first reminder of the day before its onAlarm event is dispatched.
+  ensureReminderAlarms().catch(error => console.error('[ArXistant] Alarm recovery failed:', error));
 });
 
 function normalizeReminderTimes(value) {
@@ -95,9 +98,12 @@ function localDateKey(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-async function refreshDailyAtFirstReminder(settings, reminderTime, now = new Date()) {
+async function refreshDailyAtOrAfterFirstReminder(settings, reminderTime, now = new Date()) {
   const firstReminder = normalizeReminderTimes(settings.reminderTimes)[0];
-  if (!firstReminder || reminderTime !== firstReminder) return { skipped: 'not-first-reminder' };
+  // A later reminder is also eligible. This catches up when the first alarm
+  // was missed while Chrome was closed/asleep; the stored date still limits
+  // successful refreshes to one per day.
+  if (!firstReminder || reminderTime < firstReminder) return { skipped: 'before-first-reminder' };
 
   const today = localDateKey(now);
   const stored = await chrome.storage.local.get(STORAGE_KEY_LAST_DAILY_REFRESH);
@@ -110,7 +116,7 @@ async function refreshDailyAtFirstReminder(settings, reminderTime, now = new Dat
         method: 'POST'
       });
       await chrome.storage.local.set({ [STORAGE_KEY_LAST_DAILY_REFRESH]: today });
-      console.log(`[ArXistant] Daily papers refreshed at first reminder ${reminderTime}`);
+      console.log(`[ArXistant] Daily papers refreshed at reminder ${reminderTime}`);
       return result;
     })().finally(() => {
       dailyRefreshInFlight = null;
@@ -172,7 +178,7 @@ chrome.alarms.onAlarm.addListener(async alarm => {
       console.log(`[ArXistant] Reminder ${time} skipped for the weekend`);
     } else {
       try {
-        await refreshDailyAtFirstReminder(settings, time);
+        await refreshDailyAtOrAfterFirstReminder(settings, time);
       } catch (error) {
         // A network/server failure must not suppress the user's reminder.
         console.error('[ArXistant] Automatic daily refresh failed:', error);
