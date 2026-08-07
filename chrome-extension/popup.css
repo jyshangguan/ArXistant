@@ -73,6 +73,13 @@ body {
   cursor: not-allowed;
 }
 
+.server-help {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: normal;
+  color: #6d4c41;
+}
+
 /* ── Actions ── */
 .actions {
   padding: 12px 16px;

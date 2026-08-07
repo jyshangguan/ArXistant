@@ -4,7 +4,7 @@
 # from the application that opened Chrome (for example __PYVENV_LAUNCHER__ and
 # DAIMON_*).  Start Python with an allow-listed environment so those variables
 # cannot alter Python's prefix or module search path.
-PROJECT_ROOT="/Users/shangguan/Softwares/my_modules/ArXistant"
+PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="/usr/bin/python3"
 PYTHON_ARCH="arm64"
 LOG_FILE="$PROJECT_ROOT/local/server.log"
@@ -20,9 +20,9 @@ if /usr/bin/curl --silent --fail --max-time 1 \
 fi
 
 /usr/bin/nohup /usr/bin/env -i \
-  HOME="/Users/shangguan" \
-  USER="shangguan" \
-  LOGNAME="shangguan" \
+  HOME="${HOME}" \
+  USER="${USER:-$(id -un)}" \
+  LOGNAME="${LOGNAME:-${USER:-$(id -un)}}" \
   PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
   LANG="${LANG:-en_US.UTF-8}" \
   TMPDIR="${TMPDIR:-/tmp}" \

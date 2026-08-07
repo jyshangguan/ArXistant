@@ -13,9 +13,12 @@ const btnDB = document.getElementById('btn-db');
 const linkPubs = document.getElementById('link-pubs');
 const linkSearch = document.getElementById('link-search');
 const linkOptions = document.getElementById('link-options');
+const serverHelp = document.getElementById('server-help');
+let currentPlatform = 'unknown';
 
 // ── Initialize ──
 document.addEventListener('DOMContentLoaded', async () => {
+  currentPlatform = (await chrome.runtime.getPlatformInfo()).os;
   await checkServerAndUpdateUI();
   bindButtons();
 });
@@ -35,7 +38,7 @@ async function isServerOnline() {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(DEFAULT_SERVER_URL + '/daily.html', {
+    const response = await fetch(DEFAULT_SERVER_URL + '/api/health', {
       method: 'GET',
       signal: controller.signal
     });
@@ -48,6 +51,14 @@ async function isServerOnline() {
 
 function showServerOffline() {
   serverSection.style.display = 'block';
+  const canLaunchHelper = currentPlatform === 'mac';
+  btnStartServer.hidden = !canLaunchHelper;
+  serverHelp.hidden = canLaunchHelper;
+  if (currentPlatform === 'linux') {
+    serverHelp.textContent = 'Start it with: systemctl --user start arxistant.service';
+  } else if (!canLaunchHelper) {
+    serverHelp.textContent = 'Start the ArXistant companion server, then reopen this popup.';
+  }
 }
 
 function hideServerOffline() {

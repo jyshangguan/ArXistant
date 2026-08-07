@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import urllib.parse
 import urllib.request
@@ -20,33 +21,36 @@ import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from arxistant_paths import DATA_DIR, PROJECT_ROOT, data_path, ensure_data_dirs
 
-DB_PATH = os.path.join(PROJECT_ROOT, "local", "arxiv_papers.db")
-DAILY_HTML = os.path.join(PROJECT_ROOT, "local", "arxiv_ranked_personalized.html")
-RECENT_HTML = os.path.join(PROJECT_ROOT, "local", "arxiv_recent_personalized.html")
-PUBLICATIONS_JSON = os.path.join(PROJECT_ROOT, "local", "shangguan_papers_metadata.json")
-BIB_PATH = os.path.join(PROJECT_ROOT, "local", "scix_library_20.bib")
-ML_FEATURES_HTML = os.path.join(PROJECT_ROOT, "local", "ml_features.html")
-CHAT_HTML = os.path.join(PROJECT_ROOT, "local", "chat.html")
-ADS_TOKEN_PATH = os.path.join(PROJECT_ROOT, "local", "ads_token.txt")
-SCIX_CONFIG_PATH = os.path.join(PROJECT_ROOT, "local", "scix_config.json")
-ML_RANKER_DIR = os.path.join(PROJECT_ROOT, "local", "ml_ranker")
+DB_PATH = data_path("arxiv_papers.db")
+DAILY_HTML = data_path("arxiv_ranked_personalized.html")
+RECENT_HTML = data_path("arxiv_recent_personalized.html")
+PUBLICATIONS_JSON = data_path("shangguan_papers_metadata.json")
+BIB_PATH = data_path("scix_library_20.bib")
+ML_FEATURES_HTML = data_path("ml_features.html")
+CHAT_HTML = data_path("chat.html")
+ADS_TOKEN_PATH = data_path("ads_token.txt")
+SCIX_CONFIG_PATH = data_path("scix_config.json")
+ML_RANKER_DIR = data_path("ml_ranker")
 RETRAIN_STATE_PATH = os.path.join(ML_RANKER_DIR, "retrain_state.json")
 DEFAULT_RETRAIN_AFTER_CHANGES = 5
 RETRAIN_STATE_LOCK = threading.Lock()
 
 
-def clean_python_env():
-    """Environment for an arm64 system-Python child launched from macOS apps."""
-    return {
-        "HOME": os.path.expanduser("~"),
-        "USER": os.environ.get("USER", ""),
-        "LOGNAME": os.environ.get("LOGNAME", os.environ.get("USER", "")),
-        "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
-    }
+def child_python_env():
+    """Return a portable environment for Python child processes."""
+    env = os.environ.copy()
+    # These variables can be inherited through macOS Launch Services and make
+    # a child interpreter use the wrong virtual environment or architecture.
+    for name in ("__PYVENV_LAUNCHER__", "PYTHONHOME"):
+        env.pop(name, None)
+    return env
+
+
+def python_command(script, *args):
+    """Run project scripts with the same interpreter as this server."""
+    return [sys.executable, os.path.join(PROJECT_ROOT, "src", script), *args]
 
 
 def _default_retrain_state():
@@ -95,18 +99,17 @@ def _run_training(included_changes):
     error = None
     training_succeeded = False
     try:
-        command = ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
-                   os.path.join(PROJECT_ROOT, "src", "arxiv_ml_ranker.py")]
+        command = python_command("arxiv_ml_ranker.py")
         result = subprocess.run(command + ["train"], cwd=PROJECT_ROOT,
                                 capture_output=True, text=True, timeout=900,
-                                env=clean_python_env())
+                                env=child_python_env())
         if result.returncode != 0:
             error = result.stderr.strip() or result.stdout.strip() or "Training failed"
         else:
             training_succeeded = True
             features = subprocess.run(command + ["features"], cwd=PROJECT_ROOT,
                                       capture_output=True, text=True, timeout=120,
-                                      env=clean_python_env())
+                                      env=child_python_env())
             if features.returncode != 0:
                 error = (features.stderr.strip() or features.stdout.strip()
                          or "Training succeeded, but feature-page generation failed")
@@ -200,7 +203,7 @@ def fetch_scix_library(library_id):
     """Fetch all papers from an ADS library by its ID. Returns list of paper dicts."""
     token = load_ads_token()
     if not token:
-        return None, "ADS API token not configured. Add token to local/ads_token.txt"
+        return None, f"ADS API token not configured. Add token to {ADS_TOKEN_PATH}"
 
     # Step 1: get all bibcodes from the library
     lib_url = f"https://api.adsabs.harvard.edu/v1/biblib/libraries/{library_id}?rows=500"
@@ -265,8 +268,8 @@ def fetch_scix_library(library_id):
 
 
 # Custom positive/negative keyword helpers (mirror arxiv_ml_ranker functions)
-CUSTOM_POSITIVE_PATH = os.path.join(PROJECT_ROOT, "local", "ml_ranker", "custom_positive.json")
-CUSTOM_NEGATIVE_PATH = os.path.join(PROJECT_ROOT, "local", "ml_ranker", "custom_negative.json")
+CUSTOM_POSITIVE_PATH = data_path("ml_ranker", "custom_positive.json")
+CUSTOM_NEGATIVE_PATH = data_path("ml_ranker", "custom_negative.json")
 
 
 def load_custom_positive():
@@ -608,7 +611,10 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        if path == "/" or path == "/index.html":
+        if path == "/api/health":
+            self._send_json({"success": True, "data_dir": DATA_DIR})
+
+        elif path == "/" or path == "/index.html":
             if os.path.exists(DAILY_HTML):
                 with open(DAILY_HTML, 'r', encoding='utf-8') as f:
                     html = f.read()
@@ -929,18 +935,15 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 # Deduplicate: positive wins over negative
                 deduplicate_custom_keywords()
-                # Run ML generation in a fresh interpreter. macOS can attach
-                # __PYVENV_LAUNCHER__ to app-launched Python processes; a clean
-                # subprocess prevents that state from breaking a late numpy
-                # import inside this long-running HTTP server.
+                # Run ML generation in a fresh copy of this interpreter so it
+                # uses the same installed dependencies as the server.
                 result = subprocess.run(
-                    ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
-                     os.path.join(PROJECT_ROOT, "src", "arxiv_ml_ranker.py"), "features"],
+                    python_command("arxiv_ml_ranker.py", "features"),
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                     timeout=120,
-                    env=clean_python_env(),
+                    env=child_python_env(),
                 )
                 if result.returncode == 0:
                     self._send_json({"success": True, "message": "Features HTML regenerated (deduplicated)"})
@@ -966,14 +969,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/refresh-daily":
             try:
                 result = subprocess.run(
-                    ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
-                     os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
-                     '--output', DAILY_HTML],
+                    python_command("arxiv_daily_ranker_html.py", "--output", DAILY_HTML),
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                     timeout=300,
-                    env=clean_python_env()
+                    env=child_python_env()
                 )
                 if result.returncode == 0:
                     self._send_json({"success": True, "output": result.stdout})
@@ -985,14 +986,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/refresh-recent":
             try:
                 result = subprocess.run(
-                    ["/usr/bin/arch", "-arm64", "/usr/bin/python3",
-                     os.path.join(PROJECT_ROOT, 'src', 'arxiv_daily_ranker_html.py'),
-                     '--recent', '--output', RECENT_HTML],
+                    python_command("arxiv_daily_ranker_html.py", "--recent", "--output", RECENT_HTML),
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                     timeout=300,
-                    env=clean_python_env()
+                    env=child_python_env()
                 )
                 if result.returncode == 0:
                     self._send_json({"success": True, "output": result.stdout})
@@ -1752,6 +1751,7 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
 
 
 def run_server(port=8765):
+    ensure_data_dirs()
     init_db()
     server = HTTPServer(("localhost", port), Handler)
     print(f"Server running at http://localhost:{port}")
@@ -1770,4 +1770,4 @@ def run_server(port=8765):
 
 
 if __name__ == '__main__':
-    run_server()
+    run_server(int(os.environ.get("ARXISTANT_PORT", "8765")))

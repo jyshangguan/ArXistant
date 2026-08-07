@@ -1,0 +1,11 @@
+#!/bin/sh
+
+set -eu
+
+if [ -z "${ARXISTANT_DATA_DIR:-}" ]; then
+    ARXISTANT_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/arxistant"
+fi
+export ARXISTANT_DATA_DIR
+
+mkdir -p "$ARXISTANT_DATA_DIR"
+exec /usr/bin/python3 /usr/lib/arxistant/src/arxiv_db_server.py "$@"

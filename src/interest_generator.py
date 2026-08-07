@@ -14,10 +14,13 @@ Usage:
     interest_generator.regenerate_interests(db_path, interests_file)
 """
 
+import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
 from datetime import datetime
+
+from arxistant_paths import data_path
 
 # =============================================================================
 # DOMAIN STOPWORDS — Generic scientific writing words that should NOT be keywords
@@ -1045,11 +1048,8 @@ def score_paper_weighted(paper, weighted_interests):
     
     return score
 
-
-import os
-
 if __name__ == '__main__':
     import sys
-    db = sys.argv[1] if len(sys.argv) > 1 else 'local/arxiv_papers.db'
-    interests = sys.argv[2] if len(sys.argv) > 2 else 'local/interests.txt'
+    db = sys.argv[1] if len(sys.argv) > 1 else data_path('arxiv_papers.db')
+    interests = sys.argv[2] if len(sys.argv) > 2 else data_path('interests.txt')
     regenerate_interests(db, interests)

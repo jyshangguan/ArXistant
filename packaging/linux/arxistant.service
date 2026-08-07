@@ -1,0 +1,18 @@
+[Unit]
+Description=ArXistant local paper server
+Documentation=https://github.com/jyshangguan/ArXistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/arxistant-server
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

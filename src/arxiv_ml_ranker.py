@@ -11,7 +11,8 @@ Usage:
     python src/arxiv_ml_ranker.py train       # train/retrain the model
     python src/arxiv_ml_ranker.py score <json_file>  # score papers from JSON
 
-The model is saved to local/ml_ranker/ and auto-loaded by arxiv_daily_ranker_html.py.
+The model is saved in the configured ArXistant data directory and auto-loaded
+by arxiv_daily_ranker_html.py.
 """
 
 import argparse
@@ -31,15 +32,16 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
+from arxistant_paths import data_path, ensure_data_dirs
+
 # =============================================================================
 # CONFIG
 # =============================================================================
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(PROJECT_ROOT, "local", "arxiv_papers.db")
-MODEL_DIR = os.path.join(PROJECT_ROOT, "local", "ml_ranker")
+DB_PATH = data_path("arxiv_papers.db")
+MODEL_DIR = data_path("ml_ranker")
 MODEL_PATH = os.path.join(MODEL_DIR, "model.pkl")
-RECENT_PAPERS_PATH = os.path.join(PROJECT_ROOT, "local", "arxiv_papers.json")
+RECENT_PAPERS_PATH = data_path("arxiv_papers.json")
 VECTORIZER_PATH = os.path.join(MODEL_DIR, "vectorizer.pkl")
 STABILITY_PATH = os.path.join(MODEL_DIR, "feature_stability.json")
 CUSTOM_POSITIVE_PATH = os.path.join(MODEL_DIR, "custom_positive.json")
@@ -48,7 +50,7 @@ CUSTOM_KEYWORD_LOGIT_BOOST = 0.75
 CUSTOM_KEYWORD_MAX_MATCHES = 3
 FEATURE_DISPLAY_LIMIT = 30
 
-os.makedirs(MODEL_DIR, exist_ok=True)
+ensure_data_dirs()
 
 
 # =============================================================================
@@ -1349,7 +1351,7 @@ def generate_features_html(output_path=None):
 </html>"""
     
     if output_path is None:
-        output_path = os.path.join(PROJECT_ROOT, "local", "ml_features.html")
+        output_path = data_path("ml_features.html")
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)

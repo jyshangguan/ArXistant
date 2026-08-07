@@ -10,13 +10,14 @@ import argparse
 import json
 import os
 import re
-import ssl
-import subprocess
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import html as html_module
+
+from arxistant_paths import data_path
 
 
 def _fetch_url(url, timeout=45, attempts=3):
@@ -24,20 +25,21 @@ def _fetch_url(url, timeout=45, attempts=3):
     last_error = "unknown network error"
     for attempt in range(1, attempts + 1):
         try:
-            result = subprocess.run(
-                [
-                    'curl', '--silent', '--show-error', '--fail-with-body',
-                    '--connect-timeout', '15', '--max-time', str(timeout),
-                    '-A', 'ArXistant/0.1.0 (personal arXiv reader)', url,
-                ],
-                capture_output=True, text=True, timeout=timeout + 5
+            request = urllib.request.Request(
+                url, headers={'User-Agent': 'ArXistant/0.1.0 (personal arXiv reader)'}
             )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout
-            detail = result.stderr.strip() or result.stdout.strip()[:200]
-            last_error = f"curl exit {result.returncode}: {detail}"
-        except subprocess.TimeoutExpired:
-            last_error = f"request exceeded {timeout} seconds"
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read()
+                charset = response.headers.get_content_charset() or 'utf-8'
+                text = body.decode(charset, errors='replace')
+                if text.strip():
+                    return text
+                last_error = "server returned an empty response"
+        except urllib.error.HTTPError as error:
+            detail = error.read(200).decode('utf-8', errors='replace').strip()
+            last_error = f"HTTP {error.code}: {detail or error.reason}"
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            last_error = str(getattr(error, 'reason', error))
         if attempt < attempts:
             time.sleep(3 * attempt)
     raise RuntimeError(
@@ -527,8 +529,8 @@ async function refreshRecent() {
 def main():
     parser = argparse.ArgumentParser(description='Fetch and rank arXiv astro-ph papers')
     parser.add_argument('--recent', action='store_true', help='Fetch from arXiv recent page (last ~5 days) instead of new page')
-    parser.add_argument('--interests-file', default='local/interests.txt', help='DEPRECATED: no longer used')
-    parser.add_argument('--output', default='local/arxiv_ranked.html', help='Output HTML file')
+    parser.add_argument('--interests-file', default=data_path('interests.txt'), help='DEPRECATED: no longer used')
+    parser.add_argument('--output', default=data_path('arxiv_ranked.html'), help='Output HTML file')
     parser.add_argument('--date', help='Date to fetch (YYYYMMDD), default yesterday')
     parser.add_argument('--json-output', help='Optional JSON output path')
     parser.add_argument('--ml', action='store_true', help='DEPRECATED: ML is always used')
@@ -542,7 +544,7 @@ def main():
         papers = fetch_arxiv_papers(args.date)
     print(f"Found {len(papers)} papers")
     
-    if args.interests_file and args.interests_file != 'local/interests.txt':
+    if args.interests_file and args.interests_file != data_path('interests.txt'):
         print("NOTE: --interests-file is deprecated and ignored. ML scoring is always used.")
     
     scored_papers = rank_papers(papers)

@@ -32,14 +32,11 @@ The **Chrome extension** is the primary way to use ArXistant. Install it once, t
 ```bash
 git clone https://github.com/jyshangguan/ArXistant.git
 cd ArXistant
-/usr/bin/python3 -m pip install --user numpy scikit-learn
+python3 -m pip install --user numpy scikit-learn
 ```
 
-The bundled macOS launcher currently points to this project's development
-location. If the repository is installed elsewhere, update `PROJECT_ROOT` in
-`start_server.sh` and the path in
-`chrome-extension/ArXistantServer.app/Contents/MacOS/ArXistantServer` before
-registering the launcher.
+On Windows, use `py` instead of `python3` if that is how Python is installed.
+The bundled macOS launcher discovers the repository location automatically.
 
 ### 2. Load the extension in Chrome
 
@@ -75,15 +72,60 @@ After registration, Chrome may ask whether it can open links with
 prompt. The helper has no Dock window; it starts the local server in the
 background.
 
+### Linux package (Debian/Ubuntu)
+
+Build and install the package on a Debian-family system:
+
+```bash
+./packaging/linux/build-deb.sh
+sudo apt install ./dist/arxistant_0.1.0_all.deb
+systemctl --user daemon-reload
+systemctl --user enable --now arxistant.service
+```
+
+The service starts automatically on future logins. Inspect it with:
+
+```bash
+systemctl --user status arxistant.service
+journalctl --user -u arxistant.service
+```
+
+Load `/usr/share/arxistant/chrome-extension` through `chrome://extensions` as
+an unpacked extension. Writable data lives in `~/.local/share/arxistant`, or
+under `$XDG_DATA_HOME/arxistant` when that variable is set. To migrate an
+existing checkout, stop the service and copy the contents of its `local/`
+directory into that location.
+
+To build from macOS or another non-Debian host with Docker:
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work debian:bookworm-slim \
+  sh -c 'apt-get update && apt-get install -y dpkg-dev && ./packaging/linux/build-deb.sh'
+```
+
+The package uses the distribution's `python3-numpy` and `python3-sklearn`
+packages. It currently targets Debian and Ubuntu; RPM and AppImage packaging
+can reuse the same launcher and systemd user service later.
+
+To uninstall the application while preserving your paper database:
+
+```bash
+systemctl --user disable --now arxistant.service
+sudo apt remove arxistant
+```
+
+The package manager does not remove `~/.local/share/arxistant`.
+
 ### 4. Launch ArXistant for the first time
 
 1. Click the red **A** extension icon.
-2. If the popup reports that the server is offline, click **Start Server**.
+2. If the popup reports that the server is offline, click **Start Server** on
+   macOS or run `systemctl --user start arxistant.service` on Linux.
 3. Wait briefly for the offline panel to disappear.
 4. Click **Open Daily Papers**. ArXistant opens
    `http://localhost:8765/daily.html` in a normal Chrome tab.
 5. Use **Settings** to configure reminder times, weekend behavior, automatic
-   ML retraining, and test macOS notification delivery.
+   ML retraining, and test Chrome notification delivery.
 
 ```mermaid
 flowchart LR
@@ -200,11 +242,14 @@ also uses a minimal environment so application-specific `PYTHONPATH`,
 
 - Python 3.8+
 - `numpy` and `scikit-learn` (for ML ranking)
-- `curl` (used by the ranker for HTTPS on macOS)
 
 ```bash
 pip install numpy scikit-learn
 ```
+
+The server and ranker use the active Python interpreter and Python's built-in
+HTTPS support, so the same manual startup works on macOS, Windows, and Linux.
+On Windows, use `py` in place of `python3` in the commands below if needed.
 
 ### Setup
 
@@ -225,6 +270,16 @@ python3 src/arxiv_daily_ranker_html.py \
 
 # 4. Start the server
 python3 src/arxiv_db_server.py
+# Open http://localhost:8765/
+```
+
+Windows PowerShell equivalent:
+
+```powershell
+Set-Location C:\path\to\ArXistant
+Set-Content local\ads_token.txt "your-ads-token-here"
+py src\arxiv_daily_ranker_html.py --output local\arxiv_ranked_personalized.html
+py src\arxiv_db_server.py
 # Open http://localhost:8765/
 ```
 
@@ -365,16 +420,16 @@ ArXistant/
 ```
 
 The script safely returns when the server is already running. On Apple Silicon
-it uses `/usr/bin/arch -arm64 /usr/bin/python3`, detaches the server from the
-launcher process, and supplies only the environment variables the server needs.
+it starts the server as ARM64, detaches it from the launcher process, and
+supplies only the environment variables the server needs.
 
 ### NumPy architecture errors on macOS
 
 If NumPy reports `incompatible architecture (have 'arm64', need 'x86_64')`,
 stop any server process started with an older launcher and run
-`./start_server.sh` again. Feature-page regeneration runs in a fresh ARM64
-Python subprocess, so it remains isolated from the Chrome helper's architecture
-and environment.
+`./start_server.sh` again. Feature-page regeneration uses the same Python
+interpreter as the server and removes launcher-specific virtual-environment
+variables from its child environment.
 
 ---
 
