@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#8e1b1b">
+    <title>{% if page.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
+    <meta name="description" content="{{ page.description | default: site.description | escape }}">
+    <link rel="stylesheet" href="{{ '/assets/style.css' | relative_url }}">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="{{ '/' | relative_url }}">
+          <img src="{{ '/logo0.5.jpg' | relative_url }}" alt="" width="34" height="34">
+          <span>ArXistant</span>
+        </a>
+        <nav aria-label="Documentation">
+          <a href="{{ '/installation/' | relative_url }}"{% if page.url contains 'installation' %} aria-current="page"{% endif %}>Installation</a>
+          <a href="{{ '/user-guide/' | relative_url }}"{% if page.url contains 'user-guide' %} aria-current="page"{% endif %}>User guide</a>
+          <a href="{{ '/how-it-works/' | relative_url }}"{% if page.url contains 'how-it-works' %} aria-current="page"{% endif %}>How it works</a>
+          <a href="https://github.com/{{ site.repository }}">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="content">
+      {{ content }}
+    </main>
+
+    <footer class="site-footer">
+      <span>ArXistant documentation</span>
+      <a href="https://github.com/{{ site.repository }}">View the project on GitHub</a>
+    </footer>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      document.querySelectorAll('pre code.language-mermaid').forEach((code) => {
+        const diagram = document.createElement('div');
+        diagram.className = 'mermaid';
+        diagram.textContent = code.textContent;
+        code.parentElement.replaceWith(diagram);
+      });
+      mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+    </script>
+  </body>
+</html>

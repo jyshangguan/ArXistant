@@ -1,0 +1,133 @@
+---
+layout: default
+title: User guide
+description: Learn the daily ArXistant workflow, reminders, search, publications, and ranking controls.
+nav_order: 2
+---
+
+# ArXistant user guide
+
+## First launch
+
+1. Make sure the local server is running.
+2. Click the red ArXistant icon in Chrome.
+3. Choose **Open Daily Papers**.
+4. Open **Settings** to choose reminder times and retraining behavior.
+
+The server health endpoint is
+[http://localhost:8765/api/health](http://localhost:8765/api/health).
+
+## Main pages
+
+| Page | Address | Purpose |
+|---|---|---|
+| Daily Papers | `/daily.html` | Today's ranked submissions |
+| Recent Papers | `/recent.html` | Approximately five days of ranked papers |
+| Saved Papers | `/database.html` | Search, annotate, and remove saved papers |
+| My Publications | `/publications.html` | Import and manage your publication list |
+| Search arXiv/ADS | `/search-arxiv.html` | Find papers and save them locally |
+| ML Features | `/ml-features.html` | Inspect training state and ranking features |
+
+All addresses are served from `http://localhost:8765`.
+
+## Daily reading workflow
+
+Click a paper title to open its arXiv record and use the disclosure control to
+read its abstract. The relevance score reflects the current local model and any
+matching custom keywords.
+
+Click **💾** to save a useful paper. Saved papers become positive examples for
+future model training. Removing a saved paper updates the local training state.
+
+## Reminders and automatic refresh
+
+The extension can schedule multiple reminders each day. By default it uses
+10:30 and skips Saturday and Sunday.
+
+At the first configured reminder, the extension asks the local server to
+refresh the daily list before displaying the notification. If Chrome was closed
+or the computer asleep, the next reminder catches up. Once a refresh succeeds,
+later reminders that day only notify. A failed refresh remains eligible to
+retry at a later reminder.
+
+The settings page shows the exact next occurrence of every Chrome alarm. Use
+**Test Notification** to check Chrome and operating-system permissions.
+
+## Saved papers
+
+The Saved Papers page provides full-text-style filtering across locally stored
+metadata. You can edit notes and remove records. The database is SQLite and
+never needs a hosted ArXistant account.
+
+## Search
+
+The Search page supports:
+
+- **arXiv search**, which does not require an ADS token.
+- **ADS search**, which includes ADS metadata and requires a token.
+
+Search results can be saved directly into the same local database as daily
+recommendations.
+
+## Publications from SciX/ADS
+
+1. Add an ADS API token as described in the installation guide.
+2. Open **My Publications**.
+3. Paste a SciX library URL such as
+   `https://scixplorer.org/user/libraries/...`.
+4. Click **Fetch**, review the results, and choose **Add**.
+
+ArXistant detects duplicates using bibcode, normalized title, and arXiv ID.
+Individual publications can be removed manually.
+
+## Model training
+
+Automatic retraining occurs after five effective saved-paper changes by
+default. Change the threshold from 1 to 100 in **Extension Settings → ML
+Retraining**.
+
+Training runs in the background. Changes made during a training run remain
+counted toward the next run. A successful run updates the ML Features page; a
+failure preserves the accumulated count and displays an error.
+
+Use **Train Model Now** on the ML Features page to start training immediately.
+
+## Positive and negative keywords
+
+The ML Features page shows stable learned features and lets you define manual
+keywords:
+
+- Positive keywords raise the log-odds of matching papers.
+- Negative keywords lower the log-odds of matching papers.
+- Each match changes log-odds by 0.75.
+- At most three manual matches in each direction apply to one paper.
+
+Custom keywords take display priority. Stable learned features fill the
+remaining feature slots. Similar singular/plural variants and shorter
+components of displayed phrases are collapsed in the inspector without
+changing the underlying model score.
+
+## Manual refresh and command-line use
+
+Generate today's page:
+
+```bash
+python3 src/arxiv_daily_ranker_html.py \
+  --output local/arxiv_ranked_personalized.html
+```
+
+Generate the recent page:
+
+```bash
+python3 src/arxiv_daily_ranker_html.py --recent \
+  --output local/arxiv_recent_personalized.html
+```
+
+Train the model manually:
+
+```bash
+python3 src/arxiv_ml_ranker.py train
+```
+
+For a packaged Linux installation, the browser controls are preferred because
+the installed service supplies the correct external data directory.

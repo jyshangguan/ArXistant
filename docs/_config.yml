@@ -1,0 +1,14 @@
+title: ArXistant Documentation
+description: Installation, usage, and technical documentation for ArXistant.
+url: "https://jyshangguan.github.io"
+baseurl: "/ArXistant"
+repository: jyshangguan/ArXistant
+markdown: kramdown
+permalink: pretty
+exclude:
+  - README.md
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
