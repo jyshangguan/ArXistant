@@ -63,8 +63,11 @@ and JSON endpoints. It:
 - Calls arXiv and ADS APIs.
 - Stores model retraining state and launches training in a background thread.
 
-`GET /api/health` reports whether the server is ready and which data directory
-it is using.
+`GET /api/health` reports whether the server is ready, its API compatibility
+version, and which data directory it is using. The extension requires a matching
+API version. On macOS, the launcher replaces a verified outdated ArXistant
+process before starting the current server; it never stops an unrelated process
+that happens to occupy port 8765.
 
 ## Ranking pipeline
 

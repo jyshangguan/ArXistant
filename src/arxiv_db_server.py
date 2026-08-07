@@ -35,6 +35,7 @@ SCIX_CONFIG_PATH = data_path("scix_config.json")
 ML_RANKER_DIR = data_path("ml_ranker")
 RETRAIN_STATE_PATH = os.path.join(ML_RANKER_DIR, "retrain_state.json")
 DEFAULT_RETRAIN_AFTER_CHANGES = 5
+SERVER_API_VERSION = 1
 RETRAIN_STATE_LOCK = threading.Lock()
 
 
@@ -612,7 +613,11 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         if path == "/api/health":
-            self._send_json({"success": True, "data_dir": DATA_DIR})
+            self._send_json({
+                "success": True,
+                "api_version": SERVER_API_VERSION,
+                "data_dir": DATA_DIR,
+            })
 
         elif path == "/" or path == "/index.html":
             if os.path.exists(DAILY_HTML):

@@ -8,15 +8,41 @@ PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="/usr/bin/python3"
 PYTHON_ARCH="arm64"
 LOG_FILE="$PROJECT_ROOT/local/server.log"
+SERVER_SCRIPT="$PROJECT_ROOT/src/arxiv_db_server.py"
+SERVER_API_VERSION="1"
 
 cd "$PROJECT_ROOT" || exit 1
 
-# Avoid replacing the useful log with an "address already in use" traceback if
-# the button is clicked twice or Chrome's status check races with startup.
+# Return immediately when the running server has the API expected by the
+# extension. A successful page request alone is not sufficient because an old
+# process can keep serving files after the source code has been upgraded.
 if /usr/bin/curl --silent --fail --max-time 1 \
-  "http://localhost:8765/daily.html" > /dev/null 2>&1; then
+  "http://localhost:8765/api/health" 2> /dev/null | \
+  /usr/bin/grep --quiet "\"api_version\": $SERVER_API_VERSION"; then
   echo "Server is already running"
   exit 0
+fi
+
+# If port 8765 belongs to this checkout's server, it is an outdated process and
+# can be replaced safely. Never terminate an unrelated process using the port.
+LISTENER_PID=$(/usr/sbin/lsof -tiTCP:8765 -sTCP:LISTEN 2> /dev/null | /usr/bin/head -n 1)
+if [ -n "$LISTENER_PID" ]; then
+  LISTENER_COMMAND=$(/bin/ps -p "$LISTENER_PID" -o command= 2> /dev/null || true)
+  case "$LISTENER_COMMAND" in
+    *"$SERVER_SCRIPT"*)
+      /bin/kill "$LISTENER_PID"
+      for _attempt in 1 2 3 4 5; do
+        if ! /bin/kill -0 "$LISTENER_PID" 2> /dev/null; then
+          break
+        fi
+        /bin/sleep 1
+      done
+      ;;
+    *)
+      echo "Port 8765 is occupied by another application: $LISTENER_COMMAND" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 /usr/bin/nohup /usr/bin/env -i \
@@ -27,7 +53,7 @@ fi
   LANG="${LANG:-en_US.UTF-8}" \
   TMPDIR="${TMPDIR:-/tmp}" \
   /usr/bin/arch -"$PYTHON_ARCH" \
-  "$PYTHON" "$PROJECT_ROOT/src/arxiv_db_server.py" \
+  "$PYTHON" "$SERVER_SCRIPT" \
   > "$LOG_FILE" 2>&1 < /dev/null &
 
 echo $!

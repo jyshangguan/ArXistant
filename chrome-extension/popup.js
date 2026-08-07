@@ -2,6 +2,7 @@
 
 const DEFAULT_SERVER_URL = 'http://localhost:8765';
 const SERVER_LAUNCH_URL = 'arxistant://start';
+const SERVER_API_VERSION = 1;
 
 // ── DOM Elements ──
 const serverSection = document.getElementById('server-section');
@@ -42,8 +43,9 @@ async function isServerOnline() {
       method: 'GET',
       signal: controller.signal
     });
+    const health = response.ok ? await response.json() : null;
     clearTimeout(timeout);
-    return response.ok;
+    return health?.success === true && health.api_version === SERVER_API_VERSION;
   } catch (e) {
     return false;
   }
@@ -55,7 +57,7 @@ function showServerOffline() {
   btnStartServer.hidden = !canLaunchHelper;
   serverHelp.hidden = canLaunchHelper;
   if (currentPlatform === 'linux') {
-    serverHelp.textContent = 'Start it with: systemctl --user start arxistant.service';
+    serverHelp.textContent = 'Start or update it with: systemctl --user restart arxistant.service';
   } else if (!canLaunchHelper) {
     serverHelp.textContent = 'Start the ArXistant companion server, then reopen this popup.';
   }
