@@ -8,6 +8,10 @@
   <strong>A private, personalized assistant for keeping up with arXiv astronomy papers.</strong>
 </p>
 
+<p align="center">
+  <a href="https://jyshangguan.github.io/ArXistant/"><strong>Read the documentation →</strong></a>
+</p>
+
 ArXistant fetches new `astro-ph` submissions, learns from the papers you save,
 and presents a ranked daily reading list in Chrome. The database, model, and
 personal preferences remain on your computer.
@@ -31,6 +35,9 @@ personal preferences remain on your computer.
   no hosted ArXistant account or remote personal database.
 
 ## Documentation
+
+Browse the complete documentation at
+**[jyshangguan.github.io/ArXistant](https://jyshangguan.github.io/ArXistant/)**.
 
 - [Installation](docs/installation.md) — macOS, Debian/Ubuntu, Windows/manual
   setup, migration, updates, and removal.
