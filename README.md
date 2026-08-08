@@ -57,7 +57,7 @@ flowchart LR
     E --> C
 ```
 
-ArXistant is currently at version **0.1.1**. The Chrome extension is loaded as
+ArXistant is currently at version **0.1.2**. The Chrome extension is loaded as
 an unpacked extension. macOS has a bundled launcher, and Debian/Ubuntu has an
 experimental `.deb` package with a systemd user service.
 
