@@ -6,6 +6,37 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl --global enable arxistant.service >/dev/null 2>&1 || true
 fi
 
+# Register the arxistant:// URL scheme handler.
+if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default arxistant-handler.desktop x-scheme-handler/arxistant \
+        >/dev/null 2>&1 || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+
+# Register the Chrome Native Messaging host so the extension can start the
+# server with a button click.  The extension ID is stable because it is derived
+# from the installed path /usr/share/arxistant/chrome-extension.
+EXT_ID=higcgidgkgajhkiahhhhkhgikjhlgigl
+NATIVE_HOST_DIR=/etc/opt/chrome/native-messaging-hosts
+NATIVE_MANIFEST="$NATIVE_HOST_DIR/com.arxistant.server.json"
+
+if [ -d "$NATIVE_HOST_DIR" ] || mkdir -p "$NATIVE_HOST_DIR" 2>/dev/null; then
+    cat > "$NATIVE_MANIFEST" << NATIVEEOF
+{
+  "name": "com.arxistant.server",
+  "description": "ArXistant server launcher",
+  "path": "/usr/lib/arxistant/arxistant-native-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://$EXT_ID/"
+  ]
+}
+NATIVEEOF
+    chmod 0644 "$NATIVE_MANIFEST"
+fi
+
 cat <<'EOF'
 ArXistant installed.
 

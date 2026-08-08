@@ -5,3 +5,13 @@ set -e
 if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl --global disable arxistant.service >/dev/null 2>&1 || true
 fi
+
+# Remove the native messaging host manifest.
+if [ "$1" = "remove" ]; then
+    rm -f /etc/opt/chrome/native-messaging-hosts/com.arxistant.server.json
+fi
+
+# Refresh the desktop MIME cache so the removed desktop entry is forgotten.
+if [ "$1" = "remove" ] && command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi

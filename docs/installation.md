@@ -127,8 +127,10 @@ and select:
 /usr/share/arxistant/chrome-extension
 ```
 
-The Linux popup does not attempt to launch a process from Chrome. If the server
-is offline, it displays the corresponding `systemctl --user start` command.
+The Linux popup shows a **Start Server** button that opens the registered
+`arxistant://` URL scheme handler. If the button is unavailable (for example
+on a manual installation without the desktop entry), the popup displays the
+corresponding `systemctl --user start` command instead.
 
 ### Linux data location
 

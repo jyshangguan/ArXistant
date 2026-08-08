@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ArXistant Server Launcher
+Comment=Start the ArXistant local companion server
+Exec=/usr/bin/arxistant-url-handler %u
+Icon=/usr/share/arxistant/chrome-extension/icons/icon128.png
+Terminal=false
+Categories=Utility;
+MimeType=x-scheme-handler/arxistant;
+NoDisplay=true
+StartupNotify=false

@@ -6,10 +6,22 @@
 # cannot alter Python's prefix or module search path.
 PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="/usr/bin/python3"
-PYTHON_ARCH="arm64"
 LOG_FILE="$PROJECT_ROOT/local/server.log"
 SERVER_SCRIPT="$PROJECT_ROOT/src/arxiv_db_server.py"
 SERVER_API_VERSION="1"
+
+# Platform tooling.  macOS wraps Python in `arch` to force the native slice;
+# Linux has no equivalent and uses lsof from /usr/bin.
+LSOF=/usr/bin/lsof
+ARCH_CMD=()
+if [ "$(uname -s)" = "Darwin" ]; then
+    case "$(uname -m)" in
+        arm64) PYTHON_ARCH="arm64" ;;
+        *)     PYTHON_ARCH="x86_64" ;;
+    esac
+    LSOF=/usr/sbin/lsof
+    ARCH_CMD=(/usr/bin/arch -"$PYTHON_ARCH")
+fi
 
 cd "$PROJECT_ROOT" || exit 1
 
@@ -25,7 +37,7 @@ fi
 
 # If port 8765 belongs to this checkout's server, it is an outdated process and
 # can be replaced safely. Never terminate an unrelated process using the port.
-LISTENER_PID=$(/usr/sbin/lsof -tiTCP:8765 -sTCP:LISTEN 2> /dev/null | /usr/bin/head -n 1)
+LISTENER_PID=$("$LSOF" -tiTCP:8765 -sTCP:LISTEN 2> /dev/null | /usr/bin/head -n 1)
 if [ -n "$LISTENER_PID" ]; then
   LISTENER_COMMAND=$(/bin/ps -p "$LISTENER_PID" -o command= 2> /dev/null || true)
   case "$LISTENER_COMMAND" in
@@ -52,7 +64,7 @@ fi
   PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
   LANG="${LANG:-en_US.UTF-8}" \
   TMPDIR="${TMPDIR:-/tmp}" \
-  /usr/bin/arch -"$PYTHON_ARCH" \
+  "${ARCH_CMD[@]}" \
   "$PYTHON" "$SERVER_SCRIPT" \
   > "$LOG_FILE" 2>&1 < /dev/null &
 

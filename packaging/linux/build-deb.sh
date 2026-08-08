@@ -22,6 +22,7 @@ install -d \
     "$PACKAGE_ROOT/usr/bin" \
     "$PACKAGE_ROOT/usr/lib/arxistant/src" \
     "$PACKAGE_ROOT/usr/lib/systemd/user" \
+    "$PACKAGE_ROOT/usr/share/applications" \
     "$PACKAGE_ROOT/usr/share/arxistant/chrome-extension/icons" \
     "$PROJECT_ROOT/dist"
 
@@ -39,7 +40,10 @@ for icon_file in "$PROJECT_ROOT"/chrome-extension/icons/*.png; do
 done
 
 install -m 0755 "$SCRIPT_DIR/arxistant-server" "$PACKAGE_ROOT/usr/bin/arxistant-server"
+install -m 0755 "$SCRIPT_DIR/arxistant-url-handler" "$PACKAGE_ROOT/usr/bin/arxistant-url-handler"
+install -m 0755 "$SCRIPT_DIR/arxistant-native-host" "$PACKAGE_ROOT/usr/lib/arxistant/arxistant-native-host"
 install -m 0644 "$SCRIPT_DIR/arxistant.service" "$PACKAGE_ROOT/usr/lib/systemd/user/arxistant.service"
+install -m 0644 "$SCRIPT_DIR/arxistant-handler.desktop" "$PACKAGE_ROOT/usr/share/applications/arxistant-handler.desktop"
 install -m 0755 "$SCRIPT_DIR/postinst" "$PACKAGE_ROOT/DEBIAN/postinst"
 install -m 0755 "$SCRIPT_DIR/prerm" "$PACKAGE_ROOT/DEBIAN/prerm"
 sed "s/@VERSION@/$VERSION/g" "$SCRIPT_DIR/control.in" > "$PACKAGE_ROOT/DEBIAN/control"

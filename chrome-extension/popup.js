@@ -53,12 +53,10 @@ async function isServerOnline() {
 
 function showServerOffline() {
   serverSection.style.display = 'block';
-  const canLaunchHelper = currentPlatform === 'mac';
+  const canLaunchHelper = currentPlatform === 'mac' || currentPlatform === 'linux';
   btnStartServer.hidden = !canLaunchHelper;
   serverHelp.hidden = canLaunchHelper;
-  if (currentPlatform === 'linux') {
-    serverHelp.textContent = 'Start or update it with: systemctl --user restart arxistant.service';
-  } else if (!canLaunchHelper) {
+  if (!canLaunchHelper) {
     serverHelp.textContent = 'Start the ArXistant companion server, then reopen this popup.';
   }
 }
@@ -73,9 +71,25 @@ async function startServer() {
   btnStartServer.querySelector('.label').textContent = 'Starting...';
 
   try {
-    // Chrome cannot spawn a process directly. The registered macOS URL handler
-    // opens the bundled helper app, which runs the sanitized start_server.sh.
-    window.location.href = SERVER_LAUNCH_URL;
+    // On Linux, use Chrome Native Messaging to start the server reliably.
+    // On macOS, use the registered arxistant:// URL scheme handler.
+    if (currentPlatform === 'linux') {
+      await chrome.runtime.sendNativeMessage(
+        'com.arxistant.server',
+        { action: 'start-server' }
+      );
+    } else {
+      // macOS: open the URL scheme handler.  Use an anchor click so the
+      // popup window stays alive for the polling loop.
+      const a = document.createElement('a');
+      a.href = SERVER_LAUNCH_URL;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
 
     for (let attempt = 0; attempt < 20; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 500));

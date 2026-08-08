@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# URL handler for the arxistant:// scheme.  The desktop environment invokes
+# this with the opened URL (e.g. arxistant://start) as the first argument.
+# Starts the ArXistant server if it is not already responding, preferring the
+# systemd user unit and falling back to a direct background launch.
+
+set -eu
+
+SERVER_URL="http://localhost:8765"
+HEALTH_URL="$SERVER_URL/api/health"
+API_VERSION="1"
+SERVICE_UNIT="/usr/lib/systemd/user/arxistant.service"
+WRAPPER="/usr/bin/arxistant-server"
+
+is_ready() {
+    /usr/bin/curl --silent --fail --max-time 1 "$HEALTH_URL" 2>/dev/null |
+        /usr/bin/grep --quiet "\"api_version\": $API_VERSION"
+}
+
+# Nothing to do when the server already answers with the expected API.
+if is_ready; then
+    exit 0
+fi
+
+# Preferred path: manage the same user service the operator would type in a
+# terminal.  Restart also resurrects a crashed or outdated process.
+systemd_started=0
+if command -v systemctl >/dev/null 2>&1 && [ -f "$SERVICE_UNIT" ]; then
+    if systemctl --user restart arxistant.service >/dev/null 2>&1; then
+        systemd_started=1
+    fi
+fi
+
+# Fallback: launch directly in the background.
+if [ "$systemd_started" -eq 0 ]; then
+    if [ -x "$WRAPPER" ]; then
+        /usr/bin/nohup "$WRAPPER" >/dev/null 2>&1 < /dev/null &
+    else
+        echo "ArXistant: no launcher found (looked for $WRAPPER)" >&2
+        exit 1
+    fi
+fi
+
+# Wait for readiness so the caller (and the extension popup) sees a live server.
+_attempt=0
+while [ "$_attempt" -lt 30 ]; do
+    if is_ready; then
+        exit 0
+    fi
+    /bin/sleep 1
+    _attempt=$((_attempt + 1))
+done
+
+exit 1

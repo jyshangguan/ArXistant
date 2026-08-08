@@ -600,6 +600,69 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(text.encode())
 
+    def _not_found_page(self, title, message, api_endpoint, button_label):
+        """Return an HTML page with a message and an optional button."""
+        button_html = ""
+        if api_endpoint and button_label:
+            button_html = f"""<button class="btn" id="generate-btn" onclick="generate()">{button_label}</button>
+  <div id="status"></div>
+  <script>
+    async function generate() {{
+      const btn = document.getElementById('generate-btn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      btn.textContent = 'Generating…';
+      status.textContent = '';
+
+      try {{
+        const resp = await fetch('{api_endpoint}', {{ method: 'POST' }});
+        const data = await resp.json();
+        if (data.success) {{
+          status.textContent = 'Done! Reloading the page…';
+          setTimeout(() => location.reload(), 1500);
+        }} else {{
+          status.textContent = 'Error: ' + (data.error || 'Unknown error');
+          btn.disabled = false;
+          btn.textContent = '{button_label}';
+        }}
+      }} catch (e) {{
+        status.textContent = 'Could not reach the server: ' + e.message;
+        btn.disabled = false;
+        btn.textContent = '{button_label}';
+      }}
+    }}
+  </script>"""
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title} — ArXistant</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 80px auto; text-align: center; color: #333; }}
+    h1 {{ color: #b31b1b; }}
+    .btn {{ display: inline-block; margin-top: 20px; padding: 12px 24px; background: #b31b1b; color: white; border: none; border-radius: 6px; font-size: 1em; cursor: pointer; text-decoration: none; }}
+    .btn:hover {{ background: #8b1515; }}
+    .btn:disabled {{ background: #ccc; cursor: wait; }}
+    #status {{ margin-top: 16px; font-size: 0.9em; color: #666; }}
+    .nav {{ margin-top: 30px; }}
+    .nav a {{ color: #b31b1b; text-decoration: none; margin: 0 8px; }}
+    .nav a:hover {{ text-decoration: underline; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  <p>{message}</p>
+  {button_html}
+  <div class="nav">
+    <a href="/">Daily Papers</a> ·
+    <a href="/database.html">Saved Papers</a>
+  </div>
+</body>
+</html>"""
+        self._send_html(html)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -627,7 +690,11 @@ class Handler(BaseHTTPRequestHandler):
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
                 self._send_html(html)
             else:
-                self._send_text("Daily paper list not found. Run the ranker first.", 404)
+                self._not_found_page(
+                    "Daily Paper List",
+                    "No daily paper list has been generated yet.",
+                    "/api/refresh-daily",
+                    "Generate Daily Papers")
 
         elif path == "/daily.html":
             if os.path.exists(DAILY_HTML):
@@ -637,7 +704,11 @@ class Handler(BaseHTTPRequestHandler):
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
                 self._send_html(html)
             else:
-                self._send_text("Daily paper list not found. Run the ranker first.", 404)
+                self._not_found_page(
+                    "Daily Paper List",
+                    "No daily paper list has been generated yet.",
+                    "/api/refresh-daily",
+                    "Generate Daily Papers")
 
         elif path == "/recent.html":
             if os.path.exists(RECENT_HTML):
@@ -647,7 +718,11 @@ class Handler(BaseHTTPRequestHandler):
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
                 self._send_html(html)
             else:
-                self._send_text("Recent paper list not found. Run the ranker with --recent first.", 404)
+                self._not_found_page(
+                    "Recent Paper List",
+                    "No recent paper list has been generated yet.",
+                    "/api/refresh-recent",
+                    "Generate Recent Papers")
 
         elif path == "/database.html":
             self._send_html(DATABASE_VIEWER_HTML)
@@ -660,7 +735,11 @@ class Handler(BaseHTTPRequestHandler):
                 with open(ML_FEATURES_HTML, 'r', encoding='utf-8') as f:
                     self._send_html(f.read())
             else:
-                self._send_text("ML features page not found. Run the model training first.", 404)
+                self._not_found_page(
+                    "ML Features",
+                    "No ML features page has been generated yet. Run model training first.",
+                    "/api/regenerate-features",
+                    "Generate ML Features")
 
 
         elif path == "/chat.html":
@@ -668,7 +747,11 @@ class Handler(BaseHTTPRequestHandler):
                 with open(CHAT_HTML, 'r', encoding='utf-8') as f:
                     self._send_html(f.read())
             else:
-                self._send_text("Chat page not found.", 404)
+                self._not_found_page(
+                    "Chat with Papers",
+                    "This feature is coming soon.",
+                    None,
+                    None)
 
         elif path == "/search-arxiv.html":
             self._send_html(SEARCH_ARXIV_HTML)
