@@ -35,26 +35,21 @@ def main():
         send_message({"success": False, "error": f"Unknown action: {action}"})
         return
 
-    # Try systemd first, fall back to the wrapper script.
-    result = subprocess.run(
+    # Try systemd: daemon-reload (pick up new/updated unit files), enable
+    # (persist across reboots), then start.  All three are idempotent.
+    for cmd in (
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "arxistant.service"],
         ["systemctl", "--user", "start", "arxistant.service"],
-        capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode == 0:
-        send_message({"success": True, "started": "systemd"})
-        return
-
-    # Fallback: direct launch via the installed wrapper.
-    wrapper = "/usr/bin/arxistant-server"
-    try:
-        subprocess.Popen(
-            [wrapper],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
+    ):
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30,
         )
-        send_message({"success": True, "started": "direct"})
-    except FileNotFoundError:
-        send_message({"success": False, "error": f"Wrapper not found: {wrapper}"})
+        if result.returncode != 0:
+            send_message({"success": False, "error": result.stderr.strip() or result.stdout.strip()})
+            return
+
+    send_message({"success": True, "started": "systemd"})
 
 
 if __name__ == "__main__":
