@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'com.arxistant.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.arxistant.app"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+
+        // Only build the ABIs we need. arm64-v8a covers all modern phones;
+        // x86_64 is useful for emulators.
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+
+        python {
+            // These come from Chaquopy's prebuilt package repository.
+            pip {
+                install "numpy"
+                install "scikit-learn"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.webkit:webkit:1.11.0'
+}

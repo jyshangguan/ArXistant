@@ -202,6 +202,14 @@ Python source from `/usr/lib/arxistant`.
 The same Python server works when started manually. Native automatic startup
 and installers have not yet been implemented.
 
+### Android
+
+An Android app (in the `android/` directory) embeds the Python server with
+Chaquopy, runs it in-process on `127.0.0.1:8765`, and shows the pages in a
+WebView. The same `arxistant_tasks` and `arxistant_secrets` modules are used,
+but tasks run in-process and secrets are stored via an Android Keystore backend.
+See the [Android app guide](android.html).
+
 ## Repository structure
 
 ```text

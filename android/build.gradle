@@ -1,0 +1,8 @@
+// Root build file. Keep the plugin versions here so they can be bumped easily.
+// Requires JDK 17+ (Android Gradle Plugin 8.x).
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+    // Chaquopy embeds a Python interpreter + NumPy/scikit-learn in the APK.
+    // Check https://chaquo.com/chaquopy/ for the latest version.
+    id 'com.chaquo.python' version '15.0.1' apply false
+}

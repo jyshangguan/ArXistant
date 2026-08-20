@@ -526,6 +526,34 @@ async function refreshRecent() {
     return "\n".join(lines)
 
 
+def generate_ranked_html(recent=False, output_path=None, date=None, json_output=None):
+    """Fetch, rank, and write the daily/recent HTML page. Returns the paper count."""
+    if recent:
+        print("Fetching arXiv papers from recent page (last ~5 days)...")
+        papers = fetch_arxiv_papers(recent=True)
+    else:
+        print(f"Fetching arXiv papers for: {date or 'today (new page)'}...")
+        papers = fetch_arxiv_papers(date)
+    print(f"Found {len(papers)} papers")
+
+    scored_papers = rank_papers(papers)
+
+    page_type = 'recent' if recent else 'new'
+    html = format_paper_list_html(scored_papers, date, page_type=page_type)
+    if output_path is None:
+        output_path = data_path('arxiv_ranked.html')
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    print(f"Saved ranked list to {output_path}")
+
+    if json_output:
+        with open(json_output, 'w', encoding='utf-8') as f:
+            json.dump([{'score': s, 'raw_score': r, **p} for s, r, p in scored_papers], f, indent=2)
+        print(f"Saved JSON to {json_output}")
+
+    return len(papers)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch and rank arXiv astro-ph papers')
     parser.add_argument('--recent', action='store_true', help='Fetch from arXiv recent page (last ~5 days) instead of new page')
@@ -535,30 +563,12 @@ def main():
     parser.add_argument('--json-output', help='Optional JSON output path')
     parser.add_argument('--ml', action='store_true', help='DEPRECATED: ML is always used')
     args = parser.parse_args()
-    
-    if args.recent:
-        print("Fetching arXiv papers from recent page (last ~5 days)...")
-        papers = fetch_arxiv_papers(recent=True)
-    else:
-        print(f"Fetching arXiv papers for: {args.date or 'today (new page)'}...")
-        papers = fetch_arxiv_papers(args.date)
-    print(f"Found {len(papers)} papers")
-    
+
     if args.interests_file and args.interests_file != data_path('interests.txt'):
         print("NOTE: --interests-file is deprecated and ignored. ML scoring is always used.")
-    
-    scored_papers = rank_papers(papers)
-    
-    page_type = 'recent' if args.recent else 'new'
-    html = format_paper_list_html(scored_papers, args.date, page_type=page_type)
-    with open(args.output, 'w', encoding='utf-8') as f:
-        f.write(html)
-    print(f"Saved ranked list to {args.output}")
-    
-    if args.json_output:
-        with open(args.json_output, 'w', encoding='utf-8') as f:
-            json.dump([{'score': s, 'raw_score': r, **p} for s, r, p in scored_papers], f, indent=2)
-        print(f"Saved JSON to {args.json_output}")
+
+    generate_ranked_html(recent=args.recent, output_path=args.output,
+                         date=args.date, json_output=args.json_output)
 
 
 if __name__ == '__main__':

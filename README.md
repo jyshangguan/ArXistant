@@ -47,6 +47,8 @@ Browse the complete documentation at
   search, publications, and ML controls.
 - [How ArXistant works](docs/how-it-works.md) — architecture, ranking pipeline,
   local data, background refresh, and project structure.
+- [Android app](docs/android.md) — run ArXistant standalone on a phone (arXiv
+  fetch, ML ranking, and Nutstore sync, no server).
 
 ## At a glance
 

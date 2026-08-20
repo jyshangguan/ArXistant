@@ -81,6 +81,31 @@ class SecretStoreTests(unittest.TestCase):
             with self.assertRaises(providers.arxistant_secrets.SecretStoreError):
                 providers.arxistant_secrets.set_secret("k", "v")
 
+    def test_custom_backend_takes_precedence(self):
+        class FakeBackend:
+            def __init__(self):
+                self.store = {}
+
+            def get(self, key):
+                return self.store.get(key)
+
+            def set(self, key, value):
+                self.store[key] = value
+
+            def delete(self, key):
+                self.store.pop(key, None)
+
+        backend = FakeBackend()
+        providers.arxistant_secrets.set_backend(backend)
+        try:
+            self.assertTrue(providers.arxistant_secrets.is_available())
+            providers.arxistant_secrets.set_secret("k", "v")
+            self.assertEqual(providers.arxistant_secrets.get_secret("k"), "v")
+            providers.arxistant_secrets.delete_secret("k")
+            self.assertIsNone(providers.arxistant_secrets.get_secret("k"))
+        finally:
+            providers.arxistant_secrets.set_backend(None)
+
 
 if __name__ == "__main__":
     unittest.main()

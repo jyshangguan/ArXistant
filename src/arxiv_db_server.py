@@ -12,8 +12,6 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
-import sys
 import threading
 import urllib.parse
 import urllib.request
@@ -21,10 +19,11 @@ import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
-from arxistant_paths import DATA_DIR, PROJECT_ROOT, data_path, ensure_data_dirs
+from arxistant_paths import DATA_DIR, data_path, ensure_data_dirs
 
 import arxistant_sync
 import arxistant_secrets
+import arxistant_tasks
 
 DB_PATH = data_path("arxiv_papers.db")
 DAILY_HTML = data_path("arxiv_ranked_personalized.html")
@@ -42,48 +41,11 @@ SERVER_API_VERSION = 2
 RETRAIN_STATE_LOCK = threading.Lock()
 
 
-def child_python_env():
-    """Return a portable environment for Python child processes."""
-    env = os.environ.copy()
-    # These variables can be inherited through macOS Launch Services and make
-    # a child interpreter use the wrong virtual environment or architecture.
-    for name in ("__PYVENV_LAUNCHER__", "PYTHONHOME"):
-        env.pop(name, None)
-    return env
-
-
-_APPLE_SILICON = None
-
-
-def is_apple_silicon():
-    """Detect Apple Silicon hardware (true even when running under Rosetta)."""
-    global _APPLE_SILICON
-    if _APPLE_SILICON is None:
-        if sys.platform != "darwin":
-            _APPLE_SILICON = False
-        else:
-            try:
-                result = subprocess.run(
-                    ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                _APPLE_SILICON = (result.returncode == 0 and result.stdout.strip() == "1")
-            except Exception:
-                _APPLE_SILICON = False
-    return _APPLE_SILICON
-
-
-def python_command(script, *args):
-    """Run project scripts with the same interpreter as this server."""
-    command = [sys.executable, os.path.join(PROJECT_ROOT, "src", script), *args]
-    # On Apple Silicon, force the native arm64 architecture so child processes
-    # match the arm64 NumPy/scikit-learn wheels. A server launched under Rosetta
-    # would otherwise spawn x86_64 children that cannot import the arm64 C
-    # extensions (this affects training, feature-page generation, and the daily
-    # refresh alike).
-    if is_apple_silicon():
-        command = ["/usr/bin/arch", "-arm64", *command]
-    return command
+# Re-exported for backwards compatibility (tests and any external callers);
+# the implementations now live in arxistant_tasks.
+child_python_env = arxistant_tasks.child_python_env
+is_apple_silicon = arxistant_tasks.is_apple_silicon
+python_command = arxistant_tasks.python_command
 
 
 def _default_retrain_state():
@@ -129,27 +91,7 @@ def get_retrain_state():
 
 
 def _run_training(included_changes):
-    error = None
-    training_succeeded = False
-    try:
-        command = python_command("arxiv_ml_ranker.py")
-        result = subprocess.run(command + ["train"], cwd=PROJECT_ROOT,
-                                capture_output=True, text=True, timeout=900,
-                                env=child_python_env())
-        if result.returncode != 0:
-            error = result.stderr.strip() or result.stdout.strip() or "Training failed"
-        else:
-            training_succeeded = True
-            features = subprocess.run(command + ["features"], cwd=PROJECT_ROOT,
-                                      capture_output=True, text=True, timeout=120,
-                                      env=child_python_env())
-            if features.returncode != 0:
-                error = (features.stderr.strip() or features.stdout.strip()
-                         or "Training succeeded, but feature-page generation failed")
-    except subprocess.TimeoutExpired:
-        error = "Model training timed out"
-    except Exception as exc:
-        error = str(exc)
+    training_succeeded, error = arxistant_tasks.train_and_generate_features()
 
     with RETRAIN_STATE_LOCK:
         if training_succeeded:
@@ -1088,28 +1030,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"success": False, "error": "No keyword provided"}, 400)
 
         elif path == "/api/regenerate-features":
-            try:
-                # Deduplicate: positive wins over negative
-                deduplicate_custom_keywords()
-                # Run ML generation in a fresh copy of this interpreter so it
-                # uses the same installed dependencies as the server.
-                result = subprocess.run(
-                    python_command("arxiv_ml_ranker.py", "features"),
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    env=child_python_env(),
-                )
-                if result.returncode == 0:
-                    self._send_json({"success": True, "message": "Features HTML regenerated (deduplicated)"})
-                else:
-                    error = result.stderr.strip() or result.stdout.strip() or "Feature generation failed"
-                    self._send_json({"success": False, "error": error}, 500)
-            except subprocess.TimeoutExpired:
-                self._send_json({"success": False, "error": "Feature generation timed out"}, 504)
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
+            # Deduplicate: positive wins over negative
+            deduplicate_custom_keywords()
+            ok, error = arxistant_tasks.regenerate_features()
+            if ok:
+                self._send_json({"success": True, "message": "Features HTML regenerated (deduplicated)"})
+            else:
+                self._send_json({"success": False, "error": error}, 500)
 
         elif path == "/api/ml-retraining/settings":
             try:
@@ -1123,38 +1050,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "started": started, **state})
 
         elif path == "/api/refresh-daily":
-            try:
-                result = subprocess.run(
-                    python_command("arxiv_daily_ranker_html.py", "--output", DAILY_HTML),
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    env=child_python_env()
-                )
-                if result.returncode == 0:
-                    self._send_json({"success": True, "output": result.stdout})
-                else:
-                    self._send_json({"success": False, "error": result.stderr}, 500)
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
+            ok, error = arxistant_tasks.refresh_daily(DAILY_HTML)
+            if ok:
+                self._send_json({"success": True})
+            else:
+                self._send_json({"success": False, "error": error}, 500)
 
         elif path == "/api/refresh-recent":
-            try:
-                result = subprocess.run(
-                    python_command("arxiv_daily_ranker_html.py", "--recent", "--output", RECENT_HTML),
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    env=child_python_env()
-                )
-                if result.returncode == 0:
-                    self._send_json({"success": True, "output": result.stdout})
-                else:
-                    self._send_json({"success": False, "error": result.stderr}, 500)
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
+            ok, error = arxistant_tasks.refresh_recent(RECENT_HTML)
+            if ok:
+                self._send_json({"success": True})
+            else:
+                self._send_json({"success": False, "error": error}, 500)
 
         elif path == "/api/cloud/settings":
             config = arxistant_sync.load_config()
@@ -1958,15 +1865,18 @@ def run_server(port=8765):
     ensure_data_dirs()
     init_db()
     arxistant_sync.maybe_auto_sync_on_start()
-    server = HTTPServer(("localhost", port), Handler)
-    print(f"Server running at http://localhost:{port}")
-    print(f"  Daily papers:     http://localhost:{port}/")
-    print(f"  Recent papers:    http://localhost:{port}/recent.html")
-    print(f"  Saved papers:     http://localhost:{port}/database.html")
-    print(f"  My publications:  http://localhost:{port}/publications.html")
-    print(f"  My ML features:   http://localhost:{port}/ml-features.html")
-    print(f"  Search arXiv/ADS: http://localhost:{port}/search-arxiv.html")
-    print(f"  Chat with papers: http://localhost:{port}/chat.html")
+    # Bind to a specific loopback address when requested (e.g. 127.0.0.1 on
+    # Android, where "localhost" can resolve to ::1 and not match the WebView).
+    bind_host = os.environ.get("ARXISTANT_BIND", "localhost")
+    server = HTTPServer((bind_host, port), Handler)
+    print(f"Server running at http://{bind_host}:{port}")
+    print(f"  Daily papers:     http://{bind_host}:{port}/")
+    print(f"  Recent papers:    http://{bind_host}:{port}/recent.html")
+    print(f"  Saved papers:     http://{bind_host}:{port}/database.html")
+    print(f"  My publications:  http://{bind_host}:{port}/publications.html")
+    print(f"  My ML features:   http://{bind_host}:{port}/ml-features.html")
+    print(f"  Search arXiv/ADS: http://{bind_host}:{port}/search-arxiv.html")
+    print(f"  Chat with papers: http://{bind_host}:{port}/chat.html")
     print("Press Ctrl+C to stop")
     try:
         server.serve_forever()
