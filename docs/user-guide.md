@@ -59,6 +59,39 @@ The Saved Papers page provides full-text-style filtering across locally stored
 metadata. You can edit notes and remove records. The database is SQLite and
 never needs a hosted ArXistant account.
 
+## Cloud sync
+
+ArXistant can mirror your paper database (saved papers, publications, and custom
+keywords) to Nutstore over WebDAV, so several devices share the same library.
+It stays local-first: every device keeps its own SQLite database, and the cloud
+only carries a mergeable JSON snapshot between devices.
+
+### Set up Nutstore WebDAV
+
+1. In Nutstore (坚果云), open **账户信息 → 安全选项 → 第三方应用管理 →
+   添加应用密码** and generate a dedicated **app password**. Do not use your
+   normal Nutstore login password.
+2. In **Extension Settings → Cloud Sync**, choose **Nutstore WebDAV (坚果云)**.
+3. Leave the address as `https://dav.jianguoyun.com/dav/`, enter your Nutstore
+   email, and paste the app password.
+4. Tick **Enable cloud sync**, then **Save Cloud Settings** and **Sync Now**.
+
+On the first sync, ArXistant creates an `ArXistant` folder in Nutstore and
+uploads the snapshot. On a second device, repeat the same steps: the first sync
+there downloads and restores your library instead.
+
+The app password is stored in the operating-system keychain, never in an
+ArXistant file. Use **Disconnect** to remove it and turn sync off.
+
+### What is and is not synced
+
+Synced and merged (last-write-wins): saved papers with notes, publications, and
+custom keywords. Not synced: the ML model and generated daily/recent pages,
+which each device rebuilds from its local database.
+
+The **Local folder** provider is an alternative that writes the snapshot into a
+folder you already sync with Dropbox/iCloud/OneDrive or the Nutstore desktop app.
+
 ## Search
 
 The Search page supports:

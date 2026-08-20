@@ -251,6 +251,48 @@
       <pre id="retraining-status" class="alarm-status">Loading ML retraining status…</pre>
     </div>
 
+    <div class="section-title">Cloud Sync</div>
+
+    <div class="form-group">
+      <label for="cloud-provider">Cloud Provider</label>
+      <select id="cloud-provider" style="width:100%; padding:10px 12px; border:1px solid #ddd; border-radius:6px; font-size:14px; font-family:inherit;">
+        <option value="local_folder">Local folder (offline / folder-sync)</option>
+        <option value="webdav">Nutstore WebDAV (坚果云)</option>
+      </select>
+    </div>
+
+    <div class="form-group" id="cloud-local-group">
+      <label for="cloud-folder">Sync folder path</label>
+      <input type="text" id="cloud-folder" placeholder="/path/to/synced/folder">
+      <p class="hint">Any folder, e.g. one already synced by Dropbox/iCloud/OneDrive. ArXistant keeps a snapshot file there.</p>
+    </div>
+
+    <div class="form-group" id="cloud-webdav-group" style="display:none;">
+      <label for="webdav-url">WebDAV address</label>
+      <input type="text" id="webdav-url" placeholder="https://dav.jianguoyun.com/dav/">
+      <label for="webdav-username" style="margin-top:10px;">Email</label>
+      <input type="text" id="webdav-username" placeholder="you@example.com">
+      <label for="webdav-password" style="margin-top:10px;">App password (第三方应用密码)</label>
+      <input type="password" id="webdav-password" placeholder="App password">
+      <p class="hint">Generate a dedicated app password in Nutstore settings (坚果云 → 账户信息 → 安全选项 → 第三方应用管理) — do <strong>not</strong> use your real password. It is stored in the macOS Keychain, never on disk. ArXistant creates an <code>ArXistant</code> folder here for the snapshot.</p>
+    </div>
+
+    <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px; cursor:pointer;">
+      <input type="checkbox" id="cloud-enabled">
+      <span>Enable cloud sync</span>
+    </label>
+    <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; cursor:pointer;">
+      <input type="checkbox" id="cloud-auto-sync" checked>
+      <span>Auto-sync on save and server start</span>
+    </label>
+
+    <div class="form-group" style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button id="btn-cloud-save" class="btn btn-secondary">Save Cloud Settings</button>
+      <button id="btn-cloud-sync" class="btn btn-secondary">↻ Sync Now</button>
+      <button id="btn-cloud-disconnect" class="btn btn-secondary">Disconnect</button>
+    </div>
+    <pre id="cloud-status" class="alarm-status">Loading cloud sync status…</pre>
+
     <div class="section-title">Debug</div>
 
     <div class="form-group">

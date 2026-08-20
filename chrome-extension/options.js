@@ -19,10 +19,24 @@ const testStatus = document.getElementById('test-status');
 const alarmStatus = document.getElementById('alarm-status');
 const retrainAfterChangesInput = document.getElementById('retrain-after-changes');
 const retrainingStatus = document.getElementById('retraining-status');
+const cloudProviderInput = document.getElementById('cloud-provider');
+const cloudFolderInput = document.getElementById('cloud-folder');
+const cloudEnabledInput = document.getElementById('cloud-enabled');
+const cloudAutoSyncInput = document.getElementById('cloud-auto-sync');
+const btnCloudSave = document.getElementById('btn-cloud-save');
+const btnCloudSync = document.getElementById('btn-cloud-sync');
+const btnCloudDisconnect = document.getElementById('btn-cloud-disconnect');
+const cloudStatus = document.getElementById('cloud-status');
+const cloudLocalGroup = document.getElementById('cloud-local-group');
+const cloudWebdavGroup = document.getElementById('cloud-webdav-group');
+const webdavUrlInput = document.getElementById('webdav-url');
+const webdavUsernameInput = document.getElementById('webdav-username');
+const webdavPasswordInput = document.getElementById('webdav-password');
 
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
   await loadSettings();
+  await loadCloudStatus();
 });
 
 function addTimeRow(time = '10:30') {
@@ -166,4 +180,105 @@ function bindEvents() {
   btnSave.addEventListener('click', saveSettings);
   btnReset.addEventListener('click', resetSettings);
   btnTestNotify.addEventListener('click', testNotification);
+  btnCloudSave.addEventListener('click', saveCloudSettings);
+  btnCloudSync.addEventListener('click', syncNow);
+  btnCloudDisconnect.addEventListener('click', disconnectCloud);
+  cloudProviderInput.addEventListener('change', updateCloudProviderFields);
+}
+
+// ── Cloud Sync ──
+function formatCloudStatus(state) {
+  const lines = [];
+  lines.push(`Provider: ${state.provider || 'none'}${state.enabled ? ' (enabled)' : ' (disabled)'}`);
+  if (state.device_id) lines.push(`Device ID: ${state.device_id}`);
+  const ps = state.provider_status || {};
+  if (state.provider === 'local_folder') {
+    if (ps.path) lines.push(`Folder: ${ps.path}`);
+    if (ps.file_exists) lines.push('Remote snapshot: present');
+  } else if (state.provider === 'webdav') {
+    lines.push(`WebDAV configured: ${ps.configured ? 'yes' : 'no'}`);
+    if (ps.url) lines.push(`Address: ${ps.url}`);
+    if (ps.username) lines.push(`Email: ${ps.username}`);
+    if (ps.folder) lines.push(`Folder: ${ps.folder} (auto-created)`);
+  }
+  if (state.keychain_available === false) {
+    lines.push('⚠ Keychain unavailable — credentials cannot be stored securely.');
+  }
+  lines.push(`Last sync: ${state.last_sync_at ? new Date(state.last_sync_at).toLocaleString() : 'never'}`);
+  if (state.last_error) lines.push(`Last error: ${state.last_error}`);
+  return lines.join('\n');
+}
+
+function updateCloudProviderFields() {
+  const provider = cloudProviderInput.value;
+  cloudLocalGroup.style.display = provider === 'local_folder' ? 'block' : 'none';
+  cloudWebdavGroup.style.display = provider === 'webdav' ? 'block' : 'none';
+}
+
+async function loadCloudStatus() {
+  cloudStatus.textContent = 'Loading cloud sync status…';
+  cloudStatus.style.color = '';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getCloudStatus' });
+    if (!response.success) throw new Error(response.error || 'Status unavailable');
+    const state = response.state;
+    const cfg = state.config || {};
+    cloudProviderInput.value = state.provider || 'local_folder';
+    cloudFolderInput.value = cfg.local_folder_path || '';
+    webdavUrlInput.value = cfg.webdav_url || '';
+    webdavUsernameInput.value = cfg.webdav_username || '';
+    webdavPasswordInput.value = '';
+    webdavPasswordInput.placeholder = cfg.webdav_password_set
+      ? 'Saved in Keychain (leave blank to keep)'
+      : 'App password';
+    cloudEnabledInput.checked = state.enabled !== false;
+    cloudAutoSyncInput.checked = state.auto_sync !== false;
+    updateCloudProviderFields();
+    cloudStatus.textContent = formatCloudStatus(state);
+  } catch (error) {
+    cloudStatus.textContent = `Cloud sync unavailable: ${error.message}`;
+  }
+}
+
+async function saveCloudSettings() {
+  const config = {
+    provider: cloudProviderInput.value,
+    local_folder_path: cloudFolderInput.value.trim(),
+    webdav_url: webdavUrlInput.value.trim(),
+    webdav_username: webdavUsernameInput.value.trim(),
+    webdav_password: webdavPasswordInput.value,
+    enabled: cloudEnabledInput.checked,
+    auto_sync: cloudAutoSyncInput.checked
+  };
+  cloudStatus.textContent = 'Saving cloud settings…';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'saveCloudSettings', config });
+    if (!response.success) throw new Error(response.error || 'Failed to save');
+    await loadCloudStatus();
+  } catch (error) {
+    cloudStatus.textContent = `Error saving cloud settings: ${error.message}`;
+  }
+}
+
+async function syncNow() {
+  cloudStatus.textContent = 'Syncing…';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'cloudSync' });
+    if (!response.success) throw new Error(response.error || 'Sync failed');
+    const stats = response.result?.stats ? `\nChanges: ${JSON.stringify(response.result.stats)}` : '';
+    cloudStatus.textContent = 'Sync complete.' + stats;
+  } catch (error) {
+    cloudStatus.textContent = `Sync failed: ${error.message}`;
+  }
+}
+
+async function disconnectCloud() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'cloudDisconnect' });
+    if (!response.success) throw new Error(response.error || 'Disconnect failed');
+    await loadCloudStatus();
+    cloudStatus.textContent = 'Cloud sync disabled.';
+  } catch (error) {
+    cloudStatus.textContent = `Disconnect failed: ${error.message}`;
+  }
 }

@@ -273,6 +273,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'testNotification':
         return { success: true, ...(await showReminderNotification()) };
+      case 'getCloudStatus': {
+        const settings = await getSettings();
+        return { success: true, state: await fetchJson(serverApiUrl(settings.serverUrl, '/api/cloud/status')) };
+      }
+      case 'saveCloudSettings': {
+        const settings = await getSettings();
+        return {
+          success: true,
+          config: await fetchJson(serverApiUrl(settings.serverUrl, '/api/cloud/settings'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message.config || {})
+          })
+        };
+      }
+      case 'cloudSync': {
+        const settings = await getSettings();
+        return { success: true, result: await fetchJson(serverApiUrl(settings.serverUrl, '/api/cloud/sync'), { method: 'POST' }) };
+      }
+      case 'cloudDisconnect': {
+        const settings = await getSettings();
+        return { success: true, result: await fetchJson(serverApiUrl(settings.serverUrl, '/api/cloud/disconnect'), { method: 'POST' }) };
+      }
       default:
         return { success: false, error: 'Unknown action' };
     }

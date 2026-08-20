@@ -8,7 +8,7 @@ PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="/usr/bin/python3"
 LOG_FILE="$PROJECT_ROOT/local/server.log"
 SERVER_SCRIPT="$PROJECT_ROOT/src/arxiv_db_server.py"
-SERVER_API_VERSION="1"
+SERVER_API_VERSION="2"
 
 # Platform tooling.  macOS wraps Python in `arch` to force the native slice;
 # Linux has no equivalent and uses lsof from /usr/bin.

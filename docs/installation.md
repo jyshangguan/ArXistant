@@ -203,6 +203,13 @@ For the Debian package, save it as:
 
 The file should contain only the token.
 
+## Cloud sync (optional)
+
+ArXistant can mirror your paper database to Nutstore so several devices share
+the same library. It uses the `keyring` package (already in `requirements.txt`)
+to store the Nutstore app password in the operating-system keychain rather than
+on disk. See the user guide for the step-by-step WebDAV setup.
+
 ## Migrating existing data
 
 Stop the old and new servers before copying data. Copy the contents of the old

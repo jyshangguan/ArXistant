@@ -23,6 +23,9 @@ from datetime import datetime
 
 from arxistant_paths import DATA_DIR, PROJECT_ROOT, data_path, ensure_data_dirs
 
+import arxistant_sync
+import arxistant_secrets
+
 DB_PATH = data_path("arxiv_papers.db")
 DAILY_HTML = data_path("arxiv_ranked_personalized.html")
 RECENT_HTML = data_path("arxiv_recent_personalized.html")
@@ -35,7 +38,7 @@ SCIX_CONFIG_PATH = data_path("scix_config.json")
 ML_RANKER_DIR = data_path("ml_ranker")
 RETRAIN_STATE_PATH = os.path.join(ML_RANKER_DIR, "retrain_state.json")
 DEFAULT_RETRAIN_AFTER_CHANGES = 5
-SERVER_API_VERSION = 1
+SERVER_API_VERSION = 2
 RETRAIN_STATE_LOCK = threading.Lock()
 
 
@@ -490,6 +493,8 @@ def init_db():
         )
     ''')
     
+    arxistant_sync.migrate_db(conn)
+
     conn.commit()
     conn.close()
     
@@ -566,9 +571,9 @@ def populate_publications():
     
     for paper in all_papers.values():
         c.execute('''
-            INSERT OR IGNORE INTO my_publications (bibcode, title, authors, abstract, keywords, year)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', paper)
+            INSERT OR IGNORE INTO my_publications (bibcode, title, authors, abstract, keywords, year, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (*paper, arxistant_sync.now_iso()))
     
     conn.commit()
     conn.close()
@@ -840,6 +845,32 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/ml-retraining":
             self._send_json(get_retrain_state())
 
+        elif path == "/api/cloud/status":
+            config = arxistant_sync.load_config()
+            status = {
+                "success": True,
+                "enabled": config.get("enabled"),
+                "provider": config.get("provider"),
+                "device_id": config.get("device_id"),
+                "auto_sync": config.get("auto_sync"),
+                "interval_minutes": config.get("interval_minutes"),
+                "last_sync_at": config.get("last_sync_at"),
+                "last_error": config.get("last_error"),
+                "keychain_available": arxistant_secrets.is_available(),
+                "config": {
+                    "local_folder_path": config["local_folder"].get("path", ""),
+                    "webdav_url": config["webdav"].get("url", ""),
+                    "webdav_username": config["webdav"].get("username", ""),
+                    "webdav_password_set": bool(arxistant_secrets.get_secret(
+                        arxistant_secrets.WEBDAV_PASSWORD)),
+                },
+            }
+            try:
+                status["provider_status"] = arxistant_sync.get_provider(config).status()
+            except Exception as exc:
+                status["provider_status"] = {"error": str(exc)}
+            self._send_json(status)
+
         else:
             self._send_text("Not found", 404)
 
@@ -906,9 +937,9 @@ class Handler(BaseHTTPRequestHandler):
                 keywords = (p.get("keywords") or "")[:2000]
                 try:
                     c.execute('''
-                        INSERT OR IGNORE INTO my_publications (bibcode, title, authors, abstract, keywords, year)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (bibcode, title, authors, abstracts, keywords, years))
+                        INSERT OR IGNORE INTO my_publications (bibcode, title, authors, abstract, keywords, year, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (bibcode, title, authors, abstracts, keywords, years, arxistant_sync.now_iso()))
                     if c.rowcount > 0:
                         added += 1
                     else:
@@ -928,6 +959,8 @@ class Handler(BaseHTTPRequestHandler):
             c = conn.cursor()
             c.execute("DELETE FROM my_publications WHERE bibcode = ?", (bibcode,))
             removed = c.rowcount > 0
+            if removed:
+                arxistant_sync.add_tombstone(conn, "my_publications", bibcode)
             conn.commit()
             conn.close()
             self._send_json({"success": True, "removed": removed, "bibcode": bibcode})
@@ -941,8 +974,8 @@ class Handler(BaseHTTPRequestHandler):
                 was_saved = c.fetchone() is not None
                 c.execute('''
                     INSERT OR REPLACE INTO saved_papers 
-                    (arxiv_id, title, authors, abstract, relevance_score, date_fetched, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (arxiv_id, title, authors, abstract, relevance_score, date_fetched, notes, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     arxiv_id,
                     data.get("title", ""),
@@ -950,9 +983,11 @@ class Handler(BaseHTTPRequestHandler):
                     data.get("abstract", ""),
                     data.get("relevance_score", 0),
                     data.get("date_fetched", ""),
-                    data.get("notes", "")
+                    data.get("notes", ""),
+                    arxistant_sync.now_iso()
                 ))
                 conn.commit()
+                arxistant_sync.schedule_auto_sync()
                 retraining = get_retrain_state() if was_saved else record_training_change()
                 self._send_json({"success": True, "message": "Paper saved",
                                  "preference_changed": not was_saved,
@@ -965,10 +1000,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/delete":
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute("DELETE FROM saved_papers WHERE arxiv_id = ?", (data.get("arxiv_id"),))
+            arxiv_id = data.get("arxiv_id", "")
+            c.execute("DELETE FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
             removed = c.rowcount > 0
+            if removed:
+                arxistant_sync.add_tombstone(conn, "saved_papers", arxiv_id)
             conn.commit()
             conn.close()
+            arxistant_sync.schedule_auto_sync()
             retraining = record_training_change() if removed else get_retrain_state()
             self._send_json({"success": True, "message": "Paper deleted",
                              "preference_changed": removed,
@@ -977,10 +1016,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/update_notes":
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute("UPDATE saved_papers SET notes = ? WHERE arxiv_id = ?", 
-                      (data.get("notes", ""), data.get("arxiv_id", "")))
+            c.execute("UPDATE saved_papers SET notes = ?, updated_at = ? WHERE arxiv_id = ?", 
+                      (data.get("notes", ""), arxistant_sync.now_iso(), data.get("arxiv_id", "")))
             conn.commit()
             conn.close()
+            arxistant_sync.schedule_auto_sync()
             self._send_json({"success": True, "message": "Notes updated"})
 
         elif path == "/api/custom-positive":
@@ -1087,6 +1127,47 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"success": False, "error": result.stderr}, 500)
             except Exception as e:
                 self._send_json({"success": False, "error": str(e)}, 500)
+
+        elif path == "/api/cloud/settings":
+            config = arxistant_sync.load_config()
+            if "enabled" in data:
+                config["enabled"] = bool(data["enabled"])
+            if "auto_sync" in data:
+                config["auto_sync"] = bool(data["auto_sync"])
+            if "interval_minutes" in data:
+                config["interval_minutes"] = int(data["interval_minutes"])
+            if data.get("provider"):
+                config["provider"] = data["provider"]
+            if data.get("local_folder_path") is not None:
+                config["local_folder"]["path"] = str(data["local_folder_path"]).strip()
+            # Non-secret settings go to config; the app password goes to the
+            # OS keychain.
+            for key in ("url", "username"):
+                value = str(data.get(f"webdav_{key}", "") or "").strip()
+                if value:
+                    config["webdav"][key] = value
+            try:
+                value = str(data.get("webdav_password", "") or "").strip()
+                if value:
+                    arxistant_secrets.set_secret(arxistant_secrets.WEBDAV_PASSWORD, value)
+            except arxistant_secrets.SecretStoreError as exc:
+                self._send_json({"success": False, "error": str(exc)}, 500)
+                return
+            arxistant_sync.save_config(config)
+            self._send_json({"success": True, "config": config})
+
+        elif path == "/api/cloud/sync":
+            result = arxistant_sync.run_sync()
+            self._send_json(result, 200 if result.get("success") else 502)
+
+        elif path == "/api/cloud/disconnect":
+            config = arxistant_sync.load_config()
+            config["enabled"] = False
+            config["last_sync_at"] = None
+            config["last_error"] = None
+            arxistant_secrets.delete_secret(arxistant_secrets.WEBDAV_PASSWORD)
+            arxistant_sync.save_config(config)
+            self._send_json({"success": True, "config": config})
 
         else:
             self._send_text("Not found", 404)
@@ -1841,6 +1922,7 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
 def run_server(port=8765):
     ensure_data_dirs()
     init_db()
+    arxistant_sync.maybe_auto_sync_on_start()
     server = HTTPServer(("localhost", port), Handler)
     print(f"Server running at http://localhost:{port}")
     print(f"  Daily papers:     http://localhost:{port}/")

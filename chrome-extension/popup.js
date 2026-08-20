@@ -2,7 +2,7 @@
 
 const DEFAULT_SERVER_URL = 'http://localhost:8765';
 const SERVER_LAUNCH_URL = 'arxistant://start';
-const SERVER_API_VERSION = 1;
+const SERVER_API_VERSION = 2;
 
 // ── DOM Elements ──
 const serverSection = document.getElementById('server-section');

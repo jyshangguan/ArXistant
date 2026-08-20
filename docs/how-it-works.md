@@ -20,6 +20,8 @@ flowchart TD
     SERVER --> RANKER["Daily ranking pipeline"]
     RANKER --> ARXIV["arXiv"]
     SERVER --> ADS["ADS / SciX APIs"]
+    SERVER --> CLOUD["Nutstore WebDAV snapshot"]
+    CLOUD --> SERVER
     RANKER --> MODEL["Local TF-IDF model"]
     DB --> MODEL
     MODEL --> PAGES["Generated daily and recent pages"]
@@ -129,6 +131,7 @@ Important data includes:
 arxiv_papers.db                 SQLite papers and publications
 ads_token.txt                   Optional ADS API token
 scix_config.json                SciX library configuration
+cloud/config.json               Cloud sync settings (no secrets)
 arxiv_ranked_personalized.html  Generated daily page
 arxiv_recent_personalized.html  Generated recent page
 ml_features.html                Generated model inspector
@@ -140,6 +143,9 @@ ml_ranker/
 ├── custom_positive.json
 └── custom_negative.json
 ```
+
+The Nutstore WebDAV app password is not stored in this directory; it lives in
+the operating-system keychain via `keyring`.
 
 The data directory can be overridden manually with the
 `ARXISTANT_DATA_DIR` environment variable. `ARXISTANT_PORT` changes the server
@@ -154,6 +160,25 @@ ADS search uses the same token. The token remains in the local data directory.
 
 Imported publications are deduplicated by bibcode, normalized title, and arXiv
 ID before insertion into SQLite.
+
+## Cloud sync
+
+Cloud sync is optional and local-first. The server exports the paper database
+(saved papers, publications, and custom keywords) to a versioned JSON snapshot,
+uploads it to a provider, and merges remote snapshots back in using per-record
+`updated_at` timestamps (last-write-wins) plus deletion tombstones.
+
+The default provider is Nutstore over WebDAV (`https://dav.jianguoyun.com/dav/`),
+authenticated with the account email and a dedicated app password. The password
+is stored in the operating-system keychain via `keyring` — never in
+`config.json` or any other file. A second provider writes the same snapshot into
+a local folder so the user can carry it with Dropbox/iCloud/OneDrive or the
+Nutstore desktop app.
+
+Saving or deleting a paper stamps a timestamp or tombstone and schedules a
+debounced sync when enabled; a manual **Sync Now** and a sync at server startup
+are also available. The ML model and generated pages are not synced — each
+device retrains from its local copy of the shared database.
 
 ## Platform startup
 

@@ -33,6 +33,8 @@ personal preferences remain on your computer.
   automatically refresh the daily list once per day.
 - **Local-first operation** — a lightweight server runs on `localhost`; there is
   no hosted ArXistant account or remote personal database.
+- **Optional cloud sync** — mirror your paper database to Nutstore (坚果云) over
+  WebDAV and share it across devices.
 
 ## Documentation
 
