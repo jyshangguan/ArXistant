@@ -6,7 +6,6 @@ const SERVER_API_VERSION = 2;
 
 // ── DOM Elements ──
 const serverSection = document.getElementById('server-section');
-const btnStartServer = document.getElementById('btn-start-server');
 const btnDaily = document.getElementById('btn-daily');
 const btnRecent = document.getElementById('btn-recent');
 const btnML = document.getElementById('btn-ml');
@@ -14,8 +13,10 @@ const btnDB = document.getElementById('btn-db');
 const linkPubs = document.getElementById('link-pubs');
 const linkSearch = document.getElementById('link-search');
 const linkOptions = document.getElementById('link-options');
+const linkPower = document.getElementById('link-power');
 const serverHelp = document.getElementById('server-help');
 let currentPlatform = 'unknown';
+let serverBusy = false;
 
 // ── Initialize ──
 document.addEventListener('DOMContentLoaded', async () => {
@@ -27,12 +28,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ── Check Server Status ──
 async function checkServerAndUpdateUI() {
   const serverOnline = await isServerOnline();
-
   if (!serverOnline) {
     showServerOffline();
   } else {
     hideServerOffline();
   }
+  setPowerButton(serverOnline);
 }
 
 async function isServerOnline() {
@@ -51,13 +52,20 @@ async function isServerOnline() {
   }
 }
 
+function setPowerButton(online, busyText) {
+  linkPower.textContent = busyText || (online ? '⏻ Stop Server' : '⏻ Start Server');
+}
+
 function showServerOffline() {
   serverSection.style.display = 'block';
-  const canLaunchHelper = currentPlatform === 'mac' || currentPlatform === 'linux';
-  btnStartServer.hidden = !canLaunchHelper;
-  serverHelp.hidden = canLaunchHelper;
-  if (!canLaunchHelper) {
+  if (currentPlatform === 'linux') {
+    serverHelp.hidden = false;
+    serverHelp.textContent = 'Use the footer button below, or run: systemctl --user restart arxistant.service';
+  } else if (currentPlatform !== 'mac') {
+    serverHelp.hidden = false;
     serverHelp.textContent = 'Start the ArXistant companion server, then reopen this popup.';
+  } else {
+    serverHelp.hidden = true;
   }
 }
 
@@ -65,11 +73,9 @@ function hideServerOffline() {
   serverSection.style.display = 'none';
 }
 
-// ── Start Server ──
+// ── Start / Stop Server ──
 async function startServer() {
-  btnStartServer.disabled = true;
-  btnStartServer.querySelector('.label').textContent = 'Starting...';
-
+  setPowerButton(false, '⏻ Starting…');
   try {
     // On Linux, use Chrome Native Messaging to start the server reliably.
     // On macOS, use the registered arxistant:// URL scheme handler.
@@ -79,8 +85,8 @@ async function startServer() {
         { action: 'start-server' }
       );
     } else {
-      // macOS: open the URL scheme handler.  Use an anchor click so the
-      // popup window stays alive for the polling loop.
+      // macOS: open the URL scheme handler. Use an anchor click so the popup
+      // window stays alive for the polling loop.
       const a = document.createElement('a');
       a.href = SERVER_LAUNCH_URL;
       a.target = '_blank';
@@ -95,6 +101,7 @@ async function startServer() {
       await new Promise(resolve => setTimeout(resolve, 500));
       if (await isServerOnline()) {
         hideServerOffline();
+        setPowerButton(true);
         return;
       }
     }
@@ -102,15 +109,49 @@ async function startServer() {
     throw new Error('Server did not become ready');
   } catch (e) {
     console.error('Failed to start server:', e);
-    btnStartServer.querySelector('.label').textContent = 'Start failed — retry';
+    setPowerButton(false, '⏻ Start failed — retry');
+  }
+}
+
+async function stopServer() {
+  if (!confirm('Stop the ArXistant server?')) return;
+  setPowerButton(true, '⏻ Stopping…');
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    await fetch(DEFAULT_SERVER_URL + '/api/shutdown', {
+      method: 'POST',
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+  } catch (e) {
+    // The server may already be offline or fail to respond; fall through and
+    // re-check its status below.
+  }
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 400));
+    if (!(await isServerOnline())) break;
+  }
+  await checkServerAndUpdateUI();
+}
+
+async function toggleServer() {
+  if (serverBusy) return;
+  serverBusy = true;
+  try {
+    if (await isServerOnline()) {
+      await stopServer();
+    } else {
+      await startServer();
+    }
   } finally {
-    btnStartServer.disabled = false;
+    serverBusy = false;
   }
 }
 
 // ── Button Bindings ──
 function bindButtons() {
-  btnStartServer.addEventListener('click', startServer);
   btnDaily.addEventListener('click', () => openPage('/daily.html'));
   btnRecent.addEventListener('click', () => openPage('/recent.html'));
   btnML.addEventListener('click', () => openPage('/ml-features.html'));
@@ -121,6 +162,11 @@ function bindButtons() {
   linkOptions.addEventListener('click', (e) => {
     e.preventDefault();
     chrome.runtime.openOptionsPage();
+  });
+
+  linkPower.addEventListener('click', (e) => {
+    e.preventDefault();
+    toggleServer();
   });
 }
 

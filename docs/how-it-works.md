@@ -176,7 +176,7 @@ a local folder so the user can carry it with Dropbox/iCloud/OneDrive or the
 Nutstore desktop app.
 
 Saving or deleting a paper stamps a timestamp or tombstone and schedules a
-debounced sync when enabled; a manual **Sync Now** and a sync at server startup
+debounced sync when enabled; a manual **Connect** and a sync at server startup
 are also available. The ML model and generated pages are not synced — each
 device retrains from its local copy of the shared database.
 
@@ -185,9 +185,11 @@ device retrains from its local copy of the shared database.
 ### macOS
 
 The helper application registers `arxistant://`. Chrome opens that URL when the
-user clicks **Start Server**, and the helper invokes `start_server.sh`. On Apple
-Silicon the script explicitly starts ARM64 Python and sanitizes inherited
-launcher environment variables.
+user clicks the popup's footer power button (shown as **Start Server** when the
+server is offline), and the helper invokes `start_server.sh`. On Apple Silicon
+the script explicitly starts ARM64 Python, and the server also forces its worker
+subprocesses to ARM64 so they match the installed NumPy wheels. The same footer
+button reads **Stop Server** when the server is running.
 
 ### Debian and Ubuntu
 

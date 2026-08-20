@@ -127,10 +127,10 @@ and select:
 /usr/share/arxistant/chrome-extension
 ```
 
-The Linux popup shows a **Start Server** button that opens the registered
-`arxistant://` URL scheme handler. If the button is unavailable (for example
-on a manual installation without the desktop entry), the popup displays the
-corresponding `systemctl --user start` command instead.
+The Linux popup's footer power button (shown as **Start Server** when offline)
+starts the server via Chrome Native Messaging (`com.arxistant.server`). If that
+host is unavailable (for example on a manual installation), the popup displays
+the corresponding `systemctl --user start` command instead.
 
 ### Linux data location
 
@@ -172,7 +172,8 @@ py src\arxiv_db_server.py
 
 Keep the PowerShell window open while using ArXistant. Load the repository's
 `chrome-extension` directory through `chrome://extensions` as described above.
-The automatic **Start Server** helper is not yet available on Windows.
+The popup's **Start Server** button has no effect on Windows — start the server
+manually as shown above.
 
 Equivalent commands on an unpackaged Linux installation are:
 
@@ -249,9 +250,13 @@ running server returns JSON containing `"success": true`.
 
 ### NumPy architecture errors on Apple Silicon
 
-Stop servers launched by an older checkout and run `/bin/bash start_server.sh`
-again. The launcher explicitly selects ARM64 system Python and removes inherited
-virtual-environment variables that can select an incompatible NumPy build.
+If training, feature-page regeneration, or the daily refresh fails with an
+`ImportError` mentioning "incompatible architecture (have 'arm64', need
+'x86_64')", the server is running as x86_64 while NumPy is arm64. Stop servers
+launched by an older checkout and run `/bin/bash start_server.sh` again — the
+launcher explicitly starts ARM64 Python, and ArXistant now also forces its
+worker subprocesses to ARM64 so they match the installed NumPy wheels. Restart
+the server after updating so the fix takes effect.
 
 ### Port 8765 is already in use
 

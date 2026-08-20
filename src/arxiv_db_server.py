@@ -52,9 +52,38 @@ def child_python_env():
     return env
 
 
+_APPLE_SILICON = None
+
+
+def is_apple_silicon():
+    """Detect Apple Silicon hardware (true even when running under Rosetta)."""
+    global _APPLE_SILICON
+    if _APPLE_SILICON is None:
+        if sys.platform != "darwin":
+            _APPLE_SILICON = False
+        else:
+            try:
+                result = subprocess.run(
+                    ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                _APPLE_SILICON = (result.returncode == 0 and result.stdout.strip() == "1")
+            except Exception:
+                _APPLE_SILICON = False
+    return _APPLE_SILICON
+
+
 def python_command(script, *args):
     """Run project scripts with the same interpreter as this server."""
-    return [sys.executable, os.path.join(PROJECT_ROOT, "src", script), *args]
+    command = [sys.executable, os.path.join(PROJECT_ROOT, "src", script), *args]
+    # On Apple Silicon, force the native arm64 architecture so child processes
+    # match the arm64 NumPy/scikit-learn wheels. A server launched under Rosetta
+    # would otherwise spawn x86_64 children that cannot import the arm64 C
+    # extensions (this affects training, feature-page generation, and the daily
+    # refresh alike).
+    if is_apple_silicon():
+        command = ["/usr/bin/arch", "-arm64", *command]
+    return command
 
 
 def _default_retrain_state():
@@ -852,7 +881,6 @@ class Handler(BaseHTTPRequestHandler):
                 "enabled": config.get("enabled"),
                 "provider": config.get("provider"),
                 "device_id": config.get("device_id"),
-                "auto_sync": config.get("auto_sync"),
                 "interval_minutes": config.get("interval_minutes"),
                 "last_sync_at": config.get("last_sync_at"),
                 "last_error": config.get("last_error"),
@@ -1132,8 +1160,6 @@ class Handler(BaseHTTPRequestHandler):
             config = arxistant_sync.load_config()
             if "enabled" in data:
                 config["enabled"] = bool(data["enabled"])
-            if "auto_sync" in data:
-                config["auto_sync"] = bool(data["auto_sync"])
             if "interval_minutes" in data:
                 config["interval_minutes"] = int(data["interval_minutes"])
             if data.get("provider"):
@@ -1168,6 +1194,15 @@ class Handler(BaseHTTPRequestHandler):
             arxistant_secrets.delete_secret(arxistant_secrets.WEBDAV_PASSWORD)
             arxistant_sync.save_config(config)
             self._send_json({"success": True, "config": config})
+
+        elif path == "/api/shutdown":
+            self._send_json({"success": True, "message": "Server stopping"})
+            # shutdown() must run on a separate thread: it waits for
+            # serve_forever() to return, which cannot happen from inside this
+            # request handler.
+            threading.Thread(
+                target=self.server.shutdown, daemon=True, name="arxistant-shutdown"
+            ).start()
 
         else:
             self._send_text("Not found", 404)

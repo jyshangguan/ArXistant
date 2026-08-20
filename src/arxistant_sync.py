@@ -71,7 +71,6 @@ def _default_config():
     return {
         "provider": "local_folder",
         "enabled": False,
-        "auto_sync": True,
         "interval_minutes": 60,
         "device_id": uuid.uuid4().hex[:12],
         "last_sync_at": None,
@@ -79,7 +78,6 @@ def _default_config():
         "local_folder": {"path": ""},
         # Secrets (the WebDAV app password) live in the OS keychain via
         # arxistant_secrets, never in this file.
-        "local_folder": {"path": ""},
         "webdav": {"url": "", "username": ""},
     }
 
@@ -502,7 +500,7 @@ def schedule_auto_sync(db_path=None, delay=30.0):
     global _auto_sync_timer
     db_path = db_path or get_db_path()
     config = load_config(db_path)
-    if not (config.get("enabled") and config.get("auto_sync")):
+    if not config.get("enabled"):
         return
     if _auto_sync_timer is not None and _auto_sync_timer.is_alive():
         return
@@ -523,7 +521,7 @@ def maybe_auto_sync_on_start(db_path=None):
     """Run an initial sync at server startup when auto-sync is enabled."""
     db_path = db_path or get_db_path()
     config = load_config(db_path)
-    if config.get("enabled") and config.get("auto_sync"):
+    if config.get("enabled"):
         threading.Thread(
             target=run_sync, args=(db_path,),
             name="arxistant-cloud-sync", daemon=True,

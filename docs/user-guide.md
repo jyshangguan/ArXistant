@@ -74,7 +74,12 @@ only carries a mergeable JSON snapshot between devices.
 2. In **Extension Settings → Cloud Sync**, choose **Nutstore WebDAV (坚果云)**.
 3. Leave the address as `https://dav.jianguoyun.com/dav/`, enter your Nutstore
    email, and paste the app password.
-4. Tick **Enable cloud sync**, then **Save Cloud Settings** and **Sync Now**.
+4. Click **Connect**. This saves your settings, enables cloud sync, and runs a
+   first sync immediately.
+
+Once enabled, ArXistant also syncs automatically in the background on server
+start and a few seconds after you save or remove a paper. Use **Disconnect** to
+turn sync off and remove the stored app password.
 
 On the first sync, ArXistant creates an `ArXistant` folder in Nutstore and
 uploads the snapshot. On a second device, repeat the same steps: the first sync

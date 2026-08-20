@@ -22,9 +22,7 @@ const retrainingStatus = document.getElementById('retraining-status');
 const cloudProviderInput = document.getElementById('cloud-provider');
 const cloudFolderInput = document.getElementById('cloud-folder');
 const cloudEnabledInput = document.getElementById('cloud-enabled');
-const cloudAutoSyncInput = document.getElementById('cloud-auto-sync');
-const btnCloudSave = document.getElementById('btn-cloud-save');
-const btnCloudSync = document.getElementById('btn-cloud-sync');
+const btnCloudConnect = document.getElementById('btn-cloud-connect');
 const btnCloudDisconnect = document.getElementById('btn-cloud-disconnect');
 const cloudStatus = document.getElementById('cloud-status');
 const cloudLocalGroup = document.getElementById('cloud-local-group');
@@ -180,10 +178,10 @@ function bindEvents() {
   btnSave.addEventListener('click', saveSettings);
   btnReset.addEventListener('click', resetSettings);
   btnTestNotify.addEventListener('click', testNotification);
-  btnCloudSave.addEventListener('click', saveCloudSettings);
-  btnCloudSync.addEventListener('click', syncNow);
+  btnCloudConnect.addEventListener('click', connectCloud);
   btnCloudDisconnect.addEventListener('click', disconnectCloud);
   cloudProviderInput.addEventListener('change', updateCloudProviderFields);
+  cloudEnabledInput.addEventListener('change', onCloudEnabledChange);
 }
 
 // ── Cloud Sync ──
@@ -232,7 +230,6 @@ async function loadCloudStatus() {
       ? 'Saved in Keychain (leave blank to keep)'
       : 'App password';
     cloudEnabledInput.checked = state.enabled !== false;
-    cloudAutoSyncInput.checked = state.auto_sync !== false;
     updateCloudProviderFields();
     cloudStatus.textContent = formatCloudStatus(state);
   } catch (error) {
@@ -240,35 +237,46 @@ async function loadCloudStatus() {
   }
 }
 
-async function saveCloudSettings() {
-  const config = {
+async function sendCloudSettings(config) {
+  const response = await chrome.runtime.sendMessage({ action: 'saveCloudSettings', config });
+  if (!response.success) throw new Error(response.error || 'Failed to save settings');
+  return response;
+}
+
+function collectCloudConfig() {
+  return {
     provider: cloudProviderInput.value,
     local_folder_path: cloudFolderInput.value.trim(),
     webdav_url: webdavUrlInput.value.trim(),
     webdav_username: webdavUsernameInput.value.trim(),
     webdav_password: webdavPasswordInput.value,
-    enabled: cloudEnabledInput.checked,
-    auto_sync: cloudAutoSyncInput.checked
+    enabled: true
   };
-  cloudStatus.textContent = 'Saving cloud settings…';
+}
+
+async function connectCloud() {
+  cloudStatus.textContent = 'Connecting…';
+  cloudStatus.style.color = '';
   try {
-    const response = await chrome.runtime.sendMessage({ action: 'saveCloudSettings', config });
-    if (!response.success) throw new Error(response.error || 'Failed to save');
-    await loadCloudStatus();
+    await sendCloudSettings(collectCloudConfig());
+    cloudEnabledInput.checked = true;
+    const syncResp = await chrome.runtime.sendMessage({ action: 'cloudSync' });
+    if (!syncResp.success) throw new Error(syncResp.error || 'Sync failed');
+    const stats = syncResp.result?.stats ? `\nChanges: ${JSON.stringify(syncResp.result.stats)}` : '';
+    cloudStatus.textContent = 'Connected.' + stats;
   } catch (error) {
-    cloudStatus.textContent = `Error saving cloud settings: ${error.message}`;
+    cloudStatus.textContent = `✗ ${error.message}`;
+    cloudStatus.style.color = '#c62828';
+    cloudStatus.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 }
 
-async function syncNow() {
-  cloudStatus.textContent = 'Syncing…';
+async function onCloudEnabledChange() {
   try {
-    const response = await chrome.runtime.sendMessage({ action: 'cloudSync' });
-    if (!response.success) throw new Error(response.error || 'Sync failed');
-    const stats = response.result?.stats ? `\nChanges: ${JSON.stringify(response.result.stats)}` : '';
-    cloudStatus.textContent = 'Sync complete.' + stats;
+    await sendCloudSettings({ enabled: cloudEnabledInput.checked });
   } catch (error) {
-    cloudStatus.textContent = `Sync failed: ${error.message}`;
+    cloudStatus.textContent = `✗ ${error.message}`;
+    cloudStatus.style.color = '#c62828';
   }
 }
 

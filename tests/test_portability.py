@@ -53,6 +53,11 @@ class PortabilityTests(unittest.TestCase):
     def test_python_command_reuses_current_interpreter(self):
         command = arxiv_db_server.python_command("worker.py", "--flag", "value")
 
+        # On Apple Silicon the command is prefixed with "/usr/bin/arch -arm64"
+        # so child processes match the arm64 NumPy/scikit-learn wheels.
+        if command[:2] == ["/usr/bin/arch", "-arm64"]:
+            command = command[2:]
+
         self.assertEqual(command[0], sys.executable)
         self.assertEqual(Path(command[1]), PROJECT_ROOT / "src" / "worker.py")
         self.assertEqual(command[2:], ["--flag", "value"])

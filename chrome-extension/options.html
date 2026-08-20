@@ -277,18 +277,13 @@
       <p class="hint">Generate a dedicated app password in Nutstore settings (坚果云 → 账户信息 → 安全选项 → 第三方应用管理) — do <strong>not</strong> use your real password. It is stored in the macOS Keychain, never on disk. ArXistant creates an <code>ArXistant</code> folder here for the snapshot.</p>
     </div>
 
-    <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px; cursor:pointer;">
+    <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; cursor:pointer;">
       <input type="checkbox" id="cloud-enabled">
       <span>Enable cloud sync</span>
     </label>
-    <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; cursor:pointer;">
-      <input type="checkbox" id="cloud-auto-sync" checked>
-      <span>Auto-sync on save and server start</span>
-    </label>
 
     <div class="form-group" style="display:flex; gap:10px; flex-wrap:wrap;">
-      <button id="btn-cloud-save" class="btn btn-secondary">Save Cloud Settings</button>
-      <button id="btn-cloud-sync" class="btn btn-secondary">↻ Sync Now</button>
+      <button id="btn-cloud-connect" class="btn btn-secondary">🔗 Connect</button>
       <button id="btn-cloud-disconnect" class="btn btn-secondary">Disconnect</button>
     </div>
     <pre id="cloud-status" class="alarm-status">Loading cloud sync status…</pre>
