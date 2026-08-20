@@ -72,5 +72,15 @@ class WebDavProviderTests(unittest.TestCase):
             self.assertIsNone(provider.download())
 
 
+class SecretStoreTests(unittest.TestCase):
+    def test_set_secret_wraps_keyring_errors(self):
+        # Simulate a Linux host without a Secret Service daemon (NoKeyringError).
+        fake_keyring = mock.MagicMock()
+        fake_keyring.set_password.side_effect = Exception("no keyring daemon")
+        with mock.patch.object(providers.arxistant_secrets, "keyring", fake_keyring):
+            with self.assertRaises(providers.arxistant_secrets.SecretStoreError):
+                providers.arxistant_secrets.set_secret("k", "v")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -44,7 +44,15 @@ def set_secret(key, value):
             "The 'keyring' package is required to store cloud credentials securely. "
             "Install it with: pip install keyring"
         )
-    keyring.set_password(SERVICE, key, value)
+    try:
+        keyring.set_password(SERVICE, key, value)
+    except Exception as exc:
+        # On Linux this is typically a NoKeyringError when no Secret Service
+        # provider (e.g. gnome-keyring) is available. Surface a clean message
+        # instead of an unhandled traceback.
+        raise SecretStoreError(
+            "Could not store the credential in the system keychain: " + str(exc)
+        ) from exc
 
 
 def delete_secret(key):

@@ -132,6 +132,11 @@ starts the server via Chrome Native Messaging (`com.arxistant.server`). If that
 host is unavailable (for example on a manual installation), the popup displays
 the corresponding `systemctl --user start` command instead.
 
+The same button reads **Stop Server** when online. It stops the running server
+process; because the systemd user unit is enabled, the service will start again
+at the next login unless it is explicitly disabled with
+`systemctl --user disable arxistant.service`.
+
 ### Linux data location
 
 The package stores writable data in:
@@ -210,6 +215,11 @@ ArXistant can mirror your paper database to Nutstore so several devices share
 the same library. It uses the `keyring` package (already in `requirements.txt`)
 to store the Nutstore app password in the operating-system keychain rather than
 on disk. See the user guide for the step-by-step WebDAV setup.
+
+On Linux, `keyring` uses the freedesktop Secret Service, so a provider such as
+`gnome-keyring` (or KWallet with a Secret Service bridge) must be installed and
+unlocked for the app password to be stored. The Debian package depends on
+`python3-keyring`; install `gnome-keyring` for the Secret Service itself.
 
 ## Migrating existing data
 
