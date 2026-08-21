@@ -32,9 +32,27 @@ android {
         }
     }
 
+    signingConfigs {
+        release {
+            // Reads android/keystore.properties (gitignored). Without it the
+            // release build falls back to unsigned, which cannot be installed
+            // over an existing signed install.
+            def props = new Properties()
+            def propsFile = rootProject.file('keystore.properties')
+            if (propsFile.exists()) {
+                propsFile.withInputStream { props.load(it) }
+                storeFile = new File(propsFile.parentFile, props['storeFile'])
+                storePassword = props['storePassword']
+                keyAlias = props['keyAlias']
+                keyPassword = props['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
         }
     }
 

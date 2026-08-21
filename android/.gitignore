@@ -4,6 +4,10 @@ build/
 local.properties
 *.iml
 
+# Release signing material (private key and passwords — keep backups!)
+keystore.properties
+keystore/
+
 # Copied ArXistant Python sources (regenerate with ./copy_python.sh)
 app/src/main/python/*.py
 !app/src/main/python/android_bootstrap.py
