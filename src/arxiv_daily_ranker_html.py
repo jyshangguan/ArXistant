@@ -416,6 +416,8 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('    .refresh-btn:hover { background: #1565c0; padding: 6px 14px; }')
     lines.append('    .refresh-btn:disabled { background: #90a4ae; cursor: not-allowed; }')
     lines.append('    .footnote { font-size: 0.8em; color: #888; margin-top: 30px; padding-top: 10px; border-top: 1px solid #e0e0e0; }')
+    lines.append('    .refresh-spinner { position: fixed; top: 16px; left: 50%; margin-left: -20px; width: 40px; height: 40px; border: 4px solid rgba(0,0,0,0.12); border-top: 4px solid #b31b1b; border-radius: 50%; animation: arxistant-spin 0.8s linear infinite; z-index: 9999; }')
+    lines.append('    @keyframes arxistant-spin { to { transform: rotate(360deg); } }')
     lines.append('  </style>')
     lines.append('</head>')
     lines.append('<body>')
@@ -427,6 +429,7 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html"><span class="icon">📂</span><span class="label">Saved Papers</span></a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html"><span class="icon">📚</span><span class="label">My Publications</span></a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html"><span class="icon">🧠</span><span class="label">ML Features</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/cloud-sync.html"><span class="icon">☁️</span><span class="label">Cloud Sync</span></a>')
     lines.append('  </div>')
     lines.append(f'  <h1>{h1_text}</h1>')
     lines.append(f'  <p class="total">Total papers: {len(scored_papers)} <span class="footnote" style="margin-left: 12px; border: none; padding: 0;">(generated: {generated_at})</span></p>')
@@ -470,53 +473,90 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html"><span class="icon">📂</span><span class="label">Saved Papers</span></a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html"><span class="icon">📚</span><span class="label">My Publications</span></a>')
     lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html"><span class="icon">🧠</span><span class="label">ML Features</span></a>')
+    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/cloud-sync.html"><span class="icon">☁️</span><span class="label">Cloud Sync</span></a>')
     lines.append(nav_extra)
     lines.append('  </div>')
     lines.append('  <button class="scroll-top" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="To the top">▲</button>')
     lines.append('''<script>
-async function refreshDaily() {
-    if (!confirm('Re-fetch and re-rank papers from arXiv?')) return;
-    const btn = document.getElementById('refreshBtn');
-    const originalText = btn.innerHTML;
-    btn.innerHTML = '<span class="icon">⏳</span><span class="label">Refreshing...</span>';
-    btn.disabled = true;
-    try {
-        const resp = await fetch('/api/refresh-daily', {method: 'POST'});
-        const data = await resp.json();
-        if (data.success) {
-            window.location.reload();
-        } else {
-            alert('Refresh failed: ' + (data.error || 'Unknown error'));
-            btn.innerHTML = originalText;
-            btn.disabled = false;
+const IS_ANDROID = /Android|WebView/i.test(navigator.userAgent);
+let originalBtnHtml = null;
+
+function refreshButton() { return document.getElementById('refreshBtn'); }
+
+function showBusy() {
+    const btn = refreshButton();
+    if (btn) {
+        originalBtnHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="icon">⏳</span><span class="label">Syncing & Refreshing...</span>';
+        btn.disabled = true;
+    }
+    if (IS_ANDROID) {
+        let el = document.getElementById('refresh-spinner');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'refresh-spinner';
+            el.className = 'refresh-spinner';
+            document.body.appendChild(el);
         }
-    } catch (e) {
-        alert('Refresh failed: ' + e.message);
-        btn.innerHTML = originalText;
-        btn.disabled = false;
     }
 }
-async function refreshRecent() {
-    if (!confirm('Re-fetch and re-rank recent papers from arXiv?')) return;
-    const btn = document.getElementById('refreshBtn');
-    const originalText = btn.innerHTML;
-    btn.innerHTML = '<span class="icon">⏳</span><span class="label">Refreshing...</span>';
-    btn.disabled = true;
+
+function clearBusy() {
+    const btn = refreshButton();
+    if (btn) {
+        btn.disabled = false;
+        if (originalBtnHtml !== null) btn.innerHTML = originalBtnHtml;
+    }
+    originalBtnHtml = null;
+    const el = document.getElementById('refresh-spinner');
+    if (el) el.remove();
+}
+
+async function doRefresh(endpoint, confirmMsg) {
+    if (!IS_ANDROID && !confirm(confirmMsg)) return;
+    showBusy();
     try {
-        const resp = await fetch('/api/refresh-recent', {method: 'POST'});
+        // 1. Sync first (pull the latest saved papers from Nutstore), best effort.
+        await fetch('/api/cloud/sync', { method: 'POST' }).catch(() => {});
+        // 2. Regenerate the list.
+        const resp = await fetch(endpoint, { method: 'POST' });
         const data = await resp.json();
         if (data.success) {
             window.location.reload();
         } else {
             alert('Refresh failed: ' + (data.error || 'Unknown error'));
-            btn.innerHTML = originalText;
-            btn.disabled = false;
+            clearBusy();
         }
     } catch (e) {
         alert('Refresh failed: ' + e.message);
-        btn.innerHTML = originalText;
-        btn.disabled = false;
+        clearBusy();
     }
+}
+
+async function refreshDaily() {
+    await doRefresh('/api/refresh-daily', 'Sync your library and re-fetch papers from arXiv?');
+}
+
+async function refreshRecent() {
+    await doRefresh('/api/refresh-recent', 'Sync your library and re-fetch recent papers from arXiv?');
+}
+
+if (IS_ANDROID) {
+    const btn = refreshButton();
+    if (btn) btn.style.display = 'none';
+    let startY = null;
+    document.addEventListener('touchstart', function (e) {
+        if (window.scrollY <= 0) startY = e.touches[0].clientY;
+    }, { passive: true });
+    document.addEventListener('touchend', function (e) {
+        if (startY === null) return;
+        const dy = e.changedTouches[0].clientY - startY;
+        startY = null;
+        if (window.scrollY <= 0 && dy > 120) {
+            const b = refreshButton();
+            if (b) b.click();
+        }
+    }, { passive: true });
 }
 </script>''')
     lines.append(SAVE_BUTTON_SCRIPT)

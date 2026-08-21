@@ -17,6 +17,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -71,7 +72,7 @@ def _default_config():
     return {
         "provider": "local_folder",
         "enabled": False,
-        "interval_minutes": 60,
+        "interval_minutes": 30,
         "device_id": uuid.uuid4().hex[:12],
         "last_sync_at": None,
         "last_error": None,
@@ -526,3 +527,28 @@ def maybe_auto_sync_on_start(db_path=None):
             target=run_sync, args=(db_path,),
             name="arxistant-cloud-sync", daemon=True,
         ).start()
+
+
+def start_periodic_sync(db_path=None):
+    """Start a daemon thread that syncs on a fixed interval while enabled.
+
+    This is what keeps devices converged without any manual action: each device
+    periodically pulls the remote snapshot and pushes its own changes.
+    """
+    db_path = db_path or get_db_path()
+
+    def _worker():
+        while True:
+            try:
+                config = load_config(db_path)
+                minutes = max(5, int(config.get("interval_minutes") or 60))
+            except Exception:
+                minutes = 60
+            time.sleep(minutes * 60)
+            try:
+                if load_config(db_path).get("enabled"):
+                    run_sync(db_path)
+            except Exception:
+                pass  # run_sync already records errors; keep looping
+
+    threading.Thread(target=_worker, name="arxistant-periodic-sync", daemon=True).start()

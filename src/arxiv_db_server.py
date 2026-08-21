@@ -633,7 +633,8 @@ class Handler(BaseHTTPRequestHandler):
   {button_html}
   <div class="nav">
     <a href="/">Daily Papers</a> ·
-    <a href="/database.html">Saved Papers</a>
+    <a href="/database.html">Saved Papers</a> ·
+    <a href="/cloud-sync.html">☁️ Cloud Sync</a>
   </div>
 </body>
 </html>"""
@@ -703,6 +704,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/database.html":
             self._send_html(DATABASE_VIEWER_HTML)
 
+        elif path == "/cloud-sync.html":
+            self._send_html(CLOUD_SYNC_HTML)
+
         elif path == "/publications.html":
             self._send_html(PUBLICATIONS_VIEWER_HTML)
 
@@ -711,11 +715,7 @@ class Handler(BaseHTTPRequestHandler):
                 with open(ML_FEATURES_HTML, 'r', encoding='utf-8') as f:
                     self._send_html(f.read())
             else:
-                self._not_found_page(
-                    "ML Features",
-                    "No ML features page has been generated yet. Run model training first.",
-                    "/api/regenerate-features",
-                    "Generate ML Features")
+                self._send_html(ML_TRAIN_FALLBACK_HTML)
 
 
         elif path == "/chat.html":
@@ -1115,6 +1115,202 @@ class Handler(BaseHTTPRequestHandler):
             self._send_text("Not found", 404)
 
 
+CLOUD_SYNC_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloud Sync — ArXistant</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 16px; line-height: 1.5; color: #333; }
+    h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 8px; font-size: 1.3em; }
+    .nav { margin-bottom: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+    .nav a { color: #b31b1b; text-decoration: none; font-size: 0.9em; }
+    label { display: block; font-size: 0.85em; color: #555; margin: 12px 0 4px; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1em; box-sizing: border-box; }
+    .row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    button { padding: 10px 16px; border: none; border-radius: 6px; font-size: 0.95em; cursor: pointer; background: #f0f0f0; color: #333; }
+    button.primary { background: #b31b1b; color: white; }
+    .hint { font-size: 0.8em; color: #888; margin-top: 4px; }
+    #status { background: #f8f9fa; border-radius: 6px; padding: 10px; font-size: 0.8em; white-space: pre-wrap; margin-top: 16px; color: #555; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="/daily.html">← Daily Papers</a>
+    <a href="/database.html">📂 Saved Papers</a>
+  </div>
+  <h1>☁️ Cloud Sync</h1>
+
+  <label for="provider">Provider</label>
+  <select id="provider">
+    <option value="webdav">Nutstore WebDAV (坚果云)</option>
+    <option value="local_folder">Local folder</option>
+  </select>
+
+  <div id="webdav-group">
+    <label for="webdav-url">WebDAV address</label>
+    <input type="text" id="webdav-url" placeholder="https://dav.jianguoyun.com/dav/">
+    <label for="webdav-username">Email</label>
+    <input type="text" id="webdav-username" placeholder="you@example.com">
+    <label for="webdav-password">App password (第三方应用密码)</label>
+    <input type="password" id="webdav-password" placeholder="App password">
+    <div class="hint">Generate a dedicated app password in Nutstore security settings. It is stored in the secure keystore, never on disk.</div>
+  </div>
+
+  <div id="local-group" style="display:none;">
+    <label for="local-path">Sync folder path</label>
+    <input type="text" id="local-path" placeholder="/path/to/folder">
+    <div class="hint">Any folder, e.g. one synced by Dropbox/iCloud/OneDrive.</div>
+  </div>
+
+  <div class="row">
+    <button class="primary" id="btn-connect" onclick="connect()">🔗 Connect</button>
+    <button id="btn-disconnect" onclick="disconnect()">Disconnect</button>
+  </div>
+
+  <div id="status">Loading…</div>
+
+  <script>
+    function $(id) { return document.getElementById(id); }
+
+    function showProvider() {
+      var p = $('provider').value;
+      $('webdav-group').style.display = (p === 'webdav') ? 'block' : 'none';
+      $('local-group').style.display = (p === 'local_folder') ? 'block' : 'none';
+    }
+    $('provider').addEventListener('change', showProvider);
+
+    async function loadStatus() {
+      try {
+        var r = await fetch('/api/cloud/status');
+        var s = await r.json();
+        var c = s.config || {};
+        $('provider').value = (s.provider === 'local_folder') ? 'local_folder' : 'webdav';
+        $('webdav-url').value = c.webdav_url || '';
+        $('webdav-username').value = c.webdav_username || '';
+        $('webdav-password').value = '';
+        $('webdav-password').placeholder = c.webdav_password_set ? 'Saved (leave blank to keep)' : 'App password';
+        $('local-path').value = c.local_folder_path || '';
+        showProvider();
+        var st = 'Provider: ' + (s.provider || 'none') + (s.enabled ? ' (enabled)' : ' (disabled)');
+        st += ' | Last sync: ' + (s.last_sync_at || 'never');
+        $('status').textContent = st;
+      } catch (e) {
+        $('status').textContent = 'Could not load status: ' + e.message;
+      }
+    }
+
+    async function connect() {
+      $('status').textContent = 'Connecting…';
+      try {
+        var config = {
+          provider: $('provider').value,
+          enabled: true,
+          webdav_url: $('webdav-url').value.trim(),
+          webdav_username: $('webdav-username').value.trim(),
+          webdav_password: $('webdav-password').value,
+          local_folder_path: $('local-path').value.trim()
+        };
+        var sr = await fetch('/api/cloud/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(config) });
+        var sd = await sr.json();
+        if (!sd.success) throw new Error(sd.error || 'Failed to save');
+        var yr = await fetch('/api/cloud/sync', { method: 'POST' });
+        var yd = await yr.json();
+        if (!yd.success) throw new Error(yd.error || 'Sync failed');
+        $('status').textContent = 'Connected and synced ✓';
+      } catch (e) {
+        $('status').textContent = '✗ ' + e.message;
+      }
+    }
+
+    async function disconnect() {
+      try {
+        await fetch('/api/cloud/disconnect', { method: 'POST' });
+        $('status').textContent = 'Cloud sync disabled.';
+        loadStatus();
+      } catch (e) {
+        $('status').textContent = '✗ ' + e.message;
+      }
+    }
+
+    loadStatus();
+  </script>
+</body>
+</html>
+"""
+
+
+ML_TRAIN_FALLBACK_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ML Features — ArXistant</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 16px; line-height: 1.5; color: #333; }
+    h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 8px; font-size: 1.3em; }
+    .nav { margin-bottom: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+    .nav a { color: #b31b1b; text-decoration: none; font-size: 0.9em; }
+    .btn { padding: 10px 16px; border: none; border-radius: 6px; font-size: 0.95em; cursor: pointer; background: #b31b1b; color: white; margin-top: 12px; }
+    .btn:disabled { background: #ccc; cursor: wait; }
+    #status { margin-top: 12px; font-size: 0.9em; color: #555; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="/daily.html">← Daily Papers</a>
+    <a href="/database.html">📂 Saved Papers</a>
+    <a href="/cloud-sync.html">☁️ Cloud Sync</a>
+  </div>
+  <h1>🧠 ML Features</h1>
+  <p>No model has been trained yet. The ML model is <strong>not synced</strong> between devices — each device trains its own model from its saved papers.</p>
+  <p>First make sure you have saved papers: generate the daily list and save a few, or <a href="/cloud-sync.html">sync from Nutstore</a>.</p>
+  <button class="btn" id="train-btn" onclick="train()">🧠 Train Model Now</button>
+  <div id="status"></div>
+  <script>
+    async function train() {
+      var btn = document.getElementById('train-btn');
+      var status = document.getElementById('status');
+      btn.disabled = true;
+      btn.textContent = 'Training…';
+      status.textContent = 'Starting training…';
+      try {
+        var r = await fetch('/api/ml-retraining/train', { method: 'POST' });
+        var d = await r.json();
+        if (!d.success || !d.started) {
+          status.textContent = 'Error: ' + (d.error || 'Could not start training');
+          btn.disabled = false;
+          btn.textContent = '🧠 Train Model Now';
+          return;
+        }
+        for (;;) {
+          await new Promise(function (res) { setTimeout(res, 3000); });
+          var sr = await fetch('/api/ml-retraining');
+          var sd = await sr.json();
+          if (sd.training) { status.textContent = 'Training in progress…'; continue; }
+          if (sd.last_error) {
+            status.textContent = 'Error: ' + sd.last_error;
+            btn.disabled = false;
+            btn.textContent = '🧠 Train Model Now';
+            break;
+          }
+          status.textContent = 'Done! Reloading…';
+          setTimeout(function () { location.reload(); }, 1000);
+          break;
+        }
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        btn.disabled = false;
+        btn.textContent = '🧠 Train Model Now';
+      }
+    }
+  </script>
+</body>
+</html>
+"""
+
+
 SEARCH_ARXIV_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1173,6 +1369,7 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
     <a href="/database.html">📂 Saved Papers</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
+    <a href="/cloud-sync.html">☁️ Cloud Sync</a>
   </div>
   <h1>🔍 Search arXiv / ADS</h1>
 
@@ -1510,6 +1707,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     <a href="/chat.html">💬 Chat</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
+    <a href="/cloud-sync.html">☁️ Cloud Sync</a>
   </div>
   <h1>My arXiv Paper Database</h1>
   <input type="text" class="search-box" id="searchInput" placeholder="Search by title, author, abstract, or notes..." oninput="searchPapers()">
@@ -1653,6 +1851,7 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
     <a href="/chat.html">💬 Chat</a>
     <a href="/database.html">📂 Saved Papers</a>
     <a href="/ml-features.html">🧠 ML Features</a>
+    <a href="/cloud-sync.html">☁️ Cloud Sync</a>
   </div>
   <h1>📚 My Publications</h1>
   <div class="scix-bar">
@@ -1865,6 +2064,7 @@ def run_server(port=8765):
     ensure_data_dirs()
     init_db()
     arxistant_sync.maybe_auto_sync_on_start()
+    arxistant_sync.start_periodic_sync()
     # Bind to a specific loopback address when requested (e.g. 127.0.0.1 on
     # Android, where "localhost" can resolve to ::1 and not match the WebView).
     bind_host = os.environ.get("ARXISTANT_BIND", "localhost")

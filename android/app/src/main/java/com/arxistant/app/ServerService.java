@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
 import android.os.IBinder;
+import android.util.Log;
 
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
@@ -39,17 +40,23 @@ public class ServerService extends Service {
     }
 
     private void startPythonServer() {
-        if (!Python.isStarted()) {
-            Python.start(new AndroidPlatform(this));
-        }
-        // Writable data directory (DB, model, cloud config) inside app storage.
-        String dataDir = getFilesDir().getAbsolutePath() + "/arxistant";
-        // Keystore-backed secret store passed to Python as a callable backend.
-        SecretStore secretStore = new SecretStore(this);
+        try {
+            if (!Python.isStarted()) {
+                Python.start(new AndroidPlatform(this));
+            }
+            // Writable data directory (DB, model, cloud config) inside app storage.
+            String dataDir = getFilesDir().getAbsolutePath() + "/arxistant";
+            // Keystore-backed secret store passed to Python as a callable backend.
+            SecretStore secretStore = new SecretStore(this);
 
-        Python.getInstance()
-                .getModule("android_bootstrap")
-                .callAttr("start_server", dataDir, secretStore);
+            Python.getInstance()
+                    .getModule("android_bootstrap")
+                    .callAttr("start_server", dataDir, secretStore);
+        } catch (Exception e) {
+            // Log the failure so it can be read from `adb logcat` when the
+            // server does not start on a real device.
+            Log.e("ArXistant", "Failed to start Python server", e);
+        }
     }
 
     private Notification buildNotification() {

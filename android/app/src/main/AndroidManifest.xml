@@ -8,7 +8,7 @@
 
     <application
         android:label="ArXistant"
-        android:icon="@android:drawable/ic_menu_view"
+        android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
