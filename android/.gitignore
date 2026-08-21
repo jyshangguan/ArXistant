@@ -1,0 +1,9 @@
+# Android build outputs and machine-specific config
+build/
+.gradle/
+local.properties
+*.iml
+
+# Copied ArXistant Python sources (regenerate with ./copy_python.sh)
+app/src/main/python/*.py
+!app/src/main/python/android_bootstrap.py

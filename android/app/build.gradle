@@ -21,7 +21,10 @@ android {
         }
 
         python {
-            // These come from Chaquopy's prebuilt package repository.
+            // Chaquopy 15.0.1's bundled pip is incompatible with Python 3.13
+            // (removed stdlib module 'cgi'). Use the system Python 3.9 for the
+            // build/target, matching the desktop server's interpreter.
+            buildPython "/usr/bin/python3"
             pip {
                 install "numpy"
                 install "scikit-learn"
@@ -45,4 +48,12 @@ dependencies {
     implementation 'androidx.core:core:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.webkit:webkit:1.11.0'
+}
+
+// Chaquopy pulls in old kotlin-stdlib-jdk7/jdk8 1.6.x artifacts, which collide
+// with the merged kotlin-stdlib 1.8.x from AndroidX (Kotlin merged jdk7/jdk8
+// into the main stdlib in 1.8). Drop the redundant old artifacts.
+configurations.configureEach {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
 }
