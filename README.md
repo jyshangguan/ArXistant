@@ -42,14 +42,14 @@ Browse the complete documentation at
 **[jyshangguan.github.io/ArXistant](https://jyshangguan.github.io/ArXistant/)**.
 
 - [Installation](docs/installation.md) — macOS, Debian/Ubuntu, Windows/manual
-  setup, migration, updates, and removal.
+  setup, Android, migration, updates, and removal.
 - [User guide](docs/user-guide.md) — daily workflow, reminders, saved papers,
   search, publications, and ML controls.
 - [How ArXistant works](docs/how-it-works.md) — architecture, ranking pipeline,
   local data, background refresh, and project structure.
 - [Android app](docs/android.md) — run ArXistant standalone on a phone (arXiv
-  fetch, ML ranking, and Nutstore sync, no server). The first Android release,
-  **v0.1.3**, is built from this repository.
+  fetch, ML ranking, and Nutstore sync, no server). Download the signed APK from
+  the [v0.1.3 release](https://github.com/jyshangguan/ArXistant/releases/latest).
 
 ## At a glance
 

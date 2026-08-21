@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Installation
-description: Install ArXistant on macOS, Debian/Ubuntu, Windows, or another Linux distribution.
+description: Install ArXistant on macOS, Debian/Ubuntu, Windows, another Linux distribution, or Android.
 nav_order: 1
 ---
 
@@ -16,6 +16,9 @@ ArXistant has two cooperating parts:
 The extension cannot perform ranking by itself. The local server must be
 running at `http://localhost:8765`.
 
+On Android, a standalone app bundles both parts and needs no desktop install or
+Chrome extension — see [Android](#android-standalone-app).
+
 ## Choose an installation method
 
 | Platform | Recommended method | Server startup |
@@ -24,6 +27,7 @@ running at `http://localhost:8765`.
 | Debian/Ubuntu | Build and install the `.deb` package | systemd user service |
 | Other Linux | Manual Python setup | Terminal or your service manager |
 | Windows | Manual Python setup | PowerShell |
+| Android | Standalone app (APK from GitHub Releases) | Runs on the phone (built-in) |
 
 Python 3.8 or newer is required for a manual installation.
 
@@ -188,6 +192,26 @@ python3 src/arxiv_daily_ranker_html.py \
   --output local/arxiv_ranked_personalized.html
 python3 src/arxiv_db_server.py
 ```
+
+## Android (standalone app)
+
+The Android app is self-contained: it runs the server, ML ranking, paper
+database, and cloud sync on the phone, so it needs no desktop install and no
+Chrome extension.
+
+1. Download `arxistant-release.v0.1.3.apk` from the
+   [latest GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
+2. Copy the APK to the phone and open it. Android asks you to allow "install
+   unknown apps" for the file manager or browser you used.
+3. Launch **ArXistant**. The daily list appears once the embedded server has
+   fetched arXiv (a few seconds on first launch).
+4. To share your library across devices, open the ⋯ menu → **Cloud Sync** and
+   connect Nutstore as described in [Cloud sync](#cloud-sync-optional).
+
+If you previously installed a debug build, uninstall it first: the debug and
+release builds use different signing keys, so they cannot be upgraded in place.
+Building the APK from source is covered in the
+[Android app guide](android.html).
 
 ## ADS API token
 

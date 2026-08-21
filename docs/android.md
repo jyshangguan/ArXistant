@@ -12,6 +12,19 @@ ArXistant pipeline on the phone**: fetching arXiv, ranking with the ML model,
 the SQLite paper database, and Nutstore cloud sync. It does not need a remote
 server or a desktop Mac.
 
+## Download
+
+Prebuilt, signed APKs are attached to each
+[GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
+For v0.1.3 the direct download is:
+
+<https://github.com/jyshangguan/ArXistant/releases/download/v0.1.3/arxistant-release.v0.1.3.apk>
+
+Copy the APK to the phone and open it to install. If a debug build is already
+installed, uninstall it first (the debug and release builds use different
+signing keys). Building the APK from source is described under
+[Build](#build).
+
 ## How it works
 
 The app embeds the existing Python server with [Chaquopy](https://chaquo.com/chaquopy/),
