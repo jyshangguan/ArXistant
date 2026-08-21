@@ -11,8 +11,8 @@ android {
         applicationId "com.arxistant.app"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 3
+        versionName "0.1.3"
 
         // Only build the ABIs we need. arm64-v8a covers all modern phones;
         // x86_64 is useful for emulators.
