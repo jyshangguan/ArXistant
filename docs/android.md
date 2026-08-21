@@ -93,7 +93,7 @@ cd android
 
 # Release APK (signed; see "Release build" below):
 ./gradlew :app:assembleRelease
-#   -> app/build/outputs/apk/release/app-release.apk
+#   -> app/build/outputs/apk/release/arxistant-release.v0.1.3.apk
 ```
 
 The first build downloads Chaquopy, NumPy, and scikit-learn wheels for the
@@ -138,7 +138,7 @@ cannot push an update over an existing install. The current Android release is
 ## Install and run
 
 - **Phone:** install the release APK
-  (`app/build/outputs/apk/release/app-release.apk`) or the debug APK
+  (`app/build/outputs/apk/release/arxistant-release.v0.1.3.apk`) or the debug APK
   (`app/build/outputs/apk/debug/app-debug.apk`) and launch it. The daily page
   appears in the WebView after the server starts.
 - **Emulator:** use an arm64 system image on Apple Silicon. The
