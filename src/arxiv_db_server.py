@@ -563,6 +563,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode())
 
     def _send_html(self, html, status=200):
+        if '<!-- arxistant-mobile-menu -->' not in html:
+            html = html.replace('</body>', MOBILE_MENU_SCRIPT + '</body>')
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1308,6 +1310,127 @@ ML_TRAIN_FALLBACK_HTML = """<!DOCTYPE html>
   </script>
 </body>
 </html>
+"""
+
+
+MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
+<style>
+  .arx-menu-btn {
+    position: fixed; top: 12px; right: 12px; z-index: 10000;
+    width: 46px; height: 30px; border-radius: 15px;
+    background: rgba(200, 200, 200, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+  }
+  .arx-menu-btn span { width: 4px; height: 4px; border-radius: 50%; background: #444; }
+  .arx-menu-panel {
+    position: fixed; top: 50px; right: 12px; z-index: 9999;
+    background: #fff; border: 1px solid #e0e0e0; border-radius: 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+    padding: 6px; display: none; min-width: 176px; max-height: 72vh; overflow-y: auto;
+  }
+  .arx-menu-panel.open { display: block; }
+  .arx-menu-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 12px; border-radius: 8px; color: #333;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px; white-space: nowrap; cursor: pointer;
+    -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  .arx-menu-item:active { background: #f0f0f0; }
+  .arx-menu-item .icon { font-size: 18px; }
+  .arx-tooltip {
+    position: fixed; z-index: 10001; display: none;
+    background: rgba(0, 0, 0, 0.85); color: #fff;
+    padding: 8px 12px; border-radius: 8px; font-size: 13px;
+    pointer-events: none; max-width: 240px; line-height: 1.4;
+  }
+</style>
+<script>
+(function () {
+    if (!/Android|WebView/i.test(navigator.userAgent)) return;
+
+    var toHide = document.querySelectorAll('.nav, .nav-bar, .nav-bar-bottom, .quick-links');
+    for (var i = 0; i < toHide.length; i++) toHide[i].style.display = 'none';
+
+    var onRecent = (window.location.pathname === '/recent.html');
+    var toggleItem = onRecent
+        ? { icon: '📅', label: 'Daily Papers', href: '/daily.html', desc: 'Ranked arXiv submissions for today' }
+        : { icon: '📆', label: 'Recent Papers', href: '/recent.html', desc: 'Ranked papers from the last five days' };
+
+    var ITEMS = [
+        toggleItem,
+        { icon: '📂', label: 'Saved Papers', href: '/database.html', desc: 'Search, annotate, and remove saved papers' },
+        { icon: '🔍', label: 'Search arXiv', href: '/search-arxiv.html', desc: 'Find papers and save them' },
+        { icon: '💬', label: 'Chat', href: '/chat.html', desc: 'Chat with papers (coming soon)' },
+        { icon: '📚', label: 'My Publications', href: '/publications.html', desc: 'Import and manage your publications' },
+        { icon: '🧠', label: 'ML Features', href: '/ml-features.html', desc: 'Inspect training and ranking features' },
+        { icon: '☁️', label: 'Cloud Sync', href: '/cloud-sync.html', desc: 'Sync your library across devices via Nutstore' }
+    ];
+
+    var btn = document.createElement('div');
+    btn.className = 'arx-menu-btn';
+    btn.innerHTML = '<span></span><span></span><span></span>';
+    document.body.appendChild(btn);
+
+    var panel = document.createElement('div');
+    panel.className = 'arx-menu-panel';
+    for (var j = 0; j < ITEMS.length; j++) {
+        (function (item) {
+            var div = document.createElement('div');
+            div.className = 'arx-menu-item';
+            div.innerHTML = '<span class="icon">' + item.icon + '</span><span>' + item.label + '</span>';
+            var longPress = false;
+            var timer = null;
+            div.addEventListener('touchstart', function (e) {
+                longPress = false;
+                var t = e.touches[0];
+                timer = setTimeout(function () {
+                    longPress = true;
+                    showTooltip(item.label + ' — ' + item.desc, t.clientX, t.clientY);
+                }, 500);
+            });
+            div.addEventListener('touchmove', function () { clearTimeout(timer); hideTooltip(); });
+            div.addEventListener('touchend', function () { clearTimeout(timer); hideTooltip(); });
+            div.addEventListener('click', function (e) {
+                e.stopPropagation();
+                if (!longPress) window.location.href = item.href;
+                longPress = false;
+            });
+            panel.appendChild(div);
+        })(ITEMS[j]);
+    }
+    document.body.appendChild(panel);
+
+    var tip = document.createElement('div');
+    tip.className = 'arx-tooltip';
+    document.body.appendChild(tip);
+
+    function showTooltip(text, x, y) {
+        tip.textContent = text;
+        tip.style.display = 'block';
+        var left = Math.max(8, Math.min(x - 100, window.innerWidth - 250));
+        var top = Math.max(8, y - 56);
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+    }
+    function hideTooltip() { tip.style.display = 'none'; }
+
+    btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        panel.classList.toggle('open');
+    });
+
+    document.addEventListener('click', function (e) {
+        if (e.target !== btn && !panel.contains(e.target)) panel.classList.remove('open');
+    });
+    document.addEventListener('touchstart', function (e) {
+        if (e.target !== btn && !panel.contains(e.target)) panel.classList.remove('open');
+    }, { passive: true });
+})();
+</script>
 """
 
 
