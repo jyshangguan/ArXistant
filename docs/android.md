@@ -25,7 +25,7 @@ which runs CPython (plus NumPy and scikit-learn) inside the Android process:
   │                ├─ fetch arXiv (urllib)
   │                ├─ ML rank (numpy + scikit-learn)
   │                ├─ SQLite paper DB (app-private storage)
-  │                └─ Nutstore WebDAV sync
+  │                └─ Nutstore WebDAV sync (periodic auto-sync)
   └─ MainActivity
         └─ WebView -> http://127.0.0.1:8765/daily.html
 ```
@@ -34,6 +34,28 @@ The WebView renders the same HTML pages the server already generates, and the
 existing save buttons keep working because they `POST /api/...` to the embedded
 server. The ML model is **not** synced; the phone trains its own model from the
 Nutstore-synced saved papers, exactly like a second desktop install.
+
+## Mobile interface
+
+Because the desktop pages were written for a wide browser window, the server
+injects a small mobile layer (CSS + JavaScript) only when it detects an Android
+WebView. It adds:
+
+- **A floating ⋯ menu** (top-right) that replaces the desktop navigation bar.
+  It links to Daily/Recent papers, Saved Papers, Search arXiv, My Publications,
+  ML Features, and Cloud Sync. Tap ⋯ to open it, tap outside to dismiss. A
+  **long-press on a menu item** shows a tooltip describing what it does.
+- **Pull-to-refresh** on the daily and recent pages: drag down from the top to
+  sync the library and re-fetch the list. A spinner overlay appears while the
+  refresh runs (the page's own Refresh button is hidden on Android in favor of
+  the gesture).
+- **Sync-then-refresh**: a refresh first pulls the latest saved papers from
+  Nutstore, then regenerates the ranked list, so the phone always reflects
+  changes made on other devices.
+
+The app icon is the ArXistant logo, and `MainActivity` shows a loading page and
+polls the embedded server until it is ready, so the daily list appears as soon
+as the server has started.
 
 ## Python-side changes that make this possible
 
@@ -65,21 +87,74 @@ compatible with the desktop app):
 cd android
 ./copy_python.sh        # copy ../src/*.py into app/src/main/python/
 
-# Then either:
-#   - open the android/ directory in Android Studio and build the app module, or
-#   - run: gradle :app:assembleDebug
+# Debug APK:
+./gradlew :app:assembleDebug
+#   -> app/build/outputs/apk/debug/app-debug.apk
+
+# Release APK (signed; see "Release build" below):
+./gradlew :app:assembleRelease
+#   -> app/build/outputs/apk/release/app-release.apk
 ```
 
 The first build downloads Chaquopy, NumPy, and scikit-learn wheels for the
 target ABIs, so it is slow and produces a large APK (scikit-learn is the bulk
 of it).
 
+## Release build
+
+The release APK is signed with a local keystore so it can be installed and
+updated over the debug build. The signing material is **not** committed:
+
+- `android/keystore/release.keystore` — the private signing key.
+- `android/keystore.properties` — the store path, passwords, and key alias.
+
+Both are listed in `android/.gitignore`. To create them from scratch:
+
+```bash
+cd android
+mkdir -p keystore
+keytool -genkeypair -v \
+  -keystore keystore/release.keystore \
+  -alias arxistant \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -storepass <store-password> -keypass <key-password> \
+  -dname "CN=ArXistant, OU=Personal, O=ArXistant, C=CN"
+```
+
+then write `keystore.properties`:
+
+```properties
+storeFile=keystore/release.keystore
+storePassword=<store-password>
+keyAlias=arxistant
+keyPassword=<key-password>
+```
+
+`app/build.gradle` reads `keystore.properties` when present and applies it to
+the `release` build type. Keep a backup of both files; without the same key you
+cannot push an update over an existing install. The current Android release is
+**v0.1.0** (`versionName "0.1.0"`, `versionCode 1` in `app/build.gradle`).
+
 ## Install and run
 
-- **Phone:** install the debug APK (`app/build/outputs/apk/debug/app-debug.apk`)
-  and launch it. The daily page appears in the WebView after the server starts.
+- **Phone:** install the release APK
+  (`app/build/outputs/apk/release/app-release.apk`) or the debug APK
+  (`app/build/outputs/apk/debug/app-debug.apk`) and launch it. The daily page
+  appears in the WebView after the server starts.
 - **Emulator:** use an arm64 system image on Apple Silicon. The
   `x86_64` ABI filter is included so x86_64 emulators also work.
+
+## Nutstore sync on the phone
+
+Cloud sync is configured exactly as on desktop: open the ⋯ menu and choose
+**Cloud Sync** (or **☁️ Cloud Sync**), select **Nutstore WebDAV (坚果云)**, enter
+your email and the 第三方应用密码, and click **Connect**. The app password is
+stored encrypted via the Keystore backend.
+
+Once connected, the phone syncs **automatically every 30 minutes** (the default
+`interval_minutes`), and also syncs before every manual refresh. Syncing uses
+the same last-write-wins versioned snapshot as desktop, so the phone and your
+Mac stay in step.
 
 ## Current limitations (to be aware of)
 
@@ -91,11 +166,4 @@ of it).
 - **First launch** generates the daily page by fetching arXiv, which needs a
   network connection and takes a few seconds.
 - **Secret store** requires an Android Keystore key; the `SecretStore.java`
-  example uses AES/GCM with the key held in the Keystore.
-
-## Nutstore sync on the phone
-
-Cloud sync is configured exactly as on desktop: open the WebView's Settings
-(Options) page, choose **Nutstore WebDAV (坚果云)**, enter your email and the
-第三方应用密码, and click **Connect**. The app password is stored encrypted via
-the Keystore backend.
+  backend uses AES/GCM with the key held in the Keystore.

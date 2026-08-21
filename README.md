@@ -48,7 +48,8 @@ Browse the complete documentation at
 - [How ArXistant works](docs/how-it-works.md) — architecture, ranking pipeline,
   local data, background refresh, and project structure.
 - [Android app](docs/android.md) — run ArXistant standalone on a phone (arXiv
-  fetch, ML ranking, and Nutstore sync, no server).
+  fetch, ML ranking, and Nutstore sync, no server). The first Android release,
+  **v0.1.0**, is built from this repository.
 
 ## At a glance
 
@@ -63,7 +64,8 @@ flowchart LR
 
 ArXistant is currently at version **0.1.2**. The Chrome extension is loaded as
 an unpacked extension. macOS has a bundled launcher, and Debian/Ubuntu has an
-experimental `.deb` package with a systemd user service.
+experimental `.deb` package with a systemd user service. A standalone **Android
+app (v0.1.0)** runs the full pipeline on the phone via Chaquopy.
 
 ## License
 

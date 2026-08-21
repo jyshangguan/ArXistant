@@ -208,7 +208,10 @@ An Android app (in the `android/` directory) embeds the Python server with
 Chaquopy, runs it in-process on `127.0.0.1:8765`, and shows the pages in a
 WebView. The same `arxistant_tasks` and `arxistant_secrets` modules are used,
 but tasks run in-process and secrets are stored via an Android Keystore backend.
-See the [Android app guide](android.html).
+On Android the server injects a mobile menu (a floating ⋯ button replacing the
+desktop nav), enables pull-to-refresh with a sync-first refresh, and runs
+periodic Nutstore auto-sync every 30 minutes. See the
+[Android app guide](android.html).
 
 ## Repository structure
 
