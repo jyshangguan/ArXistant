@@ -28,3 +28,6 @@ src/fix_publications.py
 
 # Claude Code project config (personal, not part of the package)
 .claude/
+
+# Debug snapshots / screenshots (personal, not part of the package)
+aux/

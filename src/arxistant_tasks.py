@@ -149,16 +149,23 @@ def refresh_recent(output_path):
 
 
 def _refresh(output_path, recent):
-    """Fetch, rank, and write a page. Returns (ok, error)."""
+    """Fetch, rank, and write a page. Returns (ok, error).
+
+    A JSON snapshot of the ranked list is written next to the HTML page
+    (same name with a ``.json`` suffix); the Chat page uses it to offer
+    papers from the daily/recent lists.
+    """
+    json_path = os.path.splitext(output_path)[0] + ".json"
     if IN_PROCESS:
         import arxiv_daily_ranker_html as ranker
         try:
-            ranker.generate_ranked_html(recent=recent, output_path=output_path)
+            ranker.generate_ranked_html(
+                recent=recent, output_path=output_path, json_output=json_path)
             return True, None
         except Exception as exc:
             return False, str(exc)
 
-    args = ["--output", output_path]
+    args = ["--output", output_path, "--json-output", json_path]
     if recent:
         args.insert(0, "--recent")
     try:

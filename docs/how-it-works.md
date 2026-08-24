@@ -60,10 +60,18 @@ refresh per day. Later reminders can retry if the first request failed.
 and JSON endpoints. It:
 
 - Initializes and queries the SQLite database.
-- Serves daily, recent, saved-paper, publication, search, and model pages.
+- Serves daily, recent, saved-paper, publication, search, chat, and model pages.
 - Starts refresh and training subprocesses with the same Python interpreter.
 - Calls arXiv and ADS APIs.
+- Proxies Chat questions to a configurable OpenAI-compatible LLM endpoint and
+  streams the answer back as server-sent events. It also downloads paper PDFs
+  and full-text HTML (arXiv HTML, falling back to ar5iv) on demand and caches
+  them locally; the Chat page renders the HTML in a same-origin iframe so text
+  can be selected and LLM-cited passages highlighted.
 - Stores model retraining state and launches training in a background thread.
+
+Requests are handled on separate threads (a threading HTTP server) so a slow
+or streaming LLM response cannot block the rest of the app.
 
 `GET /api/health` reports whether the server is ready, its API compatibility
 version, and which data directory it is using. The extension requires a matching
@@ -79,7 +87,9 @@ The main ranker is `src/arxiv_daily_ranker_html.py`:
 2. Parse paper identifiers, titles, authors, and abstracts.
 3. Load the current model and custom keywords.
 4. Score and sort the papers.
-5. Generate an HTML page with abstracts and local save controls.
+5. Generate an HTML page with abstracts and local save controls, and write a
+   JSON snapshot of the ranked list next to it. The Chat page reads these
+   snapshots to offer daily/recent papers.
 
 The recent view covers approximately five days. The daily view represents the
 current arXiv release page.
@@ -131,6 +141,9 @@ Important data includes:
 arxiv_papers.db                 SQLite papers and publications
 ads_token.txt                   Optional ADS API token
 scix_config.json                SciX library configuration
+chat_config.json                Chat LLM base URL, model, temperature
+pdf/                            Cached paper PDFs used by the Chat page
+fulltext/                       Cached paper full-text HTML for the Text view
 cloud/config.json               Cloud sync settings (no secrets)
 arxiv_ranked_personalized.html  Generated daily page
 arxiv_recent_personalized.html  Generated recent page
@@ -144,8 +157,8 @@ ml_ranker/
 └── custom_negative.json
 ```
 
-The Nutstore WebDAV app password is not stored in this directory; it lives in
-the operating-system keychain via `keyring`.
+The Nutstore WebDAV app password and the Chat LLM API key are not stored in
+this directory; they live in the operating-system keychain via `keyring`.
 
 The data directory can be overridden manually with the
 `ARXISTANT_DATA_DIR` environment variable. `ARXISTANT_PORT` changes the server

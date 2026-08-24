@@ -16,7 +16,8 @@ import threading
 import urllib.parse
 import urllib.request
 import urllib.error
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from html import escape as html_escape
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
 from arxistant_paths import DATA_DIR, data_path, ensure_data_dirs
@@ -28,10 +29,12 @@ import arxistant_tasks
 DB_PATH = data_path("arxiv_papers.db")
 DAILY_HTML = data_path("arxiv_ranked_personalized.html")
 RECENT_HTML = data_path("arxiv_recent_personalized.html")
+DAILY_JSON = data_path("arxiv_ranked_personalized.json")
+RECENT_JSON = data_path("arxiv_recent_personalized.json")
 PUBLICATIONS_JSON = data_path("shangguan_papers_metadata.json")
 BIB_PATH = data_path("scix_library_20.bib")
 ML_FEATURES_HTML = data_path("ml_features.html")
-CHAT_HTML = data_path("chat.html")
+CHAT_CONFIG_PATH = data_path("chat_config.json")
 ADS_TOKEN_PATH = data_path("ads_token.txt")
 SCIX_CONFIG_PATH = data_path("scix_config.json")
 ML_RANKER_DIR = data_path("ml_ranker")
@@ -431,6 +434,312 @@ def search_ads_api(query, token, max_results=20):
 
     return papers
 
+# --- Chat (paper reading helper) -------------------------------------------
+#
+# The Chat page asks questions about one paper at a time. Non-secret settings
+# (base URL, model, temperature) live in chat_config.json inside the data
+# directory; the API key is stored in the OS keychain via arxistant_secrets.
+# The server proxies requests to any OpenAI-compatible endpoint, streaming the
+# answer back to the browser as server-sent events.
+
+DEFAULT_CHAT_CONFIG = {
+    "base_url": "",
+    "model": "",
+    "temperature": 0.7,
+}
+
+
+def load_chat_config():
+    config = dict(DEFAULT_CHAT_CONFIG)
+    try:
+        with open(CHAT_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for key in DEFAULT_CHAT_CONFIG:
+            if key in data:
+                config[key] = data[key]
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return config
+
+
+def save_chat_config(config):
+    os.makedirs(os.path.dirname(CHAT_CONFIG_PATH), exist_ok=True)
+    temp_path = CHAT_CONFIG_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+    os.replace(temp_path, CHAT_CONFIG_PATH)
+    try:
+        os.chmod(CHAT_CONFIG_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def _chat_file_key():
+    try:
+        with open(CHAT_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return (json.load(f).get("api_key") or "")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return ""
+
+
+def get_chat_api_key():
+    """Return the LLM API key.
+
+    Prefers the (chmod-600) chat config file, which is the reliable store when
+    the server runs as a background daemon detached from the macOS login
+    session; falls back to the OS keychain. Preferring the file also ensures a
+    freshly saved key overrides any stale keychain entry.
+    """
+    key = _chat_file_key()
+    if key:
+        return key
+    return arxistant_secrets.get_secret(arxistant_secrets.LLM_API_KEY) or ""
+
+
+def chat_key_storage():
+    """Report where the API key lives: 'file', 'keychain', or ''."""
+    if _chat_file_key():
+        return "file"
+    if arxistant_secrets.get_secret(arxistant_secrets.LLM_API_KEY):
+        return "keychain"
+    return ""
+
+
+def _load_ranked_papers(path, source):
+    """Read a ranked-list JSON snapshot written by the daily/recent refresh."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            items = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    papers = []
+    for item in items:
+        arxiv_id = str(item.get("id", "") or "").strip()
+        if not arxiv_id:
+            continue
+        authors = item.get("authors", "")
+        if isinstance(authors, list):
+            authors = ", ".join(authors)
+        papers.append({
+            "arxiv_id": arxiv_id,
+            "title": (item.get("title") or "").strip(),
+            "authors": authors,
+            "abstract": (item.get("abstract") or "").strip(),
+            "source": source,
+            "score": item.get("score", 0),
+        })
+    return papers
+
+
+def collect_chat_library():
+    """Merge saved papers with the daily/recent ranked lists for the chat picker.
+
+    Saved papers win over ranked-list duplicates; daily wins over recent.
+    """
+    papers = {}
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT arxiv_id, title, authors, abstract, relevance_score "
+        "FROM saved_papers ORDER BY date_saved DESC")
+    for arxiv_id, title, authors, abstract, score in c.fetchall():
+        papers[arxiv_id] = {
+            "arxiv_id": arxiv_id,
+            "title": title or "",
+            "authors": authors or "",
+            "abstract": abstract or "",
+            "source": "saved",
+            "score": score or 0,
+        }
+    conn.close()
+    for source, path in (("daily", DAILY_JSON), ("recent", RECENT_JSON)):
+        for item in _load_ranked_papers(path, source):
+            papers.setdefault(item["arxiv_id"], item)
+    return list(papers.values())
+
+
+def build_chat_request(base_url, model, messages, temperature, api_key):
+    """Build the upstream OpenAI-compatible /chat/completions request."""
+    url = base_url.strip().rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url += "/chat/completions"
+    payload = {"model": model, "messages": messages, "stream": True}
+    if temperature is not None:
+        payload["temperature"] = temperature
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "User-Agent": "ArXistant/0.1",
+    }
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+    return urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers=headers, method="POST")
+
+
+def iter_chat_sse(resp):
+    """Yield SSE 'data: ...' lines from an LLM API response.
+
+    Handles both true event streams and providers that ignore ``stream`` and
+    return one JSON document; the latter is converted into a single event.
+    """
+    content_type = ""
+    headers = getattr(resp, "headers", None)
+    if headers is not None and hasattr(headers, "get"):
+        content_type = headers.get("Content-Type", "") or ""
+    if "text/event-stream" in content_type:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if line.startswith("data:"):
+                yield line
+    else:
+        body = resp.read().decode("utf-8", "replace")
+        yield "data: " + body
+        yield "data: [DONE]"
+
+
+PDF_CACHE_DIR = data_path("pdf")
+PDF_CACHE_MAX_FILES = 200
+PDF_MAX_BYTES = 80 * 1024 * 1024
+ARXIV_PDF_URL = "https://arxiv.org/pdf/{arxiv_id}"
+
+_ARXIV_ID_RE = re.compile(r"^[A-Za-z0-9._\-/()]+$")
+
+
+def _safe_pdf_filename(arxiv_id):
+    """Map an arXiv ID to a safe cache file name, or None when invalid."""
+    arxiv_id = (arxiv_id or "").strip()
+    if (not arxiv_id or ".." in arxiv_id or arxiv_id.count("/") > 1
+            or not _ARXIV_ID_RE.match(arxiv_id)):
+        return None
+    return arxiv_id.replace("/", "_") + ".pdf"
+
+
+def fetch_paper_pdf(arxiv_id):
+    """Return a local path for the paper PDF, downloading and caching it.
+
+    Raises ValueError for an invalid ID or when arXiv does not return a PDF,
+    and urllib errors for network failures.
+    """
+    filename = _safe_pdf_filename(arxiv_id)
+    if filename is None:
+        raise ValueError("Invalid arXiv ID: " + repr(arxiv_id))
+    os.makedirs(PDF_CACHE_DIR, exist_ok=True)
+    path = os.path.join(PDF_CACHE_DIR, filename)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    url = ARXIV_PDF_URL.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "ArXistant/0.1 (local research assistant)"})
+    temp_path = f"{path}.{threading.get_ident()}.tmp"
+    try:
+        # Stream straight to disk in chunks so large PDFs never sit in memory.
+        with urllib.request.urlopen(req, timeout=60) as resp, \
+                open(temp_path, "wb") as f:
+            head = b""
+            size = 0
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                if size == 0:
+                    head = chunk.lstrip()[:5]
+                size += len(chunk)
+                if size > PDF_MAX_BYTES:
+                    raise ValueError(
+                        "The PDF is too large to cache (over "
+                        f"{PDF_MAX_BYTES // (1024 * 1024)} MB)")
+                f.write(chunk)
+        if size < 1024 or not head.startswith(b"%PDF"):
+            raise ValueError("arXiv did not return a PDF for " + arxiv_id)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+    _evict_pdf_cache()
+    return path
+
+
+def _evict_pdf_cache():
+    """Keep the PDF cache bounded by dropping the least recently used files."""
+    try:
+        entries = []
+        for name in os.listdir(PDF_CACHE_DIR):
+            full = os.path.join(PDF_CACHE_DIR, name)
+            if name.endswith(".pdf") and os.path.isfile(full):
+                entries.append((os.path.getmtime(full), full))
+        entries.sort()
+        while len(entries) > PDF_CACHE_MAX_FILES:
+            _, oldest = entries.pop(0)
+            try:
+                os.remove(oldest)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+FULLTEXT_CACHE_DIR = data_path("fulltext")
+FULLTEXT_MAX_BYTES = 8 * 1024 * 1024
+ARXIV_HTML_URLS = (
+    "https://arxiv.org/html/{arxiv_id}",
+    "https://ar5iv.labs.arxiv.org/html/{arxiv_id}",
+)
+
+_SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
+
+
+def fetch_paper_fulltext(arxiv_id):
+    """Return a local path to a sanitized HTML copy of the paper's full text.
+
+    Prefers arxiv.org/html, falling back to ar5iv. Scripts are stripped and a
+    <base> tag is injected so relative assets resolve at the source. Cached.
+    """
+    base = _safe_pdf_filename(arxiv_id)
+    if base is None:
+        raise ValueError("Invalid arXiv ID: " + repr(arxiv_id))
+    filename = base[:-4] + ".html"
+    os.makedirs(FULLTEXT_CACHE_DIR, exist_ok=True)
+    path = os.path.join(FULLTEXT_CACHE_DIR, filename)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    last_err = None
+    for tmpl in ARXIV_HTML_URLS:
+        url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "ArXistant/0.1 (local research assistant)"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
+        except Exception as e:
+            last_err = e
+            continue
+        low = html.lower()
+        if "<html" not in low and "<!doctype" not in low:
+            last_err = ValueError("response is not HTML")
+            continue
+        html = _SCRIPT_RE.sub("", html)
+        base_href = "https://arxiv.org/html/" + urllib.parse.quote(arxiv_id, safe="/")
+        if re.search(r"<head\b[^>]*>", html, re.I):
+            html = re.sub(r"<head\b[^>]*>",
+                          lambda m: m.group(0) + '<base href="' + base_href + '">',
+                          html, count=1, flags=re.I)
+        else:
+            html = '<base href="' + base_href + '">' + html
+        temp_path = path + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        os.replace(temp_path, path)
+        return path
+    raise ValueError("Could not fetch full text for " + arxiv_id +
+                     (": " + str(last_err) if last_err else ""))
+
+# --- End chat helpers --------------------------------------------------------
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -559,6 +868,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
@@ -568,6 +878,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(html.encode())
 
@@ -667,6 +978,8 @@ class Handler(BaseHTTPRequestHandler):
                     html = f.read()
                 if '<!-- save-button-embedded -->' not in html:
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
+                if '<!-- chat-link-embedded -->' not in html:
+                    html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
                 self._send_html(html)
             else:
                 self._not_found_page(
@@ -681,6 +994,8 @@ class Handler(BaseHTTPRequestHandler):
                     html = f.read()
                 if '<!-- save-button-embedded -->' not in html:
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
+                if '<!-- chat-link-embedded -->' not in html:
+                    html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
                 self._send_html(html)
             else:
                 self._not_found_page(
@@ -695,6 +1010,8 @@ class Handler(BaseHTTPRequestHandler):
                     html = f.read()
                 if '<!-- save-button-embedded -->' not in html:
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
+                if '<!-- chat-link-embedded -->' not in html:
+                    html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
                 self._send_html(html)
             else:
                 self._not_found_page(
@@ -721,15 +1038,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
         elif path == "/chat.html":
-            if os.path.exists(CHAT_HTML):
-                with open(CHAT_HTML, 'r', encoding='utf-8') as f:
-                    self._send_html(f.read())
-            else:
-                self._not_found_page(
-                    "Chat with Papers",
-                    "This feature is coming soon.",
-                    None,
-                    None)
+            self._send_html(CHAT_PAGE_HTML)
 
         elif path == "/search-arxiv.html":
             self._send_html(SEARCH_ARXIV_HTML)
@@ -842,6 +1151,75 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 status["provider_status"] = {"error": str(exc)}
             self._send_json(status)
+
+        elif path == "/api/chat/config":
+            config = load_chat_config()
+            self._send_json({
+                "success": True,
+                "base_url": config["base_url"],
+                "model": config["model"],
+                "temperature": config["temperature"],
+                "has_api_key": bool(get_chat_api_key()),
+                "key_storage": chat_key_storage(),
+                "keychain_available": arxistant_secrets.is_available(),
+            })
+
+        elif path == "/api/chat/library":
+            try:
+                papers = collect_chat_library()
+                self._send_json({
+                    "success": True, "papers": papers, "count": len(papers)})
+            except Exception as e:
+                self._send_json(
+                    {"success": False, "error": str(e), "papers": []}, 500)
+
+        elif path == "/api/chat/pdf":
+            arxiv_id = query.get("arxiv_id", [""])[0]
+            filename = _safe_pdf_filename(arxiv_id)
+            if filename is None:
+                self._send_json(
+                    {"success": False, "error": "Invalid arXiv ID"}, 400)
+                return
+            try:
+                pdf_path = fetch_paper_pdf(arxiv_id)
+            except Exception as e:
+                safe_id = html_escape(arxiv_id, quote=True)
+                self._send_html(
+                    "<!DOCTYPE html><html><body style='font-family:sans-serif;"
+                    "color:#333;padding:24px;line-height:1.6;'>"
+                    f"<p><strong>Could not download the PDF for arXiv:{safe_id}.</strong></p>"
+                    f"<p>{html_escape(str(e))}</p>"
+                    f"<p><a href='https://arxiv.org/pdf/{safe_id}' target='_blank'>"
+                    "Open the PDF on arXiv instead ↗</a></p>"
+                    "</body></html>", 502)
+                return
+            with open(pdf_path, "rb") as f:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Length", str(os.fstat(f.fileno()).st_size))
+                self.send_header("Content-Disposition", f'inline; filename="{filename}"')
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
+        elif path == "/api/chat/fulltext":
+            arxiv_id = query.get("arxiv_id", [""])[0]
+            try:
+                ft_path = fetch_paper_fulltext(arxiv_id)
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)}, 502)
+                return
+            with open(ft_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(content.encode("utf-8"))
 
         else:
             self._send_text("Not found", 404)
@@ -1104,6 +1482,105 @@ class Handler(BaseHTTPRequestHandler):
             arxistant_sync.save_config(config)
             self._send_json({"success": True, "config": config})
 
+        elif path == "/api/chat/config":
+            config = load_chat_config()
+            if "base_url" in data:
+                config["base_url"] = str(data.get("base_url") or "").strip().rstrip("/")
+            if "model" in data:
+                config["model"] = str(data.get("model") or "").strip()
+            if "temperature" in data:
+                try:
+                    config["temperature"] = min(2.0, max(0.0, float(data["temperature"])))
+                except (TypeError, ValueError):
+                    pass
+            api_key = str(data.get("api_key") or "").strip()
+            if api_key:
+                # The chmod-600 config file is the authoritative store (it works
+                # even when the keychain is unreachable in a background daemon);
+                # the keychain is only a best-effort extra copy.
+                config["api_key"] = api_key
+                try:
+                    arxistant_secrets.set_secret(arxistant_secrets.LLM_API_KEY, api_key)
+                except arxistant_secrets.SecretStoreError:
+                    pass
+            if data.get("delete_api_key"):
+                config.pop("api_key", None)
+                try:
+                    arxistant_secrets.delete_secret(arxistant_secrets.LLM_API_KEY)
+                except Exception:
+                    pass
+            save_chat_config(config)
+            self._send_json({
+                "success": True,
+                "base_url": config["base_url"],
+                "model": config["model"],
+                "temperature": config["temperature"],
+                "has_api_key": bool(get_chat_api_key()),
+                "key_storage": chat_key_storage(),
+            })
+
+        elif path == "/api/chat":
+            messages = data.get("messages") or []
+            if not isinstance(messages, list) or not messages:
+                self._send_json({"success": False, "error": "No messages provided"}, 400)
+                return
+            config = load_chat_config()
+            base_url = config.get("base_url", "").strip()
+            model = config.get("model", "").strip()
+            if not base_url or not model:
+                self._send_json({
+                    "success": False,
+                    "error": ("The LLM is not configured yet. Open Chat → "
+                              "LLM Settings and save a base URL, model, and API key."),
+                }, 400)
+                return
+            temperature = data.get("temperature", config.get("temperature", 0.7))
+            api_key = get_chat_api_key()
+            req = build_chat_request(base_url, model, messages, temperature, api_key)
+            try:
+                resp = urllib.request.urlopen(req, timeout=120)
+            except urllib.error.HTTPError as e:
+                details = ""
+                try:
+                    details = e.read().decode("utf-8", "replace")[:2000]
+                except Exception:
+                    pass
+                self._send_json({
+                    "success": False,
+                    "error": f"LLM API returned HTTP {e.code}",
+                    "details": details,
+                }, 502)
+                return
+            except Exception as e:
+                self._send_json(
+                    {"success": False,
+                     "error": f"Could not reach the LLM API: {e}"}, 502)
+                return
+            # Stream the upstream answer back to the browser as SSE.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                for line in iter_chat_sse(resp):
+                    self.wfile.write(line.encode("utf-8") + b"\n\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # The browser closed the chat.
+            except Exception as exc:
+                try:
+                    error_event = "data: " + json.dumps({"error": str(exc)})
+                    self.wfile.write(error_event.encode("utf-8") + b"\n\n")
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
         elif path == "/api/shutdown":
             self._send_json({"success": True, "message": "Server stopping"})
             # shutdown() must run on a separate thread: it waits for
@@ -1364,7 +1841,7 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
         toggleItem,
         { icon: '📂', label: 'Saved Papers', href: '/database.html', desc: 'Search, annotate, and remove saved papers' },
         { icon: '🔍', label: 'Search arXiv', href: '/search-arxiv.html', desc: 'Find papers and save them' },
-        { icon: '💬', label: 'Chat', href: '/chat.html', desc: 'Chat with papers (coming soon)' },
+        { icon: '💬', label: 'Chat', href: '/chat.html', desc: 'Read and discuss your papers with an LLM' },
         { icon: '📚', label: 'My Publications', href: '/publications.html', desc: 'Import and manage your publications' },
         { icon: '🧠', label: 'ML Features', href: '/ml-features.html', desc: 'Inspect training and ranking features' },
         { icon: '☁️', label: 'Cloud Sync', href: '/cloud-sync.html', desc: 'Sync your library across devices via Nutstore' }
@@ -1787,6 +2264,1098 @@ document.addEventListener('DOMContentLoaded', async () => {
 </script>
 """
 
+CHAT_LINK_SCRIPT = """<!-- chat-link-embedded -->
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.paper').forEach((paper) => {
+        if (paper.querySelector('.chat-link-btn')) return;
+        const arxivLink = paper.querySelector('.arxiv-id a');
+        if (!arxivLink) return;
+        const arxivId = arxivLink.href.split('/abs/')[1];
+        if (!arxivId) return;
+        const link = document.createElement('a');
+        link.href = '/chat.html?paper=' + encodeURIComponent(arxivId);
+        link.className = 'chat-link-btn';
+        link.title = 'Read this paper with the Chat helper';
+        link.textContent = '💬';
+        link.style.cssText = 'margin-top:6px;margin-left:14px;padding:1px 6px;color:white;border:none;border-radius:3px;font-size:0.7em;white-space:nowrap;background:#555;text-decoration:none;display:inline-block;';
+        // The save button is appended asynchronously (it awaits a fetch), so
+        // wait for it and insert the chat button right after it; fall back to
+        // appending to the paper if the save button never appears.
+        const place = (tries) => {
+            const saveBtn = document.getElementById('save-btn-' + arxivId);
+            if (saveBtn) {
+                saveBtn.insertAdjacentElement('afterend', link);
+            } else if (tries > 0) {
+                setTimeout(() => place(tries - 1), 150);
+            } else {
+                paper.appendChild(link);
+            }
+        };
+        place(20);
+    });
+});
+</script>
+"""
+
+CHAT_PAGE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat — ArXistant</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1440px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
+    h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; margin-bottom: 14px; }
+    .nav { margin-bottom: 16px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .nav a { color: #b31b1b; text-decoration: none; font-weight: bold; }
+    .nav a:hover { text-decoration: underline; }
+
+    .layout { display: flex; align-items: stretch; position: relative; height: calc(100vh - 175px); min-height: 540px; --chat-w: 400px; }
+    .pane { transition: width 0.25s ease, margin 0.25s ease, opacity 0.2s ease; overflow: hidden; }
+    .pane-left { width: 300px; flex-shrink: 0; margin-right: 16px; }
+    .pane-left-inner { width: 300px; height: 100%; overflow-y: auto; box-sizing: border-box; }
+    .pane-center { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .pane-right { width: var(--chat-w); flex-shrink: 0; }
+    .pane-right-inner { width: 100%; height: 100%; display: flex; flex-direction: column; box-sizing: border-box; }
+    .layout.left-hidden .pane-left { width: 0; margin-right: 0; opacity: 0; pointer-events: none; }
+    .layout.right-hidden .pane-right { width: 0; margin-left: 0; opacity: 0; pointer-events: none; }
+
+    .picker-view { max-width: 760px; width: 100%; margin: 0 auto; }
+    .picker-view .paper-list { max-height: calc(100vh - 395px); min-height: 280px; }
+    .reader-view { flex: 1; min-height: 0; display: flex; }
+    .reader-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .reader-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }
+    .view-btn { border: 1px solid #ddd; background: #f5f5f5; color: #555; border-radius: 6px; padding: 3px 14px; font-size: 0.8em; font-weight: bold; cursor: pointer; }
+    .view-btn.active { background: #b31b1b; border-color: #b31b1b; color: #fff; }
+    .view-hint { font-size: 0.75em; color: #888; margin-left: 6px; }
+
+    .edge-handle { position: absolute; top: 50%; transform: translateY(-50%); z-index: 30; background: #b31b1b; color: white; border: none; border-radius: 6px; padding: 16px 8px; cursor: pointer; font-size: 0.95em; line-height: 1; box-shadow: 0 2px 6px rgba(0,0,0,0.25); transition: left 0.25s ease, right 0.25s ease, background 0.15s ease; }
+    .edge-handle:hover { background: #8a1515; }
+    .edge-handle.left { left: 2px; }
+    .layout:not(.left-hidden) .edge-handle.left { left: 300px; }
+    .edge-handle.right { right: 2px; }
+    .layout:not(.right-hidden) .edge-handle.right { right: calc(var(--chat-w) + 14px); }
+    .resizer-right { flex-shrink: 0; width: 14px; cursor: col-resize; position: relative; }
+    .resizer-right::after { content: ''; position: absolute; top: 0; bottom: 0; left: 6px; width: 2px; background: #e0e0e0; border-radius: 1px; transition: background 0.15s ease; }
+    .resizer-right:hover::after, .resizer-right.active::after { background: #b31b1b; }
+    .layout.right-hidden .resizer-right { display: none; }
+    .layout.resizing .pane-right, .layout.resizing .resizer-right, .layout.resizing .edge-handle { transition: none; }
+    .edge-handle::after { content: attr(data-tip); position: absolute; top: 50%; left: 50%; transform: translate(-50%, 28px); background: rgba(0,0,0,0.82); color: #fff; padding: 3px 10px; border-radius: 6px; font-size: 11px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 0.15s ease; z-index: 40; }
+    .edge-handle:hover::after { opacity: 1; }
+    .hidden { display: none !important; }
+
+    .panel { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
+    .panel h3 { margin-top: 0; color: #b31b1b; font-size: 1em; }
+    .panel input, .panel select { width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 0.9em; font-family: inherit; background: white; }
+    .panel input:focus, .panel select:focus { outline: none; border-color: #b31b1b; }
+    .panel button { background: #b31b1b; color: white; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.9em; }
+    .panel button:hover { background: #8a1515; }
+    .hint { font-size: 0.8em; color: #888; margin: 6px 0 0; }
+    .hint.ok { color: #2e7d32; }
+    .hint.warn { color: #b26a00; }
+
+    .paper-list { overflow-y: auto; }
+    .plist-item { border: 1px solid #ddd; border-radius: 4px; padding: 8px; margin-bottom: 6px; background: white; cursor: pointer; font-size: 0.85em; }
+    .plist-item:hover { border-color: #b31b1b; }
+    .plist-item.active { border-color: #b31b1b; background: #fdf3f3; }
+    .plist-item .title { font-weight: bold; color: #333; margin-bottom: 2px; }
+    .plist-item .meta { color: #888; font-size: 0.85em; }
+    .badge { display: inline-block; font-size: 0.7em; font-weight: bold; color: white; background: #777; border-radius: 8px; padding: 1px 7px; margin-right: 4px; vertical-align: middle; }
+    .badge.saved { background: #2e7d32; }
+    .badge.daily { background: #b31b1b; }
+    .badge.recent { background: #1976d2; }
+    .badge.arxiv { background: #555; }
+
+    .pdf-wrap { position: relative; flex: 1; min-width: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background: #525659; }
+    .pdf-wrap iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; }
+    .pdf-status { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5; background: rgba(0,0,0,0.72); color: white; padding: 5px 16px; border-radius: 14px; font-size: 0.85em; max-width: 92%; text-align: center; }
+    .pdf-status.error { background: #c62828; white-space: normal; }
+    .pdf-status a { color: #ffe082; }
+    .text-wrap { background: #fff; }
+    .text-wrap iframe { background: #fff; }
+    .sel-bubble { position: absolute; z-index: 30; background: #b31b1b; color: #fff; border: none; border-radius: 14px; padding: 5px 12px; font-size: 0.78em; font-weight: bold; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3); transform: translateX(-50%); }
+    .sel-bubble:hover { background: #8a1515; }
+
+    .paper-info { flex-shrink: 0; max-height: 45%; overflow-y: auto; border: 1px solid #e0e0e0; border-left: 4px solid #b31b1b; border-radius: 8px; background: #fdf6f6; padding: 9px 30px 9px 12px; margin-bottom: 12px; position: relative; box-sizing: border-box; }
+    .paper-info .unpin { position: absolute; right: 8px; top: 6px; cursor: pointer; color: #c62828; font-weight: bold; font-size: 1.2em; }
+    .info-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 0.85em; color: #666; }
+    .info-line a { color: #b31b1b; text-decoration: none; font-weight: bold; }
+    .info-line a:hover { text-decoration: underline; }
+    .info-line .pid { font-family: monospace; color: #333; }
+    .save-toggle { border: none; border-radius: 10px; padding: 2px 12px; font-size: 0.8em; font-weight: bold; cursor: pointer; background: #b31b1b; color: #fff; }
+    .save-toggle:hover { background: #8a1515; }
+    .save-toggle.saved { background: #2e7d32; }
+    .save-toggle.saved:hover { background: #1b5e20; }
+
+    .chat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-shrink: 0; }
+    .chat-header h2 { margin: 0; font-size: 1.1em; color: #555; }
+    .chat-header button { background: #666; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+    .chat-header button:hover { background: #555; }
+
+    .chat-messages { flex: 1; min-height: 200px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; background: #fafafa; margin-bottom: 10px; }
+    .message { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; max-width: 95%; word-wrap: break-word; }
+    .message.user { background: #b31b1b; color: white; margin-left: auto; }
+    .message.assistant { background: white; border: 1px solid #ddd; margin-right: auto; }
+    .message.system { background: #fff8e1; border: 1px solid #f0e0a0; font-size: 0.85em; color: #6d5a00; margin: 0 auto 12px; max-width: 95%; white-space: pre-wrap; }
+    .message .label { font-size: 0.75em; font-weight: bold; margin-bottom: 4px; opacity: 0.7; }
+    .message pre { background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 0.85em; margin: 8px 0; }
+    .message code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
+    .message p { margin: 0 0 8px; }
+    .message p:last-child { margin-bottom: 0; }
+    .message ul, .message ol { margin: 8px 0; padding-left: 20px; }
+    .message li { margin-bottom: 4px; }
+    .thinking { color: #999; font-style: italic; }
+
+    .quick-prompts { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; flex-shrink: 0; }
+    .sel-chip { display: flex; align-items: center; gap: 8px; background: #fdf3f3; border: 1px solid #b31b1b; color: #7a1010; border-radius: 6px; padding: 4px 10px; font-size: 0.78em; margin-bottom: 8px; flex-shrink: 0; cursor: pointer; max-width: 100%; }
+    .sel-chip .sel-x { font-weight: bold; color: #c62828; }
+    .sel-chip .sel-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .quick-chip { font-size: 0.8em; padding: 4px 10px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 14px; cursor: pointer; color: #444; }
+    .quick-chip:hover { border-color: #b31b1b; color: #b31b1b; }
+
+    .chat-input { display: flex; gap: 8px; flex-shrink: 0; }
+    .chat-input textarea { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; resize: none; min-height: 58px; font-size: 0.95em; }
+    .chat-input textarea:focus { outline: none; border-color: #b31b1b; }
+    .chat-input button { padding: 10px 20px; background: #b31b1b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1em; }
+    .chat-input button:hover { background: #8a1515; }
+    .chat-input button:disabled { background: #ccc; cursor: not-allowed; }
+
+    .empty-chat { text-align: center; color: #888; padding: 30px 16px; font-style: italic; }
+
+    @media (max-width: 1000px) {
+      .layout { flex-direction: column; height: auto; gap: 12px; }
+      .pane { width: 100%; margin: 0; overflow: visible; }
+      .pane-left-inner, .pane-right-inner { width: 100%; height: auto; overflow: visible; }
+      .layout.left-hidden .pane-left, .layout.right-hidden .pane-right { width: 100%; opacity: 1; pointer-events: auto; }
+      .reader-view { flex-direction: column; }
+      .paper-info { width: 100%; }
+      .picker-view { max-width: none; }
+      .picker-view .paper-list { max-height: 320px; min-height: 0; }
+      .pdf-wrap { height: 70vh; flex: none; }
+      .chat-messages { height: 380px; flex: none; }
+      .edge-handle { display: none; }
+      .resizer-right { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="/daily.html">← Daily Papers</a>
+    <a href="/recent.html">📅 Recent Papers</a>
+    <a href="/database.html">📂 Saved Papers</a>
+    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/publications.html">📚 My Publications</a>
+    <a href="/ml-features.html">🧠 ML Features</a>
+    <a href="/cloud-sync.html">☁️ Cloud Sync</a>
+  </div>
+  <h1>💬 Paper Reading Helper</h1>
+
+  <div class="layout" id="layout">
+    <aside class="pane pane-left">
+      <div class="pane-left-inner">
+        <div class="panel">
+          <h3>🔧 LLM Settings</h3>
+          <select id="preset" onchange="applyPreset(this.value)">
+            <option value="custom">Custom / keep my values</option>
+          </select>
+          <input type="text" id="baseUrl" placeholder="Base URL (e.g. https://api.openai.com/v1)">
+          <input type="text" id="modelName" placeholder="Model (e.g. gpt-4o-mini, deepseek-chat)">
+          <input type="password" id="apiKey" placeholder="API key">
+          <button onclick="saveConfig()">Save Settings</button>
+          <p class="hint" id="configStatus">Loading…</p>
+          <p class="hint">The API key is stored in the OS keychain when available, otherwise in a private local file; base URL and model stay in ArXistant's local data directory. Questions are sent to the provider you configure.</p>
+        </div>
+      </div>
+    </aside>
+
+    <main class="pane pane-center">
+      <div id="pickerView" class="picker-view">
+        <div class="panel">
+          <h3>📄 Choose a Paper</h3>
+          <input type="text" id="paperSearch" placeholder="Search title / author / arXiv ID…" oninput="renderPaperList()" style="padding:8px;border:1px solid #ddd;border-radius:4px;font-size:0.9em;">
+          <select id="sourceFilter" onchange="renderPaperList()">
+            <option value="all">All sources</option>
+            <option value="saved">💾 Saved papers</option>
+            <option value="daily">📅 Daily list</option>
+            <option value="recent">📆 Recent list</option>
+          </select>
+          <p class="hint" id="paperCount">Loading…</p>
+          <div class="paper-list" id="paperList"></div>
+          <p class="hint">Daily/recent papers appear after the next list refresh. Selecting a paper opens its PDF here.</p>
+        </div>
+      </div>
+
+      <div id="readerView" class="reader-view hidden">
+        <div class="reader-main">
+          <div class="reader-tools">
+            <button id="viewPdfBtn" class="view-btn active" onclick="switchView('pdf')">PDF</button>
+            <button id="viewTextBtn" class="view-btn" onclick="switchView('text')">Text</button>
+            <span class="view-hint" id="viewHint"></span>
+          </div>
+          <div id="pdfWrap" class="pdf-wrap">
+            <div id="pdfStatus" class="pdf-status hidden"></div>
+            <iframe id="pdfFrame" title="Paper PDF"></iframe>
+          </div>
+          <div id="textWrap" class="pdf-wrap text-wrap hidden">
+            <iframe id="textFrame" title="Paper full text"></iframe>
+            <button id="selBubble" class="sel-bubble hidden" onclick="attachSelection()">💬 Ask about this</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div id="chatResizer" class="resizer-right" title="Drag to resize"></div>
+    <aside class="pane pane-right" id="paneRight">
+      <div class="pane-right-inner">
+        <div class="paper-info hidden" id="paperInfo">
+          <span class="unpin" onclick="unpinPaper()" title="Close this paper">×</span>
+          <div class="info-line">
+            <button id="saveToggle" class="save-toggle" onclick="toggleSavePinned()">💾 Save</button>
+            <span class="pid" id="paperIdText"></span>
+            <a id="paperAbsLink" href="#" target="_blank" rel="noopener">arXiv ↗</a>
+            <a id="paperScixLink" href="#" target="_blank" rel="noopener">SciX ↗</a>
+          </div>
+        </div>
+        <div class="chat-header">
+          <h2>Conversation</h2>
+          <button onclick="newChat()">New Chat</button>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+          <div class="empty-chat" id="emptyChat"></div>
+        </div>
+        <div class="quick-prompts" id="quickPrompts"></div>
+        <div id="selChip" class="sel-chip hidden" onclick="clearSelection()" title="Click to remove the selected excerpt">
+          <span>📄</span><span class="sel-t" id="selChipText"></span><span class="sel-x">×</span>
+        </div>
+        <div class="chat-input">
+          <textarea id="chatInput" placeholder="Ask about this paper…" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+          <button id="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
+      </div>
+    </aside>
+
+    <button id="leftHandle" class="edge-handle left" data-tip="Settings" aria-label="Toggle settings panel" onclick="toggleLeft()">❯</button>
+    <button id="rightHandle" class="edge-handle right" data-tip="Chat" aria-label="Toggle chat panel" onclick="toggleRight()">❮</button>
+  </div>
+
+  <script>
+    const PRESETS = {
+      openai:     { label: 'OpenAI',           baseUrl: 'https://api.openai.com/v1',            model: 'gpt-4o-mini' },
+      deepseek:   { label: 'DeepSeek',         baseUrl: 'https://api.deepseek.com/v1',          model: 'deepseek-chat' },
+      openrouter: { label: 'OpenRouter',       baseUrl: 'https://openrouter.ai/api/v1',         model: 'openai/gpt-4o-mini' },
+      moonshot:   { label: 'Moonshot (Kimi)',  baseUrl: 'https://api.moonshot.cn/v1',           model: 'moonshot-v1-8k' },
+      zhipu:      { label: 'Zhipu (GLM)',      baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+      ollama:     { label: 'Local Ollama',     baseUrl: 'http://localhost:11434/v1',            model: 'llama3.1' }
+    };
+    const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv' };
+    const QUICK_PROMPTS = [
+      'Summarize this paper in 5 bullet points',
+      'What problem does this paper tackle, and what is the key idea?',
+      'What are the main results and their caveats?',
+      'Explain the method in simple terms',
+      'Which parts deserve a careful full read?'
+    ];
+
+    let library = [];
+    let libraryById = {};
+    let lastFiltered = [];
+    let pinned = null;
+    let chatHistory = [];   // session-only, never persisted
+    let streaming = false;
+    let configured = false;
+    let currentPdfUrl = null;
+    let pdfLoadedFor = null;
+    let pdfAbort = null;
+    let pdfTick = null;
+    let savedIds = new Set();
+    let currentView = 'pdf';
+    let fullText = '';
+    let textLoadedFor = null;   // arxiv_id the text iframe currently holds
+    let pendingSelection = '';  // last text selected in the text view
+    let activeSelection = '';   // excerpt attached to the next question
+    let pendingHighlights = []; // quotes to highlight once the text view is ready
+
+    function $(id) { return document.getElementById(id); }
+
+    function normalizeId(id) { return (id || '').replace(/v\\d+$/, ''); }
+
+    function escapeHtml(text) {
+      if (text === null || text === undefined) return '';
+      const div = document.createElement('div');
+      div.textContent = String(text);
+      return div.innerHTML;
+    }
+
+    // ---------- Pane layout ----------
+
+    function paneState() {
+      const layout = $('layout');
+      return {
+        left: layout.classList.contains('left-hidden'),
+        right: layout.classList.contains('right-hidden')
+      };
+    }
+
+    function updateToggleUI() {
+      const s = paneState();
+      $('leftHandle').textContent = s.left ? '❯' : '❮';
+      $('rightHandle').textContent = s.right ? '❮' : '❯';
+    }
+
+    function savePaneState() {
+      try {
+        const s = paneState();
+        s.chatW = parseInt(getComputedStyle($('layout')).getPropertyValue('--chat-w')) || 400;
+        localStorage.setItem('chatPaneStateV2', JSON.stringify(s));
+      } catch (e) {}
+    }
+
+    function toggleLeft() {
+      $('layout').classList.toggle('left-hidden');
+      updateToggleUI();
+      savePaneState();
+    }
+
+    function toggleRight() {
+      $('layout').classList.toggle('right-hidden');
+      updateToggleUI();
+      savePaneState();
+    }
+
+    function initPanes() {
+      // Default: the settings panel starts hidden; the chat panel starts shown.
+      const state = { left: true, right: false };
+      try {
+        const saved = JSON.parse(localStorage.getItem('chatPaneStateV2') || '{}');
+        if (typeof saved.left === 'boolean') state.left = saved.left;
+        if (typeof saved.right === 'boolean') state.right = saved.right;
+        if (saved.chatW) $('layout').style.setProperty('--chat-w', saved.chatW + 'px');
+      } catch (e) {}
+      $('layout').classList.toggle('left-hidden', state.left);
+      $('layout').classList.toggle('right-hidden', state.right);
+      updateToggleUI();
+      initChatResize();
+    }
+
+    function initChatResize() {
+      const layout = $('layout');
+      const resizer = $('chatResizer');
+      const right = $('paneRight');
+      if (!resizer || !right) return;
+      let dragging = false, startX = 0, startW = 0;
+      resizer.addEventListener('mousedown', e => {
+        dragging = true;
+        startX = e.clientX;
+        startW = right.getBoundingClientRect().width;
+        resizer.classList.add('active');
+        layout.classList.add('resizing');
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'col-resize';
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        const w = Math.max(280, Math.min(820, startW - (e.clientX - startX)));
+        layout.style.setProperty('--chat-w', w + 'px');
+      });
+      window.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove('active');
+        layout.classList.remove('resizing');
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        savePaneState();
+      });
+    }
+
+    // ---------- LLM settings ----------
+
+    function buildPresetOptions() {
+      const sel = $('preset');
+      Object.keys(PRESETS).forEach(k => {
+        const opt = document.createElement('option');
+        opt.value = k;
+        opt.textContent = PRESETS[k].label;
+        sel.appendChild(opt);
+      });
+    }
+
+    function applyPreset(key) {
+      const p = PRESETS[key];
+      if (!p) return;
+      if (p.baseUrl) $('baseUrl').value = p.baseUrl;
+      if (p.model) $('modelName').value = p.model;
+    }
+
+    function updateConfigStatus(cfg) {
+      const el = $('configStatus');
+      configured = Boolean(cfg.base_url && cfg.model && cfg.has_api_key);
+      const missing = [];
+      if (!cfg.base_url) missing.push('base URL');
+      if (!cfg.model) missing.push('model');
+      if (!cfg.has_api_key) missing.push('API key');
+      if (missing.length === 0) {
+        el.textContent = '✅ Ready — ' + cfg.model +
+          (cfg.key_storage === 'file' ? ' · key in local file' : '');
+        el.className = 'hint ok';
+      } else {
+        el.textContent = '⚠️ Missing: ' + missing.join(', ');
+        el.className = 'hint warn';
+      }
+    }
+
+    async function loadConfig() {
+      try {
+        const resp = await fetch('/api/chat/config');
+        const cfg = await resp.json();
+        $('baseUrl').value = cfg.base_url || '';
+        $('modelName').value = cfg.model || '';
+        const keyInput = $('apiKey');
+        keyInput.value = '';
+        keyInput.placeholder = cfg.has_api_key ? 'API key saved — leave blank to keep' : 'API key';
+        updateConfigStatus(cfg);
+      } catch (e) {
+        $('configStatus').textContent = '⚠️ Could not load config: ' + e.message;
+      }
+    }
+
+    async function saveConfig() {
+      const payload = {
+        base_url: $('baseUrl').value.trim(),
+        model: $('modelName').value.trim()
+      };
+      const key = $('apiKey').value.trim();
+      if (key) payload.api_key = key;
+      const status = $('configStatus');
+      try {
+        const resp = await fetch('/api/chat/config', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error || 'Failed to save');
+        $('apiKey').value = '';
+        await loadConfig();
+      } catch (e) {
+        status.textContent = '⚠️ ' + e.message;
+        status.className = 'hint warn';
+      }
+    }
+
+    // ---------- Paper library ----------
+
+    async function loadLibrary() {
+      try {
+        const resp = await fetch('/api/chat/library');
+        const data = await resp.json();
+        library = data.papers || [];
+        libraryById = {};
+        library.forEach(p => { libraryById[normalizeId(p.arxiv_id)] = p; });
+        savedIds = new Set(library.filter(p => p.source === 'saved')
+          .map(p => normalizeId(p.arxiv_id)));
+        renderPaperList();
+      } catch (e) {
+        $('paperCount').textContent = 'Could not load papers: ' + e.message;
+      }
+    }
+
+    function renderPaperList() {
+      const q = $('paperSearch').value.trim().toLowerCase();
+      const src = $('sourceFilter').value;
+      lastFiltered = library.filter(p => {
+        if (src !== 'all' && p.source !== src) return false;
+        if (!q) return true;
+        return ((p.title || '') + ' ' + (p.authors || '') + ' ' + p.arxiv_id).toLowerCase().includes(q);
+      });
+      $('paperCount').textContent = lastFiltered.length + ' paper' + (lastFiltered.length !== 1 ? 's' : '');
+      const container = $('paperList');
+      container.innerHTML = '';
+      if (lastFiltered.length === 0) {
+        container.innerHTML = '<p class="hint">No papers match.</p>';
+        return;
+      }
+      // Build items as real DOM nodes and bind each click via a closure over the
+      // exact paper object, so the handler can never reference a stale index.
+      lastFiltered.slice(0, 60).forEach(p => {
+        const active = pinned && normalizeId(pinned.arxiv_id) === normalizeId(p.arxiv_id);
+        const item = document.createElement('div');
+        item.className = 'plist-item' + (active ? ' active' : '');
+        const title = document.createElement('div');
+        title.className = 'title';
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + (p.source || '');
+        badge.textContent = SOURCE_LABELS[p.source] || (p.source || '');
+        title.appendChild(badge);
+        title.appendChild(document.createTextNode(p.title || ''));
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        const authors = p.authors || '';
+        meta.textContent = authors.substring(0, 80) + (authors.length > 80 ? '…' : '');
+        item.appendChild(title);
+        item.appendChild(meta);
+        item.addEventListener('click', () => pinPaper(p));
+        container.appendChild(item);
+      });
+    }
+
+    // ---------- Paper + PDF ----------
+
+    function pinPaper(p) {
+      if (!p || !p.arxiv_id) return;
+      pinned = p;
+      $('pickerView').classList.add('hidden');
+      $('readerView').classList.remove('hidden');
+      $('paperInfo').classList.remove('hidden');
+      $('paperIdText').textContent = 'arXiv:' + p.arxiv_id;
+      $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
+      $('paperScixLink').href = scixUrlFor(p);
+      renderSaveToggle();
+      resetReaderForNewPaper();
+      renderPaperList();
+      renderQuickPrompts();
+    }
+
+    function scixUrlFor(p) {
+      // SciXplorer record pages use ADS-style bibcodes; for arXiv papers the
+      // bibcode is <year>arXiv<digits><first-author-surname-initial>, the same
+      // convention arXiv itself uses for its ADS links. Fall back to a SciX
+      // search when the ID or author list does not fit the pattern.
+      const id = (p.arxiv_id || '').trim();
+      const authors = (p.authors || '').trim();
+      const m = id.match(/^(\\d{2})\\d{2}\\.(\\d{4,5})(v\\d+)?$/);
+      if (m && authors) {
+        const yy = parseInt(m[1], 10);
+        const year = (yy >= 95 ? 1900 : 2000) + yy;
+        const digits = id.replace('.', '').replace(/v\\d+$/, '');
+        const first = authors.split(',')[0].trim();
+        const initial = (first.split(/\\s+/).pop() || '').charAt(0).toUpperCase();
+        if (initial >= 'A' && initial <= 'Z') {
+          return 'https://scixplorer.org/abs/' + year + 'arXiv' + digits + initial;
+        }
+      }
+      return 'https://scixplorer.org/search?q=' + encodeURIComponent('arXiv:' + id);
+    }
+
+    function renderSaveToggle() {
+      const btn = $('saveToggle');
+      if (!pinned) return;
+      const saved = savedIds.has(normalizeId(pinned.arxiv_id));
+      btn.textContent = saved ? '✓ Saved' : '💾 Save';
+      btn.classList.toggle('saved', saved);
+      btn.title = saved ? 'Remove from your saved library' : 'Save to your library';
+    }
+
+    async function toggleSavePinned() {
+      if (!pinned) return;
+      const id = normalizeId(pinned.arxiv_id);
+      const wasSaved = savedIds.has(id);
+      if (wasSaved && !confirm('Remove this paper from your saved library?')) return;
+      try {
+        const body = wasSaved ? { arxiv_id: pinned.arxiv_id } : {
+          arxiv_id: pinned.arxiv_id,
+          title: pinned.title || '',
+          authors: pinned.authors || '',
+          abstract: pinned.abstract || '',
+          relevance_score: pinned.score || 0,
+          date_fetched: new Date().toISOString().slice(0, 10)
+        };
+        const resp = await fetch(wasSaved ? '/api/delete' : '/api/save', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error || 'The server rejected the change.');
+        if (wasSaved) savedIds.delete(id); else savedIds.add(id);
+        renderSaveToggle();
+        renderPaperList();
+      } catch (e) {
+        addSystemMessage('⚠️ ' + e.message);
+      }
+    }
+
+    async function showPdf(p) {
+      const frame = $('pdfFrame');
+      const status = $('pdfStatus');
+      const id = normalizeId(p.arxiv_id);
+      if (pdfLoadedFor === id && currentPdfUrl) {
+        frame.src = currentPdfUrl;
+        status.classList.add('hidden');
+        return;
+      }
+      if (pdfAbort) pdfAbort.abort();
+      if (pdfTick) { clearInterval(pdfTick); pdfTick = null; }
+      if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); currentPdfUrl = null; }
+      frame.removeAttribute('src');
+      status.className = 'pdf-status';
+      const arxivUrl = 'https://arxiv.org/pdf/' + encodeURIComponent(p.arxiv_id);
+      const started = Date.now();
+      const renderStatus = () => {
+        const secs = Math.round((Date.now() - started) / 1000);
+        status.innerHTML = '⏳ Loading PDF… ' + secs +
+          's &nbsp;·&nbsp; large papers can take a while &nbsp;·&nbsp; ' +
+          '<a href="' + arxivUrl + '" target="_blank">read on arXiv ↗</a>';
+      };
+      renderStatus();
+      pdfTick = setInterval(renderStatus, 1000);
+      const controller = new AbortController();
+      pdfAbort = controller;
+      const timer = setTimeout(() => controller.abort(), 180000);
+      try {
+        const resp = await fetch('/api/chat/pdf?arxiv_id=' + encodeURIComponent(p.arxiv_id),
+                                 { signal: controller.signal });
+        if (!resp.ok) throw new Error('Could not load the PDF (HTTP ' + resp.status + ')');
+        const blob = await resp.blob();
+        if (!pinned || normalizeId(pinned.arxiv_id) !== normalizeId(p.arxiv_id)) return;
+        currentPdfUrl = URL.createObjectURL(blob);
+        pdfLoadedFor = id;
+        frame.src = currentPdfUrl;
+        status.classList.add('hidden');
+      } catch (e) {
+        if (!pinned || normalizeId(pinned.arxiv_id) !== normalizeId(p.arxiv_id)) return;
+        const reason = (e && e.name === 'AbortError')
+          ? 'The PDF download timed out' : (e.message || String(e));
+        status.innerHTML = '⚠️ ' + escapeHtml(reason) +
+          ' — <a href="' + arxivUrl + '" target="_blank">read on arXiv ↗</a>';
+        status.className = 'pdf-status error';
+      } finally {
+        clearTimeout(timer);
+        if (pdfTick) { clearInterval(pdfTick); pdfTick = null; }
+        if (pdfAbort === controller) pdfAbort = null;
+      }
+    }
+
+    function unpinPaper() {
+      pinned = null;
+      if (pdfAbort) pdfAbort.abort();
+      if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); currentPdfUrl = null; }
+      pdfLoadedFor = null;
+      $('pdfFrame').removeAttribute('src');
+      $('pdfStatus').classList.add('hidden');
+      $('readerView').classList.add('hidden');
+      $('paperInfo').classList.add('hidden');
+      $('pickerView').classList.remove('hidden');
+      clearSelection();
+      renderPaperList();
+      renderQuickPrompts();
+    }
+
+    // ---------- Text view: selection + highlighting ----------
+
+    function resetReaderForNewPaper() {
+      fullText = '';
+      textLoadedFor = null;
+      pendingSelection = '';
+      clearSelection();
+      $('textFrame').removeAttribute('src');
+      $('selBubble').classList.add('hidden');
+      if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); currentPdfUrl = null; }
+      pdfLoadedFor = null;
+      $('pdfFrame').removeAttribute('src');
+      $('pdfStatus').classList.add('hidden');
+      switchView('text');   // Text is the default; PDF loads only on demand
+    }
+
+    function switchView(v) {
+      currentView = v;
+      $('viewPdfBtn').classList.toggle('active', v === 'pdf');
+      $('viewTextBtn').classList.toggle('active', v === 'text');
+      $('pdfWrap').classList.toggle('hidden', v !== 'pdf');
+      $('textWrap').classList.toggle('hidden', v !== 'text');
+      if (v === 'text' && pinned) loadText(pinned);
+      if (v === 'pdf' && pinned) showPdf(pinned);
+    }
+
+    function loadText(p) {
+      const frame = $('textFrame');
+      if (textLoadedFor === normalizeId(p.arxiv_id)) return;
+      $('viewHint').textContent = 'Loading full text…';
+      frame.src = '/api/chat/fulltext?arxiv_id=' + encodeURIComponent(p.arxiv_id);
+      const poll = setInterval(() => {
+        let doc = null;
+        try { doc = frame.contentDocument; } catch (e) {}
+        if (!doc || !doc.body || doc.readyState === 'loading') return;
+        if ((doc.body.innerText || '').length < 200) return;
+        clearInterval(poll);
+        fullText = doc.body.innerText;
+        textLoadedFor = normalizeId(p.arxiv_id);
+        $('viewHint').textContent = 'Select any text, then ask about it.';
+        doc.addEventListener('mouseup', onTextSelect);
+        doc.addEventListener('keyup', onTextSelect);
+        if (pendingHighlights.length) {
+          const nH = highlightQuotes(pendingHighlights);
+          pendingHighlights = [];
+          if (nH) addSystemMessage('️ Highlighted ' + nH + ' passage' + (nH > 1 ? 's' : '') + ' in the paper.');
+        }
+      }, 300);
+    }
+
+    function onTextSelect() {
+      const frame = $('textFrame');
+      const bubble = $('selBubble');
+      try {
+        const sel = frame.contentWindow.getSelection();
+        const txt = sel ? sel.toString().replace(/\\s+/g, ' ').trim() : '';
+        if (!txt || txt.length < 3 || !sel.rangeCount) { bubble.classList.add('hidden'); pendingSelection = ''; return; }
+        pendingSelection = txt;
+        const r = sel.getRangeAt(0).getBoundingClientRect();
+        bubble.style.left = Math.max(60, Math.min(r.left + r.width / 2, frame.clientWidth - 60)) + 'px';
+        bubble.style.top = Math.max(4, r.top - 36) + 'px';
+        bubble.classList.remove('hidden');
+      } catch (e) { bubble.classList.add('hidden'); }
+    }
+
+    function attachSelection() {
+      if (!pendingSelection) return;
+      activeSelection = pendingSelection;
+      pendingSelection = '';
+      $('selBubble').classList.add('hidden');
+      const chip = $('selChip');
+      $('selChipText').textContent = activeSelection.length > 90
+        ? activeSelection.substring(0, 90) + '…' : activeSelection;
+      chip.classList.remove('hidden');
+      try { $('textFrame').contentWindow.getSelection().removeAllRanges(); } catch (e) {}
+      $('chatInput').focus();
+    }
+
+    function clearSelection() {
+      activeSelection = '';
+      pendingSelection = '';
+      $('selChip').classList.add('hidden');
+      $('selBubble').classList.add('hidden');
+    }
+
+    function highlightQuotes(quotes) {
+      const frame = $('textFrame');
+      let doc;
+      try { doc = frame.contentDocument; } catch (e) { return 0; }
+      if (!doc || !doc.body) return 0;
+      let count = 0;
+      let first = null;
+      for (const q of quotes) {
+        const mk = highlightOne(doc, q);
+        if (mk) { count++; if (!first) first = mk; }
+      }
+      if (first) { try { first.scrollIntoView({ block: 'center' }); } catch (e) {} }
+      return count;
+    }
+
+    function highlightOne(doc, quote) {
+      const needle = quote.replace(/\\s+/g, ' ').trim();
+      if (needle.length < 8) return false;
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, null);
+      const nodes = [];
+      let n;
+      while ((n = walker.nextNode())) nodes.push(n);
+      const cleaned = nodes.map(nd => nd.data.replace(/\\s+/g, ' '));
+      const total = cleaned.join('');
+      const idx = total.indexOf(needle);
+      if (idx === -1) return false;
+      const end = idx + needle.length;
+      let pos = 0, sNode = null, sOff = 0, eNode = null, eOff = 0;
+      for (let i = 0; i < nodes.length; i++) {
+        const len = cleaned[i].length;
+        if (sNode === null && idx < pos + len) { sNode = nodes[i]; sOff = idx - pos; }
+        if (end <= pos + len) { eNode = nodes[i]; eOff = end - pos; break; }
+        pos += len;
+      }
+      if (!sNode || !eNode) return false;
+      try {
+        const range = doc.createRange();
+        range.setStart(sNode, cleanToRaw(sNode.data, sOff));
+        range.setEnd(eNode, cleanToRaw(eNode.data, eOff));
+        const mark = doc.createElement('mark');
+        mark.style.background = '#ffe08a';
+        range.surroundContents(mark);
+        return mark;
+      } catch (e) {
+        return null;   // range crossed a boundary; skip
+      }
+    }
+
+    function cleanToRaw(data, cleanOff) {
+      let c = 0, i = 0;
+      while (i < data.length && c < cleanOff) {
+        if (/\\s/.test(data[i])) {
+          c += 1;
+          while (i < data.length && /\\s/.test(data[i])) i++;
+        } else { c += 1; i += 1; }
+      }
+      return Math.min(i, data.length);
+    }
+
+    async function pinFromUrl(id) {
+      const norm = normalizeId(id);
+      let p = libraryById[norm] || libraryById[id];
+      if (!p) {
+        // Not in the local library — look it up on the arXiv API.
+        try {
+          const resp = await fetch('/api/arxiv/search?q=' + encodeURIComponent(id));
+          const data = await resp.json();
+          const hits = data.papers || [];
+          const hit = hits.find(x => normalizeId(x.id) === norm) || hits[0];
+          if (hit && hit.title) {
+            p = {
+              arxiv_id: hit.id || id,
+              title: hit.title,
+              authors: Array.isArray(hit.authors) ? hit.authors.join(', ') : (hit.authors || ''),
+              abstract: hit.abstract || '',
+              source: 'arxiv',
+              score: 0
+            };
+          }
+        } catch (e) { console.warn('arXiv lookup failed:', e); }
+      }
+      if (p) {
+        if (!libraryById[normalizeId(p.arxiv_id)]) {
+          library.push(p);
+          libraryById[normalizeId(p.arxiv_id)] = p;
+        }
+        pinPaper(p);
+      } else {
+        addSystemMessage('Could not find paper "' + id + '". Pick one from the list.');
+      }
+    }
+
+    // ---------- Prompt building ----------
+
+    function buildSystemPrompt() {
+      if (!pinned) {
+        return 'You are ArXistant, a research assistant for an astronomer. Answer questions about astronomy papers and research. Be concise and use Markdown.';
+      }
+      const hasFull = fullText && fullText.length > 200;
+      const body = hasFull ? fullText.substring(0, 24000) : (pinned.abstract || '(no abstract available)');
+      return [
+        'You are ArXistant, a paper reading helper. The user is reading ONE arXiv paper right now.',
+        '',
+        'Title: ' + pinned.title,
+        'Authors: ' + (pinned.authors || 'unknown'),
+        'arXiv ID: ' + pinned.arxiv_id,
+        '',
+        (hasFull ? 'Full text (may be truncated):' : 'Abstract:'),
+        body,
+        '',
+        'Rules:',
+        '- Ground your answers in the provided paper content. If a question needs details not present, say so briefly, then answer what you can.',
+        '- Be specific and concise. Use Markdown.',
+        '- Do not invent results, numbers or author statements.',
+        '- After your answer, list up to 3 short EXACT verbatim quotes from the paper that you referred to, each on its own line prefixed with "QUOTE: ". These highlight the passage for the reader. Omit if none apply.'
+      ].join('\\n');
+    }
+
+    // ---------- Chat ----------
+
+    function updateEmptyHint() {
+      const el = $('emptyChat');
+      if (!el) return;
+      if (!configured) {
+        el.textContent = 'Configure your LLM in the Settings panel (red arrow on the left), pick a paper, and start asking.';
+      } else if (pinned) {
+        el.textContent = 'Reading: “' + pinned.title + '”. Ask anything about it below.';
+      } else {
+        el.textContent = 'Pick a paper to read, or just ask a general question.';
+      }
+    }
+
+    function addMessage(role, text) {
+      const container = $('chatMessages');
+      const emptyEl = container.querySelector('.empty-chat');
+      if (emptyEl) emptyEl.remove();
+      const div = document.createElement('div');
+      div.className = 'message ' + role;
+      let label = '';
+      if (role === 'user') label = 'You';
+      else if (role === 'assistant') label = 'Assistant';
+      div.innerHTML = (label ? '<div class="label">' + label + '</div>' : '') + '<div class="msg-content"></div>';
+      const contentEl = div.querySelector('.msg-content');
+      if (role === 'assistant') contentEl.innerHTML = renderMarkdown(text);
+      else contentEl.textContent = text;
+      container.appendChild(div);
+      scrollChat();
+      return div;
+    }
+
+    function addSystemMessage(text) { addMessage('system', text); }
+
+    function scrollChat() {
+      const container = $('chatMessages');
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function renderQuickPrompts() {
+      const el = $('quickPrompts');
+      if (!pinned || chatHistory.length > 0 || streaming) { el.innerHTML = ''; return; }
+      el.innerHTML = QUICK_PROMPTS.map(q =>
+        '<button class="quick-chip" onclick="askQuick(this)">' + escapeHtml(q) + '</button>').join('');
+    }
+
+    function askQuick(btn) {
+      $('chatInput').value = btn.textContent;
+      sendMessage();
+    }
+
+    function newChat() {
+      if (chatHistory.length && !confirm('Start a new chat? The current conversation will be cleared.')) return;
+      chatHistory = [];
+      $('chatMessages').innerHTML = '<div class="empty-chat" id="emptyChat"></div>';
+      renderQuickPrompts();
+      updateEmptyHint();
+    }
+
+    async function sendMessage() {
+      const input = $('chatInput');
+      const btn = $('sendBtn');
+      const message = input.value.trim();
+      if (!message || streaming) return;
+      if (!configured) {
+        addSystemMessage('⚠️ Configure the LLM first: open the Settings panel (red arrow on the left), pick a provider preset (or fill base URL, model and API key) and click Save Settings.');
+        return;
+      }
+      input.value = '';
+      addMessage('user', message);
+      const holder = addMessage('assistant', '');
+      const contentEl = holder.querySelector('.msg-content');
+      contentEl.innerHTML = '<span class="thinking">Thinking…</span>';
+      renderQuickPrompts();
+
+      let llmMessage = message;
+      if (activeSelection) {
+        llmMessage = 'I selected this excerpt from the paper:\\n' + activeSelection + '\\n\\nMy question: ' + message;
+      }
+
+      const messages = [
+        { role: 'system', content: buildSystemPrompt() },
+        ...chatHistory,
+        { role: 'user', content: llmMessage }
+      ];
+
+      streaming = true;
+      btn.disabled = true;
+      let acc = '';
+      try {
+        const resp = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ messages: messages })
+        });
+        const ctype = resp.headers.get('Content-Type') || '';
+        if (!resp.ok || ctype.includes('application/json')) {
+          let msg = 'Request failed (HTTP ' + resp.status + ')';
+          try {
+            const d = await resp.json();
+            if (d.error) msg = d.error;
+            if (d.details) msg += '\\n' + d.details;
+          } catch (e) { /* keep default message */ }
+          throw new Error(msg);
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\\n');
+          buffer = lines.pop();
+          for (const raw of lines) {
+            const line = raw.trim();
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (payload === '[DONE]') continue;
+            let obj;
+            try { obj = JSON.parse(payload); } catch (e) { continue; }
+            if (obj.error) throw new Error(obj.error);
+            const choice = obj.choices && obj.choices[0];
+            const delta = choice && ((choice.delta && choice.delta.content) ||
+                                     (choice.message && choice.message.content));
+            if (delta) {
+              acc += delta;
+              contentEl.innerHTML = renderMarkdown(acc);
+              scrollChat();
+            }
+          }
+        }
+        let display = acc;
+        let quotes = (acc.match(/^QUOTE:\\s*(.+)$/gm) || [])
+          .map(s => s.replace(/^QUOTE:\\s*/, '').trim()).filter(Boolean);
+        if (quotes.length) {
+          display = acc.replace(/^QUOTE:.*$/gm, '').trim();
+          contentEl.innerHTML = renderMarkdown(display);
+        }
+        if (!display) contentEl.innerHTML = '<em>(empty response)</em>';
+        if (quotes.length && pinned) {
+          pendingHighlights = quotes;
+          if (textLoadedFor === normalizeId(pinned.arxiv_id)) {
+            const nH = highlightQuotes(quotes);
+            pendingHighlights = [];
+            switchView('text');
+            if (nH) addSystemMessage('️ Highlighted ' + nH + ' passage' + (nH > 1 ? 's' : '') + ' in the paper.');
+          } else {
+            switchView('text');   // loadText will apply pendingHighlights
+          }
+        }
+        clearSelection();
+        chatHistory.push({ role: 'user', content: llmMessage });
+        chatHistory.push({ role: 'assistant', content: display });
+        if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
+      } catch (e) {
+        holder.remove();
+        addSystemMessage('⚠️ ' + e.message);
+      } finally {
+        streaming = false;
+        btn.disabled = false;
+        input.focus();
+        renderQuickPrompts();
+      }
+    }
+
+    // ---------- Markdown rendering ----------
+
+    function renderMarkdown(text) {
+      if (!text) return '';
+      let codeBlocks = [];
+      text = text.replace(/```(\\w+)?\\n([\\s\\S]*?)```/g, function(match, lang, code) {
+        const id = codeBlocks.length;
+        codeBlocks.push('<pre><code>' + escapeHtml(code) + '</code></pre>');
+        return '___CODEBLOCK_' + id + '___';
+      });
+      let inlineCodes = [];
+      text = text.replace(/`([^`]+)`/g, function(match, code) {
+        const id = inlineCodes.length;
+        inlineCodes.push('<code>' + escapeHtml(code) + '</code>');
+        return '___INLINECODE_' + id + '___';
+      });
+      text = escapeHtml(text);
+      text = text.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+      text = text.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+      text = text.replace(/^#{1,6}\\s+(.+)$/gm, '<strong>$1</strong>');
+      text = text.replace(/^\\s*[-•]\\s+(.+)$/gm, '• $1');
+      text = text.replace(/\\n/g, '<br>');
+      inlineCodes.forEach((code, i) => { text = text.replace('___INLINECODE_' + i + '___', code); });
+      codeBlocks.forEach((code, i) => { text = text.replace('___CODEBLOCK_' + i + '___', code); });
+      return text;
+    }
+
+    // ---------- Init ----------
+
+    (async function init() {
+      buildPresetOptions();
+      initPanes();
+      updateEmptyHint();
+      await loadConfig();
+      await loadLibrary();
+      const params = new URLSearchParams(location.search);
+      const pid = params.get('paper');
+      if (pid) await pinFromUrl(decodeURIComponent(pid));
+      updateEmptyHint();
+    })();
+  </script>
+</body>
+</html>
+"""
+
+
 DATABASE_VIEWER_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1817,6 +3386,8 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     .notes textarea { width: 100%; min-height: 60px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 0.9em; box-sizing: border-box; }
     .notes button { margin-top: 6px; padding: 4px 12px; background: #b31b1b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
     .delete-btn { float: right; background: #c62828; color: white; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 0.8em; }
+    .chat-btn { float: right; margin-right: 8px; background: #555; color: white; border-radius: 4px; padding: 4px 10px; font-size: 0.8em; text-decoration: none; }
+    .chat-btn:hover { background: #333; }
     .nav { margin-bottom: 20px; display: flex; gap: 16px; }
     .nav a { color: #b31b1b; text-decoration: none; font-weight: bold; }
     .nav a:hover { text-decoration: underline; }
@@ -1871,6 +3442,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       container.innerHTML = papers.map(p => `
         <div class="paper">
           <button class="delete-btn" onclick="deletePaper('${p.arxiv_id}')">🗑 Delete</button>
+          <a class="chat-btn" href="/chat.html?paper=${p.arxiv_id}">💬 Chat</a>
           <h2><a href="https://arxiv.org/abs/${p.arxiv_id}" target="_blank">${escapeHtml(p.title)}</a></h2>
           <span class="score">Relevance: ${p.relevance_score}</span>
           <p class="authors"><strong>Authors:</strong> ${escapeHtml(p.authors)}</p>
@@ -2192,7 +3764,10 @@ def run_server(port=8765):
     # Bind to a specific loopback address when requested (e.g. 127.0.0.1 on
     # Android, where "localhost" can resolve to ::1 and not match the WebView).
     bind_host = os.environ.get("ARXISTANT_BIND", "localhost")
-    server = HTTPServer((bind_host, port), Handler)
+    # Threading server: chat completions stream for a long time and must not
+    # block the rest of the app. SQLite connections are opened per request,
+    # and the shared retrain state is guarded by a lock, so this is safe.
+    server = ThreadingHTTPServer((bind_host, port), Handler)
     print(f"Server running at http://{bind_host}:{port}")
     print(f"  Daily papers:     http://{bind_host}:{port}/")
     print(f"  Recent papers:    http://{bind_host}:{port}/recent.html")

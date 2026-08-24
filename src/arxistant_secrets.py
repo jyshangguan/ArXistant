@@ -19,6 +19,7 @@ except ImportError:
 SERVICE = "arxistant"
 
 WEBDAV_PASSWORD = "webdav_password"
+LLM_API_KEY = "llm_api_key"
 
 # Optional custom backend. Must expose get(key), set(key, value), delete(key).
 _backend = None

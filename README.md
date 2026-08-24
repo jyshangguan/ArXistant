@@ -24,6 +24,8 @@ personal preferences remain on your computer.
   editable positive and negative keywords provide direct control.
 - **Focused reading interface** — browse ranked papers with collapsible
   abstracts and save useful papers with one click.
+- **Paper reading helper** — chat with an LLM about one paper at a time,
+  grounded in its title and abstract, with streamed answers on the Chat page.
 - **Local paper database** — search saved papers, maintain notes, and remove
   records through a browser interface.
 - **arXiv and ADS search** — find and save papers without leaving ArXistant.
