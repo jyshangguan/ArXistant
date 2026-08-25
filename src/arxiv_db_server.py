@@ -2537,6 +2537,7 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
     -webkit-user-select: none; -webkit-touch-callout: none;
   }
   .arx-menu-item:active { background: #f0f0f0; }
+  .arx-menu-item:hover { background: #f0f0f0; }
   .arx-menu-item .icon { font-size: 18px; }
   .arx-tooltip {
     position: fixed; z-index: 10001; display: none;
@@ -2547,9 +2548,16 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
 </style>
 <script>
 (function () {
-    if (!/Android|WebView/i.test(navigator.userAgent)) return;
+    var IS_MOBILE = /Android|WebView/i.test(navigator.userAgent);
 
-    var toHide = document.querySelectorAll('.nav, .nav-bar, .nav-bar-bottom, .quick-links');
+    // Navigation is consolidated into this "..." menu; hide the legacy
+    // icon/link bars. On desktop the top .nav-bar keeps the refresh button,
+    // so it stays visible there (on mobile it is hidden and refresh happens
+    // via pull-down).
+    var hideSelectors = IS_MOBILE
+        ? '.nav, .nav-bar, .nav-bar-bottom, .quick-links'
+        : '.nav, .nav-bar a, .nav-bar-bottom, .quick-links';
+    var toHide = document.querySelectorAll(hideSelectors);
     for (var i = 0; i < toHide.length; i++) toHide[i].style.display = 'none';
 
     var onRecent = (window.location.pathname === '/recent.html');

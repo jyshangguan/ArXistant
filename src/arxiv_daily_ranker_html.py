@@ -557,14 +557,12 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
             date_str = datetime.now().strftime('%Y-%m-%d')
         title_text = f'arXiv Astro-ph Recent Papers — {date_str}'
         h1_text = f'arXiv Astro-ph Recent Papers — {date_str}'
-        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/daily.html"><span class="icon">📅</span><span class="label">Daily Papers</span></a>'
         refresh_onclick = 'refreshRecent()'
     else:
         # Use most recent arXiv release date (weekdays only)
         display_date = get_arxiv_release_date()
         title_text = f'arXiv Astro-ph New Papers — {display_date}'
         h1_text = f'arXiv Astro-ph New Papers — {display_date}'
-        nav_extra = '    <a class="nav-btn-secondary" href="http://localhost:8765/recent.html"><span class="icon">📅</span><span class="label">Recent Papers</span></a>'
         refresh_onclick = 'refreshDaily()'
 
     # Group papers by section
@@ -624,15 +622,10 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('  </style>')
     lines.append('</head>')
     lines.append('<body>')
+    # Navigation lives in the "..." menu injected by the server
+    # (MOBILE_MENU_SCRIPT); the top bar keeps only the refresh action.
     lines.append('  <div class="nav-bar">')
     lines.append('    <button class="refresh-btn" id="refreshBtn" onclick="' + refresh_onclick + '"><span class="icon">🔄</span><span class="label">Refresh</span></button>')
-    lines.append(nav_extra)
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/search-arxiv.html"><span class="icon">🔍</span><span class="label">Search arXiv</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/chat.html"><span class="icon">💬</span><span class="label">Chat</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html"><span class="icon">📂</span><span class="label">Saved Papers</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html"><span class="icon">📚</span><span class="label">My Publications</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html"><span class="icon">🧠</span><span class="label">ML Features</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/cloud-sync.html"><span class="icon">☁️</span><span class="label">Cloud Sync</span></a>')
     lines.append('  </div>')
     lines.append(f'  <h1>{h1_text}</h1>')
     lines.append(f'  <p class="total">Total papers: {len(scored_papers)} <span class="footnote" style="margin-left: 12px; border: none; padding: 0;">(generated: {generated_at})</span></p>')
@@ -670,15 +663,6 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
             lines.append(f'    <p class="abstract-full" id="{abstract_id}">{abstract_escaped}</p>')
             lines.append('  </div>')
 
-    lines.append('  <div class="nav-bar-bottom">')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/search-arxiv.html"><span class="icon">🔍</span><span class="label">Search arXiv</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/chat.html"><span class="icon">💬</span><span class="label">Chat</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/database.html"><span class="icon">📂</span><span class="label">Saved Papers</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/publications.html"><span class="icon">📚</span><span class="label">My Publications</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/ml-features.html"><span class="icon">🧠</span><span class="label">ML Features</span></a>')
-    lines.append('    <a class="nav-btn-secondary" href="http://localhost:8765/cloud-sync.html"><span class="icon">☁️</span><span class="label">Cloud Sync</span></a>')
-    lines.append(nav_extra)
-    lines.append('  </div>')
     lines.append('  <button class="scroll-top" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="To the top">▲</button>')
     lines.append('''<script>
 const IS_ANDROID = /Android|WebView/i.test(navigator.userAgent);
