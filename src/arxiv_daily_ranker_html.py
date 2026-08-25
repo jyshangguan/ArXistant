@@ -160,7 +160,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const btn = document.createElement('button');
         btn.id = 'save-btn-' + arxivId;
         btn.className = 'save-btn';
-        btn.style.cssText = 'margin-top:6px;padding:1px 6px;color:white;border:none;border-radius:3px;cursor:pointer;font-size:0.7em;white-space:nowrap;';
+        btn.style.cssText = 'padding:3px 10px;color:white;border:none;border-radius:12px;cursor:pointer;font-size:0.95em;white-space:nowrap;line-height:1.4;display:inline-flex;align-items:center;';
 
         if (savedIds.has(arxivId)) {
             btn.textContent = '✓';
@@ -174,7 +174,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             btn.dataset.saved = 'false';
         }
         btn.onclick = () => togglePaper(arxivId, title, authors, abstract, score, dateFetched);
-        paper.appendChild(btn);
+        const actions = paper.querySelector('.paper-actions');
+        if (actions) actions.appendChild(btn); else paper.appendChild(btn);
     });
 });
 </script>
@@ -190,7 +191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const style = document.createElement('style');
         style.id = 'arx-tag-styles';
         style.textContent = `
-            .tag-btn { margin-top:6px; margin-left:6px; padding:1px 6px; color:white; border:none; border-radius:3px; cursor:pointer; font-size:0.7em; white-space:nowrap; background:#00796b; }
+            .tag-btn { padding:3px 10px; color:white; border:none; border-radius:12px; cursor:pointer; font-size:0.95em; white-space:nowrap; background:#00796b; display:inline-flex; align-items:center; line-height:1.4; }
             .tag-btn:hover { opacity: 0.9; }
             .tag-editor { margin-top:8px; padding:10px 12px; background:#fff; border:1px solid #d7d7d7; border-radius:6px; }
             .tag-editor-title { font-size:0.8em; font-weight:bold; color:#00695c; margin-bottom:6px; }
@@ -406,7 +407,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else if (tries > 0) {
                     setTimeout(() => place(tries - 1), 150);
                 } else {
-                    paper.appendChild(btn);
+                    const actions = paper.querySelector('.paper-actions');
+                    if (actions) actions.appendChild(btn); else paper.appendChild(btn);
                 }
             };
             place(20);
@@ -625,7 +627,9 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('    h2 a:hover { text-decoration: underline; }')
     lines.append('    .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }')
     lines.append('    .paper:hover { background: #f5f5f5; }')
-    lines.append('    .score { display: inline-block; background: #b31b1b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-left: 8px; }')
+    lines.append('    .score { display: inline-block; background: #b31b1b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }')
+    lines.append('    .score-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }')
+    lines.append('    .paper-actions { display: inline-flex; align-items: center; gap: 6px; }')
     lines.append('    .authors { color: #555; font-size: 0.95em; margin: 8px 0; }')
     lines.append('    .et-al { color: #888; }')
     lines.append('    .abstract-btn { cursor: pointer; color: #b31b1b; font-size: 0.9em; font-weight: bold; background: none; border: none; padding: 0; margin-top: 8px; }')
@@ -647,7 +651,7 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('    .refresh-btn:hover .label { max-width: 120px; opacity: 1; padding-left: 6px; }')
     lines.append('    .scroll-top { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; background: #b31b1b; color: white; text-decoration: none; border-radius: 50%; font-size: 1.1em; font-weight: bold; cursor: pointer; border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 1000; transition: background 0.2s; }')
     lines.append('    .scroll-top:hover { background: #8a1515; }')
-    lines.append('    .save-btn { margin-top: 6px; padding: 1px 6px; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7em; white-space: nowrap; transition: background 0.2s; }')
+    lines.append('    .save-btn { padding: 3px 10px; color: white; border: none; border-radius: 12px; cursor: pointer; font-size: 0.95em; white-space: nowrap; line-height: 1.4; display: inline-flex; align-items: center; transition: background 0.2s; }')
     lines.append('    .save-btn:hover { opacity: 0.9; }')
     lines.append('    .footnote { font-size: 0.8em; color: #888; margin-top: 30px; padding-top: 10px; border-top: 1px solid #e0e0e0; }')
     lines.append('    .refresh-spinner { position: fixed; top: 16px; left: 50%; margin-left: -20px; width: 40px; height: 40px; border: 4px solid rgba(0,0,0,0.12); border-top: 4px solid #b31b1b; border-radius: 50%; animation: arxistant-spin 0.8s linear infinite; z-index: 9999; }')
@@ -687,8 +691,11 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
 
             lines.append('  <div class="paper">')
             lines.append(f'    <h2>{i}. <span class="arxiv-id"><a href="{arxiv_url}" target="_blank">arXiv:{paper["id"]}</a></span> — <a href="https://alphaxiv.org/abs/{paper["id"]}" target="_blank">{title_escaped}</a></h2>')
+            lines.append('    <div class="score-row">')
             if norm_score > 0:
-                lines.append(f'    <span class="score">Relevance: {norm_score}/100</span>')
+                lines.append(f'      <span class="score">Relevance: {norm_score}/100</span>')
+            lines.append('      <span class="paper-actions"></span>')
+            lines.append('    </div>')
             lines.append(f'    <p class="authors"><strong>Authors:</strong> {author_str}</p>')
             lines.append(f'    <button class="abstract-btn" onclick="document.getElementById(\'{abstract_id}\').style.display = (document.getElementById(\'{abstract_id}\').style.display === \'block\' ? \'none\' : \'block\'); this.textContent = (document.getElementById(\'{abstract_id}\').style.display === \'block\' ? \'▾ Hide abstract\' : \'▸ Show abstract\');">▸ Show abstract</button>')
             lines.append(f'    <p class="abstract-full" id="{abstract_id}">{abstract_escaped}</p>')

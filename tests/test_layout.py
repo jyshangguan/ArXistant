@@ -62,6 +62,18 @@ class DailyRecentLayoutTests(unittest.TestCase):
         html = _render("new")
         self.assertIn("h1.getAttribute('data-date')", html)
 
+    def test_action_buttons_live_next_to_relevance(self):
+        html = _render("new")
+        # The save/chat/tag buttons are injected into a .paper-actions
+        # container that sits in the same row as the relevance pill.
+        self.assertIn('class="score-row"', html)
+        self.assertIn('class="paper-actions"', html)
+        self.assertIn("paper.querySelector('.paper-actions')", html)
+        self.assertIn("paper.querySelector('.paper-actions')",
+                      server.SAVE_BUTTON_SCRIPT)
+        self.assertIn("paper.querySelector('.paper-actions')",
+                      server.CHAT_LINK_SCRIPT)
+
 
 class OverflowMenuTests(unittest.TestCase):
     def test_menu_offers_daily_papers_off_the_ranked_pages(self):

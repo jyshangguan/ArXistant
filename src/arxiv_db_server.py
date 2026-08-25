@@ -3065,7 +3065,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const btn = document.createElement('button');
         btn.id = 'save-btn-' + arxivId;
         btn.className = 'save-btn';
-        btn.style.cssText = 'margin-top:6px;padding:1px 6px;color:white;border:none;border-radius:3px;cursor:pointer;font-size:0.7em;white-space:nowrap;';
+        btn.style.cssText = 'padding:3px 10px;color:white;border:none;border-radius:12px;cursor:pointer;font-size:0.95em;white-space:nowrap;line-height:1.4;display:inline-flex;align-items:center;';
 
         if (savedIds.has(arxivId)) {
             btn.textContent = '✓';
@@ -3077,7 +3077,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             btn.dataset.saved = 'false';
         }
         btn.onclick = () => togglePaper(arxivId, title, authors, abstract, score, dateFetched);
-        paper.appendChild(btn);
+        const actions = paper.querySelector('.paper-actions');
+        if (actions) actions.appendChild(btn); else paper.appendChild(btn);
     });
 });
 </script>
@@ -3093,7 +3094,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const style = document.createElement('style');
         style.id = 'arx-tag-styles';
         style.textContent = `
-            .tag-btn { margin-top:6px; margin-left:6px; padding:1px 6px; color:white; border:none; border-radius:3px; cursor:pointer; font-size:0.7em; white-space:nowrap; background:#00796b; }
+            .tag-btn { padding:3px 10px; color:white; border:none; border-radius:12px; cursor:pointer; font-size:0.95em; white-space:nowrap; background:#00796b; display:inline-flex; align-items:center; line-height:1.4; }
             .tag-btn:hover { opacity: 0.9; }
             .tag-editor { margin-top:8px; padding:10px 12px; background:#fff; border:1px solid #d7d7d7; border-radius:6px; }
             .tag-editor-title { font-size:0.8em; font-weight:bold; color:#00695c; margin-bottom:6px; }
@@ -3309,7 +3310,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else if (tries > 0) {
                     setTimeout(() => place(tries - 1), 150);
                 } else {
-                    paper.appendChild(btn);
+                    const actions = paper.querySelector('.paper-actions');
+                    if (actions) actions.appendChild(btn); else paper.appendChild(btn);
                 }
             };
             place(20);
@@ -3333,10 +3335,10 @@ document.addEventListener('DOMContentLoaded', () => {
         link.className = 'chat-link-btn';
         link.title = 'Read this paper with the Chat helper';
         link.textContent = '💬';
-        link.style.cssText = 'margin-top:6px;margin-left:14px;padding:1px 6px;color:white;border:none;border-radius:3px;font-size:0.7em;white-space:nowrap;background:#555;text-decoration:none;display:inline-block;';
+        link.style.cssText = 'padding:3px 10px;color:white;border:none;border-radius:12px;font-size:0.95em;white-space:nowrap;background:#555;text-decoration:none;display:inline-flex;align-items:center;line-height:1.4;';
         // The save button is appended asynchronously (it awaits a fetch), so
         // wait for it and insert the chat button right after it; fall back to
-        // appending to the paper if the save button never appears.
+        // the actions row (or the paper) if the save button never appears.
         const place = (tries) => {
             const saveBtn = document.getElementById('save-btn-' + arxivId);
             if (saveBtn) {
@@ -3344,7 +3346,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (tries > 0) {
                 setTimeout(() => place(tries - 1), 150);
             } else {
-                paper.appendChild(link);
+                const actions = paper.querySelector('.paper-actions');
+                if (actions) actions.appendChild(link); else paper.appendChild(link);
             }
         };
         place(20);
