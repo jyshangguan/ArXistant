@@ -142,7 +142,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const papers = document.querySelectorAll('.paper');
-    const dateFetched = document.querySelector('h1').textContent;
+    const h1 = document.querySelector('h1');
+    const dateFetched = (h1 && (h1.getAttribute('data-date') || h1.textContent)) || '';
     papers.forEach((paper) => {
         const arxivLink = paper.querySelector('.arxiv-id a');
         const titleLink = paper.querySelector('h2 > a');
@@ -226,7 +227,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             authors: authorsEl ? authorsEl.textContent.replace('Authors:', '').trim() : '',
             abstract: abstractEl ? abstractEl.textContent : '',
             score: parseInt(scoreText) || 0,
-            dateFetched: h1 ? h1.textContent : ''
+            dateFetched: h1 ? (h1.getAttribute('data-date') || h1.textContent) : ''
         };
     }
 
@@ -362,11 +363,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!savedTags[meta.arxivId]) savedTags[meta.arxivId] = [];
                 openTagEditor(paper, meta);
             };
-            // The save button is appended asynchronously; place the tag button
-            // right after it once it exists.
+            // The save and chat buttons are appended asynchronously; keep the
+            // tag button right after the chat button (save, chat, tag order).
             const place = (tries) => {
+                const chatBtn = paper.querySelector('.chat-link-btn');
                 const saveBtn = document.getElementById('save-btn-' + meta.arxivId);
-                if (saveBtn) {
+                if (chatBtn) {
+                    chatBtn.insertAdjacentElement('afterend', btn);
+                } else if (saveBtn) {
                     saveBtn.insertAdjacentElement('afterend', btn);
                 } else if (tries > 0) {
                     setTimeout(() => place(tries - 1), 150);
@@ -552,18 +556,20 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     """Generate HTML output with toggle-abstract buttons, grouped by section."""
     generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    # The visible title carries no date; the list date stays in a data
+    # attribute so save buttons can still record it as date_fetched.
     if page_type == 'recent':
         if date_str is None:
             date_str = datetime.now().strftime('%Y-%m-%d')
-        title_text = f'arXiv Astro-ph Recent Papers — {date_str}'
-        h1_text = f'arXiv Astro-ph Recent Papers — {date_str}'
+        title_text = 'arXiv Astro-ph Recent Papers'
+        page_date = date_str
         refresh_onclick = 'refreshRecent()'
     else:
         # Use most recent arXiv release date (weekdays only)
-        display_date = get_arxiv_release_date()
-        title_text = f'arXiv Astro-ph New Papers — {display_date}'
-        h1_text = f'arXiv Astro-ph New Papers — {display_date}'
+        page_date = get_arxiv_release_date()
+        title_text = 'arXiv Astro-ph New Papers'
         refresh_onclick = 'refreshDaily()'
+    h1_text = title_text
 
     # Group papers by section
     sections = {}
@@ -600,22 +606,18 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('    .arxiv-id { color: #666; font-size: 0.85em; font-weight: normal; }')
     lines.append('    .arxiv-id a { color: #666; text-decoration: none; }')
     lines.append('    .arxiv-id a:hover { text-decoration: underline; }')
-    lines.append('    .nav-bar { display: flex; gap: 12px; margin: 12px 0 20px 0; flex-wrap: wrap; }')
-    lines.append('    .nav-bar-bottom { display: flex; gap: 12px; margin: 30px 0 10px 0; flex-wrap: wrap; }')
-    lines.append('    .nav-btn { display: inline-block; padding: 6px 10px; background: #b31b1b; color: white; text-decoration: none; border-radius: 6px; font-size: 1em; font-weight: 500; transition: background 0.2s, padding 0.5s ease; overflow: hidden; white-space: nowrap; }')
-    lines.append('    .nav-btn:hover { background: #8a1515; padding: 6px 14px; }')
-    lines.append('    .nav-btn-secondary { display: inline-block; padding: 6px 10px; background: #555; color: white; text-decoration: none; border-radius: 6px; font-size: 1em; font-weight: 500; transition: background 0.2s, padding 0.5s ease; overflow: hidden; white-space: nowrap; }')
-    lines.append('    .nav-btn-secondary:hover { background: #333; padding: 6px 14px; }')
-    lines.append('    .nav-btn .icon, .nav-btn-secondary .icon, .refresh-btn .icon { display: inline-block; vertical-align: middle; font-size: 1.2em; }')
-    lines.append('    .nav-btn .label, .nav-btn-secondary .label, .refresh-btn .label { display: inline-block; max-width: 0; overflow: hidden; white-space: nowrap; vertical-align: middle; opacity: 0; transition: max-width 0.5s ease, opacity 0.5s ease, padding 0.5s ease; padding-left: 0; }')
-    lines.append('    .nav-btn:hover .label, .nav-btn-secondary:hover .label, .refresh-btn:hover .label { max-width: 200px; opacity: 1; padding-left: 6px; }')
+    # The refresh pill is pinned next to the server-injected "..." menu
+    # button (top: 12px; right: 12px; width: 46px).
+    lines.append('    .refresh-btn { position: fixed; top: 12px; right: 66px; z-index: 10000; height: 30px; border-radius: 15px; background: rgba(200, 200, 200, 0.5); border: 1px solid rgba(255, 255, 255, 0.5); color: #333; display: flex; align-items: center; padding: 0 12px; cursor: pointer; font-size: 14px; font-weight: 500; box-shadow: 0 1px 4px rgba(0,0,0,0.15); -webkit-tap-highlight-color: transparent; overflow: hidden; white-space: nowrap; }')
+    lines.append('    .refresh-btn:hover { background: rgba(170, 170, 170, 0.6); }')
+    lines.append('    .refresh-btn:disabled { opacity: 0.6; cursor: wait; }')
+    lines.append('    .refresh-btn .icon { font-size: 15px; }')
+    lines.append('    .refresh-btn .label { max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; transition: max-width 0.4s ease, opacity 0.4s ease, padding 0.4s ease; }')
+    lines.append('    .refresh-btn:hover .label { max-width: 120px; opacity: 1; padding-left: 6px; }')
     lines.append('    .scroll-top { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; background: #b31b1b; color: white; text-decoration: none; border-radius: 50%; font-size: 1.1em; font-weight: bold; cursor: pointer; border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 1000; transition: background 0.2s; }')
     lines.append('    .scroll-top:hover { background: #8a1515; }')
     lines.append('    .save-btn { margin-top: 6px; padding: 1px 6px; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7em; white-space: nowrap; transition: background 0.2s; }')
     lines.append('    .save-btn:hover { opacity: 0.9; }')
-    lines.append('    .refresh-btn { display: inline-block; padding: 6px 10px; background: #1976d2; color: white; border: none; border-radius: 6px; font-size: 1em; font-weight: 500; cursor: pointer; transition: background 0.2s, padding 0.5s ease; overflow: hidden; white-space: nowrap; }')
-    lines.append('    .refresh-btn:hover { background: #1565c0; padding: 6px 14px; }')
-    lines.append('    .refresh-btn:disabled { background: #90a4ae; cursor: not-allowed; }')
     lines.append('    .footnote { font-size: 0.8em; color: #888; margin-top: 30px; padding-top: 10px; border-top: 1px solid #e0e0e0; }')
     lines.append('    .refresh-spinner { position: fixed; top: 16px; left: 50%; margin-left: -20px; width: 40px; height: 40px; border: 4px solid rgba(0,0,0,0.12); border-top: 4px solid #b31b1b; border-radius: 50%; animation: arxistant-spin 0.8s linear infinite; z-index: 9999; }')
     lines.append('    @keyframes arxistant-spin { to { transform: rotate(360deg); } }')
@@ -623,11 +625,9 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
     lines.append('</head>')
     lines.append('<body>')
     # Navigation lives in the "..." menu injected by the server
-    # (MOBILE_MENU_SCRIPT); the top bar keeps only the refresh action.
-    lines.append('  <div class="nav-bar">')
-    lines.append('    <button class="refresh-btn" id="refreshBtn" onclick="' + refresh_onclick + '"><span class="icon">🔄</span><span class="label">Refresh</span></button>')
-    lines.append('  </div>')
-    lines.append(f'  <h1>{h1_text}</h1>')
+    # (MOBILE_MENU_SCRIPT); the refresh pill is pinned next to it.
+    lines.append('  <button class="refresh-btn" id="refreshBtn" onclick="' + refresh_onclick + '" title="Sync & refresh"><span class="icon">🔄</span><span class="label">Refresh</span></button>')
+    lines.append(f'  <h1 data-date="{page_date}">{h1_text}</h1>')
     lines.append(f'  <p class="total">Total papers: {len(scored_papers)} <span class="footnote" style="margin-left: 12px; border: none; padding: 0;">(generated: {generated_at})</span></p>')
 
     # Build ordered section list: SECTION_ORDER first, then any remaining sections
@@ -665,7 +665,6 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
 
     lines.append('  <button class="scroll-top" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="To the top">▲</button>')
     lines.append('''<script>
-const IS_ANDROID = /Android|WebView/i.test(navigator.userAgent);
 let originalBtnHtml = null;
 
 function refreshButton() { return document.getElementById('refreshBtn'); }
@@ -674,17 +673,16 @@ function showBusy() {
     const btn = refreshButton();
     if (btn) {
         originalBtnHtml = btn.innerHTML;
-        btn.innerHTML = '<span class="icon">⏳</span><span class="label">Syncing & Refreshing...</span>';
+        btn.innerHTML = '<span class="icon">⏳</span>';
+        btn.title = 'Syncing & refreshing…';
         btn.disabled = true;
     }
-    if (IS_ANDROID) {
-        let el = document.getElementById('refresh-spinner');
-        if (!el) {
-            el = document.createElement('div');
-            el.id = 'refresh-spinner';
-            el.className = 'refresh-spinner';
-            document.body.appendChild(el);
-        }
+    let el = document.getElementById('refresh-spinner');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'refresh-spinner';
+        el.className = 'refresh-spinner';
+        document.body.appendChild(el);
     }
 }
 
@@ -699,8 +697,8 @@ function clearBusy() {
     if (el) el.remove();
 }
 
-async function doRefresh(endpoint, confirmMsg) {
-    if (!IS_ANDROID && !confirm(confirmMsg)) return;
+async function doRefresh(endpoint, confirmMsg, askConfirm) {
+    if (askConfirm && !confirm(confirmMsg)) return;
     showBusy();
     try {
         // 1. Sync first (pull the latest saved papers from Nutstore), best effort.
@@ -720,31 +718,29 @@ async function doRefresh(endpoint, confirmMsg) {
     }
 }
 
-async function refreshDaily() {
-    await doRefresh('/api/refresh-daily', 'Sync your library and re-fetch papers from arXiv?');
+async function refreshDaily(fromPull) {
+    await doRefresh('/api/refresh-daily', 'Sync your library and re-fetch papers from arXiv?', !fromPull);
 }
 
-async function refreshRecent() {
-    await doRefresh('/api/refresh-recent', 'Sync your library and re-fetch recent papers from arXiv?');
+async function refreshRecent(fromPull) {
+    await doRefresh('/api/refresh-recent', 'Sync your library and re-fetch recent papers from arXiv?', !fromPull);
 }
 
-if (IS_ANDROID) {
-    const btn = refreshButton();
-    if (btn) btn.style.display = 'none';
-    let startY = null;
-    document.addEventListener('touchstart', function (e) {
-        if (window.scrollY <= 0) startY = e.touches[0].clientY;
-    }, { passive: true });
-    document.addEventListener('touchend', function (e) {
-        if (startY === null) return;
-        const dy = e.changedTouches[0].clientY - startY;
-        startY = null;
-        if (window.scrollY <= 0 && dy > 120) {
-            const b = refreshButton();
-            if (b) b.click();
-        }
-    }, { passive: true });
-}
+// Pull down at the top of the page to refresh (any touch device); the
+// deliberate gesture skips the confirmation dialog.
+let pullStartY = null;
+document.addEventListener('touchstart', function (e) {
+    if (window.scrollY <= 0) pullStartY = e.touches[0].clientY;
+}, { passive: true });
+document.addEventListener('touchend', function (e) {
+    if (pullStartY === null) return;
+    const dy = e.changedTouches[0].clientY - pullStartY;
+    pullStartY = null;
+    if (window.scrollY <= 0 && dy > 120) {
+        if (window.location.pathname === '/recent.html') refreshRecent(true);
+        else refreshDaily(true);
+    }
+}, { passive: true });
 </script>''')
     lines.append(SAVE_BUTTON_SCRIPT)
     lines.append('</body>')

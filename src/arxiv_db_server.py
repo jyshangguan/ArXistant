@@ -2624,19 +2624,21 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
     var IS_MOBILE = /Android|WebView/i.test(navigator.userAgent);
 
     // Navigation is consolidated into this "..." menu; hide the legacy
-    // icon/link bars. On desktop the top .nav-bar keeps the refresh button,
-    // so it stays visible there (on mobile it is hidden and refresh happens
-    // via pull-down).
+    // icon/link bars. The refresh pill on daily/recent pages is fixed
+    // positioned next to this button and is not hidden.
     var hideSelectors = IS_MOBILE
         ? '.nav, .nav-bar, .nav-bar-bottom, .quick-links'
         : '.nav, .nav-bar a, .nav-bar-bottom, .quick-links';
     var toHide = document.querySelectorAll(hideSelectors);
     for (var i = 0; i < toHide.length; i++) toHide[i].style.display = 'none';
 
-    var onRecent = (window.location.pathname === '/recent.html');
-    var toggleItem = onRecent
-        ? { icon: '📅', label: 'Daily Papers', href: '/daily.html', desc: 'Ranked arXiv submissions for today' }
-        : { icon: '📆', label: 'Recent Papers', href: '/recent.html', desc: 'Ranked papers from the last five days' };
+    // On the daily page the menu offers Recent Papers; everywhere else
+    // (recent and all other pages) it offers Daily Papers.
+    var path = window.location.pathname;
+    var onDaily = (path === '/daily.html' || path === '/' || path === '/index.html');
+    var toggleItem = onDaily
+        ? { icon: '📆', label: 'Recent Papers', href: '/recent.html', desc: 'Ranked papers from the last five days' }
+        : { icon: '📅', label: 'Daily Papers', href: '/daily.html', desc: 'Ranked arXiv submissions for today' };
 
     var ITEMS = [
         toggleItem,
@@ -3030,7 +3032,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const papers = document.querySelectorAll('.paper');
-    const dateFetched = document.querySelector('h1').textContent;
+    const h1 = document.querySelector('h1');
+    const dateFetched = (h1 && (h1.getAttribute('data-date') || h1.textContent)) || '';
     papers.forEach((paper) => {
         const arxivLink = paper.querySelector('.arxiv-id a');
         const titleLink = paper.querySelector('h2 > a');
@@ -3112,7 +3115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             authors: authorsEl ? authorsEl.textContent.replace('Authors:', '').trim() : '',
             abstract: abstractEl ? abstractEl.textContent : '',
             score: parseInt(scoreText) || 0,
-            dateFetched: h1 ? h1.textContent : ''
+            dateFetched: h1 ? (h1.getAttribute('data-date') || h1.textContent) : ''
         };
     }
 
@@ -3248,11 +3251,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!savedTags[meta.arxivId]) savedTags[meta.arxivId] = [];
                 openTagEditor(paper, meta);
             };
-            // The save button is appended asynchronously; place the tag button
-            // right after it once it exists.
+            // The save and chat buttons are appended asynchronously; keep the
+            // tag button right after the chat button (save, chat, tag order).
             const place = (tries) => {
+                const chatBtn = paper.querySelector('.chat-link-btn');
                 const saveBtn = document.getElementById('save-btn-' + meta.arxivId);
-                if (saveBtn) {
+                if (chatBtn) {
+                    chatBtn.insertAdjacentElement('afterend', btn);
+                } else if (saveBtn) {
                     saveBtn.insertAdjacentElement('afterend', btn);
                 } else if (tries > 0) {
                     setTimeout(() => place(tries - 1), 150);

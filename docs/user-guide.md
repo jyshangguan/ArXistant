@@ -37,10 +37,16 @@ Click a paper title to open its arXiv record and use the disclosure control to
 read its abstract. The relevance score reflects the current local model and any
 matching custom keywords.
 
+Page navigation lives in the **…** menu at the top right; the **🔄** pill next
+to it syncs your library and re-fetches the list (desktop asks for
+confirmation first), and on touch devices pulling down at the top of the page
+refreshes as well. On pages other than Daily/Recent Papers the menu offers
+**Daily Papers**.
+
 Click **💾** to save a useful paper. Saved papers become positive examples for
 future model training. Removing a saved paper updates the local training state.
 
-Click **🏷️** next to the save button to organize a paper with tags. If the
+Click **🏷️** (next to the 💬 chat button) to organize a paper with tags. If the
 paper is not saved yet, ArXistant saves it first and then opens a small tag
 editor: type a tag and press Enter (or **Add**) to attach it, **✕** to remove
 one, and **💾 Save tags** to store the change. Tags are stored with the saved
