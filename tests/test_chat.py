@@ -198,7 +198,15 @@ class ChatLibraryTests(unittest.TestCase):
                 " (arxiv_id, title, authors, abstract, relevance_score)"
                 " VALUES ('2606.00001', 'Saved paper', 'A. Author',"
                 " 'An abstract', 42)")
+            conn.execute(
+                "CREATE TABLE my_publications ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " bibcode TEXT NOT NULL UNIQUE, title TEXT NOT NULL,"
+                " authors TEXT, abstract TEXT, keywords TEXT, year TEXT,"
+                " date_added TEXT DEFAULT CURRENT_TIMESTAMP)")
             conn.commit()
+            import arxistant_sync
+            arxistant_sync.migrate_db(conn)
             conn.close()
 
             daily_path = os.path.join(tmp, "daily.json")
@@ -243,7 +251,15 @@ class ChatLibraryTests(unittest.TestCase):
                 " relevance_score INTEGER DEFAULT 0, date_fetched TEXT,"
                 " date_saved TEXT DEFAULT CURRENT_TIMESTAMP,"
                 " notes TEXT DEFAULT '', updated_at TEXT)")
+            conn.execute(
+                "CREATE TABLE my_publications ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " bibcode TEXT NOT NULL UNIQUE, title TEXT NOT NULL,"
+                " authors TEXT, abstract TEXT, keywords TEXT, year TEXT,"
+                " date_added TEXT DEFAULT CURRENT_TIMESTAMP)")
             conn.commit()
+            import arxistant_sync
+            arxistant_sync.migrate_db(conn)
             conn.close()
 
             with mock.patch.object(arxiv_db_server, "DB_PATH", db_path), \

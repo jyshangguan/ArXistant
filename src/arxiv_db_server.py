@@ -541,9 +541,9 @@ def collect_chat_library():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "SELECT arxiv_id, title, authors, abstract, relevance_score "
+        "SELECT arxiv_id, title, authors, abstract, relevance_score, notes, highlights "
         "FROM saved_papers ORDER BY date_saved DESC")
-    for arxiv_id, title, authors, abstract, score in c.fetchall():
+    for arxiv_id, title, authors, abstract, score, notes, highlights in c.fetchall():
         papers[arxiv_id] = {
             "arxiv_id": arxiv_id,
             "title": title or "",
@@ -551,6 +551,8 @@ def collect_chat_library():
             "abstract": abstract or "",
             "source": "saved",
             "score": score or 0,
+            "notes": notes or "",
+            "highlights": parse_highlights(highlights),
         }
     conn.close()
     for source, path in (("daily", DAILY_JSON), ("recent", RECENT_JSON)):
@@ -1252,6 +1254,49 @@ def split_tags(value):
     return [t for t in (part.strip() for part in str(value).split(",")) if t]
 
 
+def normalize_highlights(value):
+    """Canonicalize a highlight list into the JSON TEXT column format.
+
+    Accepts a list of passage quotes (or a JSON string encoding one). Quotes
+    are whitespace-normalized, deduplicated, and bounded so the column cannot
+    grow without limit. Returns the JSON array string.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return ""
+    if not isinstance(value, (list, tuple)):
+        return ""
+    seen = set()
+    out = []
+    for item in value:
+        quote = " ".join(str(item).split())
+        if len(quote) < 3 or len(quote) > 2000:
+            continue
+        key = quote.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(quote)
+        if len(out) >= 200:
+            break
+    return json.dumps(out, ensure_ascii=False) if out else ""
+
+
+def parse_highlights(value):
+    """Parse the highlights column back into a list of quotes."""
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1268,7 +1313,8 @@ def init_db():
             date_fetched TEXT,
             date_saved TEXT DEFAULT CURRENT_TIMESTAMP,
             notes TEXT DEFAULT '',
-            tags TEXT DEFAULT ''
+            tags TEXT DEFAULT '',
+            highlights TEXT DEFAULT ''
         )
     ''')
     
@@ -2045,18 +2091,21 @@ class Handler(BaseHTTPRequestHandler):
             c = conn.cursor()
             try:
                 arxiv_id = data.get("arxiv_id", "")
-                c.execute("SELECT notes, tags FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
+                c.execute("SELECT notes, tags, highlights FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
                 existing = c.fetchone()
                 was_saved = existing is not None
-                # Re-saving an existing paper must not wipe notes or tags the
-                # user already stored; callers only override what they send.
+                # Re-saving an existing paper must not wipe notes, tags, or
+                # highlights the user already stored; callers only override
+                # what they send.
                 notes = data.get("notes", existing[0] if existing else "") or ""
                 tags = normalize_tags(data["tags"]) if "tags" in data else (
                     existing[1] if existing else "") or ""
+                highlights = normalize_highlights(data["highlights"]) if "highlights" in data else (
+                    existing[2] if existing else "") or ""
                 c.execute('''
                     INSERT OR REPLACE INTO saved_papers 
-                    (arxiv_id, title, authors, abstract, relevance_score, date_fetched, notes, tags, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (arxiv_id, title, authors, abstract, relevance_score, date_fetched, notes, tags, highlights, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     arxiv_id,
                     data.get("title", ""),
@@ -2066,6 +2115,7 @@ class Handler(BaseHTTPRequestHandler):
                     data.get("date_fetched", ""),
                     notes,
                     tags,
+                    highlights,
                     arxistant_sync.now_iso()
                 ))
                 conn.commit()
@@ -2100,10 +2150,15 @@ class Handler(BaseHTTPRequestHandler):
             c = conn.cursor()
             c.execute("UPDATE saved_papers SET notes = ?, updated_at = ? WHERE arxiv_id = ?", 
                       (data.get("notes", ""), arxistant_sync.now_iso(), data.get("arxiv_id", "")))
+            updated = c.rowcount > 0
             conn.commit()
             conn.close()
-            arxistant_sync.schedule_auto_sync()
-            self._send_json({"success": True, "message": "Notes updated"})
+            if updated:
+                arxistant_sync.schedule_auto_sync()
+                self._send_json({"success": True, "message": "Notes updated"})
+            else:
+                self._send_json({"success": False,
+                                 "error": "Paper is not in your saved papers"}, 404)
 
         elif path == "/api/update_tags":
             arxiv_id = data.get("arxiv_id", "")
@@ -2119,6 +2174,24 @@ class Handler(BaseHTTPRequestHandler):
                 arxistant_sync.schedule_auto_sync()
                 self._send_json({"success": True, "message": "Tags updated",
                                  "tags": split_tags(tags)})
+            else:
+                self._send_json({"success": False,
+                                 "error": "Paper is not in your saved papers"}, 404)
+
+        elif path == "/api/update_highlights":
+            arxiv_id = data.get("arxiv_id", "")
+            highlights = normalize_highlights(data.get("highlights"))
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("UPDATE saved_papers SET highlights = ?, updated_at = ? WHERE arxiv_id = ?",
+                      (highlights, arxistant_sync.now_iso(), arxiv_id))
+            updated = c.rowcount > 0
+            conn.commit()
+            conn.close()
+            if updated:
+                arxistant_sync.schedule_auto_sync()
+                self._send_json({"success": True, "message": "Highlights updated",
+                                 "highlights": parse_highlights(highlights)})
             else:
                 self._send_json({"success": False,
                                  "error": "Paper is not in your saved papers"}, 404)
@@ -3312,8 +3385,16 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .paper-results .pr-meta { color: #888; font-size: 0.9em; }
     .paper-results button { margin-top: 2px; }
     .paper-results a { color: #b31b1b; margin-left: 6px; font-size: 0.9em; }
-    .sel-bubble { position: absolute; z-index: 30; background: #b31b1b; color: #fff; border: none; border-radius: 14px; padding: 5px 12px; font-size: 0.78em; font-weight: bold; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3); transform: translateX(-50%); }
-    .sel-bubble:hover { background: #8a1515; }
+    .sel-bubble { position: absolute; z-index: 30; background: #b31b1b; color: #fff; border: none; border-radius: 14px; padding: 0; font-size: 0.78em; font-weight: bold; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3); transform: translateX(-50%); display: flex; overflow: hidden; }
+    .sel-bubble button { background: transparent; color: #fff; border: none; padding: 5px 12px; font-size: 1em; font-weight: bold; cursor: pointer; white-space: nowrap; }
+    .sel-bubble button:hover { background: #8a1515; }
+    .sel-bubble button + button { border-left: 1px solid rgba(255,255,255,0.35); }
+    mark.user-hl { background: #9be7ff; cursor: pointer; }
+    .notes-box { flex-shrink: 0; border: 1px solid #e0e0e0; border-left: 4px solid #00796b; border-radius: 8px; background: #f4fbf9; padding: 8px 12px; margin-bottom: 12px; }
+    .notes-box summary { cursor: pointer; font-size: 0.85em; font-weight: bold; color: #00695c; }
+    .notes-box .notes-status { font-weight: normal; font-size: 0.85em; color: #666; margin-left: 8px; }
+    .notes-box textarea { width: 100%; min-height: 70px; margin-top: 8px; padding: 8px; border: 1px solid #cde8e2; border-radius: 4px; font-family: inherit; font-size: 0.85em; box-sizing: border-box; }
+    .notes-box button { margin-top: 6px; padding: 4px 12px; background: #00796b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
 
     .paper-info { flex-shrink: 0; max-height: 45%; overflow-y: auto; border: 1px solid #e0e0e0; border-left: 4px solid #b31b1b; border-radius: 8px; background: #fdf6f6; padding: 9px 30px 9px 12px; margin-bottom: 12px; position: relative; box-sizing: border-box; }
     .paper-info .unpin { position: absolute; right: 8px; top: 6px; cursor: pointer; color: #c62828; font-weight: bold; font-size: 1.2em; }
@@ -3437,7 +3518,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           </div>
           <div id="textWrap" class="pdf-wrap text-wrap hidden">
             <iframe id="textFrame" title="Paper full text"></iframe>
-            <button id="selBubble" class="sel-bubble hidden" onclick="attachSelection()">💬 Ask about this</button>
+            <div id="selBubble" class="sel-bubble hidden">
+              <button onclick="attachSelection()">💬 Ask about this</button>
+              <button onclick="highlightSelection()">🖍 Highlight</button>
+            </div>
           </div>
         </div>
       </div>
@@ -3455,6 +3539,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             <a id="paperScixLink" href="#" target="_blank" rel="noopener">SciX ↗</a>
           </div>
         </div>
+        <details id="notesBox" class="notes-box hidden">
+          <summary>📝 Notes<span class="notes-status" id="notesStatus"></span></summary>
+          <textarea id="notesArea" placeholder="Your notes on this paper — stored locally with the saved paper, shared with the Saved Papers page…"></textarea>
+          <button onclick="savePinnedNotes()">💾 Save notes</button>
+        </details>
         <div class="chat-header">
           <h2>Conversation</h2>
           <button onclick="newChat()">New Chat</button>
@@ -3512,6 +3601,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     let textLoadedFor = null;   // arxiv_id the text iframe currently holds
     let pendingSelection = '';  // last text selected in the text view
     let activeSelection = '';   // excerpt attached to the next question
+    let userHighlights = [];    // persisted passage quotes for the pinned paper
     let pendingHighlights = []; // quotes to highlight once the text view is ready
 
     function $(id) { return document.getElementById(id); }
@@ -3749,6 +3839,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       $('paperIdText').textContent = 'arXiv:' + p.arxiv_id;
       $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
       $('paperScixLink').href = scixUrlFor(p);
+      // Notes + highlights (issue #6): same saved_papers record the Saved
+      // Papers page edits.
+      userHighlights = Array.isArray(p.highlights) ? p.highlights.slice() : [];
+      $('notesBox').classList.remove('hidden');
+      $('notesArea').value = p.notes || '';
+      $('notesStatus').textContent = '';
       renderSaveToggle();
       resetReaderForNewPaper();
       renderPaperList();
@@ -3873,6 +3969,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       $('pdfStatus').classList.add('hidden');
       $('readerView').classList.add('hidden');
       $('paperInfo').classList.add('hidden');
+      $('notesBox').classList.add('hidden');
       $('pickerView').classList.remove('hidden');
       clearSelection();
       renderPaperList();
@@ -3884,6 +3981,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     function resetReaderForNewPaper() {
       fullText = '';
       textLoadedFor = null;
+      textLoadingFor = null;
       pendingSelection = '';
       clearSelection();
       $('textFrame').removeAttribute('src');
@@ -3905,9 +4003,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (v === 'pdf' && pinned) showPdf(pinned);
     }
 
+    let textLoadingFor = null;  // guards against duplicate loads/polls
     function loadText(p) {
       const frame = $('textFrame');
-      if (textLoadedFor === normalizeId(p.arxiv_id)) return;
+      const nid = normalizeId(p.arxiv_id);
+      if (textLoadedFor === nid || textLoadingFor === nid) return;
+      textLoadingFor = nid;
       $('viewHint').textContent = 'Loading full text…';
       frame.src = '/api/chat/fulltext?arxiv_id=' + encodeURIComponent(p.arxiv_id);
       const poll = setInterval(() => {
@@ -3916,6 +4017,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         if (!doc || !doc.body || doc.readyState === 'loading') return;
         if ((doc.body.innerText || '').length < 200) return;
         clearInterval(poll);
+        textLoadingFor = null;
         fullText = doc.body.innerText;
         textLoadedFor = normalizeId(p.arxiv_id);
         $('viewHint').textContent = 'Select any text, then ask about it.';
@@ -3932,6 +4034,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           pendingHighlights = [];
           if (nH) addSystemMessage('️ Highlighted ' + nH + ' passage' + (nH > 1 ? 's' : '') + ' in the paper.');
         }
+        if (userHighlights.length) applyUserHighlights();
       }, 300);
     }
 
@@ -3999,7 +4102,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       return count;
     }
 
-    function highlightOne(doc, quote) {
+    function highlightOne(doc, quote, user) {
       const needle = quote.replace(/\\s+/g, ' ').trim();
       if (needle.length < 8) return false;
       const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, null);
@@ -4035,11 +4138,124 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         range.setStart(sNode, cleanToRaw(sNode.data, sOff));
         range.setEnd(eNode, cleanToRaw(eNode.data, eOff));
         const mark = doc.createElement('mark');
-        mark.style.background = '#ffe08a';
+        if (user) {
+          mark.className = 'user-hl';
+          mark.title = 'Click to remove this highlight';
+          const q = quote;
+          mark.onclick = () => removeUserHighlight(q, mark);
+        } else {
+          mark.style.background = '#ffe08a';
+        }
         range.surroundContents(mark);
         return mark;
       } catch (e) {
         return null;   // range crossed a boundary; skip
+      }
+    }
+
+    // ---------- User highlights + notes (issue #6) ----------
+
+    function applyUserHighlights() {
+      let doc;
+      try { doc = $('textFrame').contentDocument; } catch (e) { return; }
+      if (!doc || !doc.body) return;
+      for (const q of userHighlights) highlightOne(doc, q, true);
+    }
+
+    async function ensurePinnedSaved() {
+      if (!pinned) return false;
+      if (savedIds.has(normalizeId(pinned.arxiv_id))) return true;
+      try {
+        const resp = await fetch('/api/save', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            arxiv_id: pinned.arxiv_id, title: pinned.title || '',
+            authors: pinned.authors || '', abstract: pinned.abstract || '',
+            relevance_score: pinned.score || 0,
+            date_fetched: new Date().toISOString().slice(0, 10)
+          })
+        });
+        const data = await resp.json();
+        if (!data.success) return false;
+        savedIds.add(normalizeId(pinned.arxiv_id));
+        renderSaveToggle();
+        renderPaperList();
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    async function persistHighlights() {
+      if (!pinned) return;
+      try {
+        const resp = await fetch('/api/update_highlights', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ arxiv_id: pinned.arxiv_id, highlights: userHighlights })
+        });
+        const data = await resp.json();
+        if (data.success) {
+          userHighlights = data.highlights || [];
+          pinned.highlights = userHighlights;
+        } else {
+          addSystemMessage('Could not save highlights: ' + (data.error || 'unknown error'));
+        }
+      } catch (e) {
+        addSystemMessage('Could not save highlights: ' + e.message);
+      }
+    }
+
+    async function highlightSelection() {
+      const quote = pendingSelection;
+      if (!quote || !pinned) return;
+      $('selBubble').classList.add('hidden');
+      if (!(await ensurePinnedSaved())) {
+        alert('Highlights are stored with saved papers; the paper could not be saved.');
+        return;
+      }
+      pendingSelection = '';
+      try { $('textFrame').contentWindow.getSelection().removeAllRanges(); } catch (e) {}
+      if (userHighlights.some(q => q.toLowerCase() === quote.toLowerCase())) return;
+      userHighlights.push(quote);
+      if (textLoadedFor === normalizeId(pinned.arxiv_id)) {
+        let doc;
+        try { doc = $('textFrame').contentDocument; } catch (e) { doc = null; }
+        if (doc) highlightOne(doc, quote, true);
+      }
+      await persistHighlights();
+    }
+
+    function removeUserHighlight(quote, mark) {
+      userHighlights = userHighlights.filter(q => q !== quote);
+      try {
+        const parent = mark.parentNode;
+        parent.replaceChild(mark.ownerDocument.createTextNode(mark.textContent), mark);
+        parent.normalize();
+      } catch (e) {}
+      persistHighlights();
+    }
+
+    async function savePinnedNotes() {
+      if (!pinned) return;
+      const notes = $('notesArea').value;
+      if (!(await ensurePinnedSaved())) {
+        alert('Notes are stored with saved papers; the paper could not be saved.');
+        return;
+      }
+      try {
+        const resp = await fetch('/api/update_notes', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ arxiv_id: pinned.arxiv_id, notes: notes })
+        });
+        const data = await resp.json();
+        if (data.success) {
+          pinned.notes = notes;
+          $('notesStatus').textContent = 'Saved ✓';
+        } else {
+          $('notesStatus').textContent = data.error || 'Save failed';
+        }
+      } catch (e) {
+        $('notesStatus').textContent = 'Save failed: ' + e.message;
       }
     }
 

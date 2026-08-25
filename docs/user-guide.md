@@ -89,6 +89,13 @@ paper's full text; when the assistant cites a passage it returns exact quotes,
 which ArXistant highlights in the Text view (matching is tolerant of case and
 small differences) so you can see where the answer comes from.
 
+Selecting text also offers **🖍 Highlight**: your own highlights are stored
+locally with the paper (the paper is saved first if needed), reappear every
+time you reopen it, and can be removed by clicking them. The **📝 Notes** box
+above the conversation edits the same per-paper notes as the Saved Papers
+page — notes and highlights sync with your library like any other saved-paper
+field.
+
 The assistant can also use a **web search** tool (keyless DuckDuckGo) for
 up-to-date or general information beyond the paper; while it searches, the chat
 shows a "🔎 Searching the web…" note and the answer cites the URLs it used.
@@ -188,8 +195,8 @@ ArXistant file. Use **Disconnect** to remove it and turn sync off.
 
 ### What is and is not synced
 
-Synced and merged (last-write-wins): saved papers with notes and tags,
-publications, and custom keywords. Not synced: the ML model and generated daily/recent pages,
+Synced and merged (last-write-wins): saved papers with notes, tags, and
+highlights, publications, and custom keywords. Not synced: the ML model and generated daily/recent pages,
 which each device rebuilds from its local database.
 
 The **Local folder** provider is an alternative that writes the snapshot into a

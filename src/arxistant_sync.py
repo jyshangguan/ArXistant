@@ -33,7 +33,8 @@ EPOCH = "1970-01-01T00:00:00+00:00"
 # installs.
 SAVED_COLUMNS = [
     "arxiv_id", "title", "authors", "abstract", "relevance_score",
-    "date_fetched", "date_saved", "notes", "tags", "updated_at",
+    "date_fetched", "date_saved", "notes", "tags", "highlights",
+    "updated_at",
 ]
 PUB_COLUMNS = [
     "bibcode", "title", "authors", "abstract", "keywords", "year",
@@ -144,13 +145,16 @@ def migrate_db(conn):
         if "updated_at" not in columns:
             cur.execute(f"ALTER TABLE {table} ADD COLUMN updated_at TEXT")
 
-    # Tags on saved papers (issue #3). Older databases get the column lazily;
-    # rows created before tags existed default to an empty tag list.
+    # Tags and highlights on saved papers (issues #3 and #6). Older databases
+    # get the columns lazily; pre-existing rows default to empty values.
     cur.execute("PRAGMA table_info(saved_papers)")
     saved_columns = {row[1] for row in cur.fetchall()}
     if "tags" not in saved_columns:
         cur.execute("ALTER TABLE saved_papers ADD COLUMN tags TEXT DEFAULT ''")
+    if "highlights" not in saved_columns:
+        cur.execute("ALTER TABLE saved_papers ADD COLUMN highlights TEXT DEFAULT ''")
     cur.execute("UPDATE saved_papers SET tags = '' WHERE tags IS NULL")
+    cur.execute("UPDATE saved_papers SET highlights = '' WHERE highlights IS NULL")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sync_tombstones (
@@ -360,10 +364,11 @@ def import_and_merge(snapshot, db_path=None):
         remote_pubs = snapshot.get("my_publications") or []
         remote_tombs = snapshot.get("tombstones") or []
 
-        # Snapshots exported by older versions have no "tags" field; treat
-        # them as an empty tag list instead of NULL.
+        # Snapshots exported by older versions have no "tags"/"highlights"
+        # fields; treat them as empty instead of NULL.
         for rec in remote_saved:
             rec["tags"] = rec.get("tags") or ""
+            rec["highlights"] = rec.get("highlights") or ""
 
         saved_merged, saved_tombs = merge_table(
             local_saved, remote_saved,
