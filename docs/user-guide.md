@@ -49,8 +49,9 @@ future model training. Removing a saved paper updates the local training state.
 Click **🏷️** (next to the 💬 chat button) to organize a paper with tags. If the
 paper is not saved yet, ArXistant saves it first and then opens a small tag
 editor: type a tag and press Enter (or **Add**) to attach it, **✕** to remove
-one, and **💾 Save tags** to store the change. Tags are stored with the saved
-paper and sync with your library.
+one. Changes save automatically as you make them, and the editor closes when
+you click anywhere else. Tags are stored with the saved paper and sync with
+your library.
 
 ## Chat: the paper reading helper
 

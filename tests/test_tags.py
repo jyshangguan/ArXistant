@@ -58,6 +58,15 @@ class TagUiHtmlTests(unittest.TestCase):
         self.assertIn("/api/update_tags", server.DATABASE_VIEWER_HTML)
         self.assertIn("openTagEditor", server.DATABASE_VIEWER_HTML)
 
+    def test_tag_editors_autosave_without_save_or_close_buttons(self):
+        # Tags persist on every add/remove and the editor closes on an
+        # outside click, so there is no explicit Save/Close button anymore.
+        for html in (server.SAVE_BUTTON_SCRIPT, ranker.SAVE_BUTTON_SCRIPT,
+                     server.DATABASE_VIEWER_HTML):
+            self.assertNotIn("tag-save", html)
+            self.assertNotIn("tag-close", html)
+            self.assertIn("/api/update_tags", html)
+
 
 class TagApiEndToEndTests(unittest.TestCase):
     """Runs the real HTTP handler against a throwaway database."""

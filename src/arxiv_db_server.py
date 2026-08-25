@@ -3087,6 +3087,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const ARX = '';
     const savedTags = {};   // arxivId -> [tags] as stored on the server
     let openEditor = null;  // { arxivId, el }
+    let tagSaveQueue = Promise.resolve();  // serializes auto-saves
 
     if (!document.getElementById('arx-tag-styles')) {
         const style = document.createElement('style');
@@ -3104,10 +3105,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             .tag-input-row { display:flex; gap:6px; margin-bottom:8px; }
             .tag-input-row input { flex:1; min-width:0; padding:4px 8px; border:1px solid #ccc; border-radius:4px; font-size:0.8em; }
             .tag-input-row button { padding:4px 10px; background:#00796b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
-            .tag-editor-actions { display:flex; gap:6px; }
-            .tag-editor-actions .tag-save { padding:4px 10px; background:#b31b1b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
-            .tag-editor-actions .tag-save:disabled { background:#ccc; cursor:wait; }
-            .tag-editor-actions .tag-close { padding:4px 10px; background:#eee; color:#555; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
         `;
         document.head.appendChild(style);
     }
@@ -3168,7 +3165,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (openEditor) { openEditor.el.remove(); openEditor = null; }
     }
 
-    function renderChips(container, working) {
+    function persistTags(arxivId, working) {
+        // Auto-save: every add/remove persists the full list immediately (no
+        // "Save tags" button). Serialized so writes never land out of order.
+        const snapshot = working.slice();
+        tagSaveQueue = tagSaveQueue.then(async () => {
+            try {
+                const resp = await fetch(ARX + '/api/update_tags', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ arxiv_id: arxivId, tags: snapshot })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    savedTags[arxivId] = data.tags || [];
+                    updateTagButton(arxivId);
+                    if (openEditor && openEditor.el) {
+                        const t = openEditor.el.querySelector('.tag-editor-title');
+                        if (t) t.textContent = '🏷️ Tags for this paper';
+                    }
+                } else if (openEditor && openEditor.el) {
+                    const t = openEditor.el.querySelector('.tag-editor-title');
+                    if (t) t.textContent = '🏷️ Could not save: ' + (data.error || 'unknown');
+                }
+            } catch (e) {
+                if (openEditor && openEditor.el) {
+                    const t = openEditor.el.querySelector('.tag-editor-title');
+                    if (t) t.textContent = '🏷️ Could not save: ' + e.message;
+                }
+            }
+        });
+    }
+
+    function renderChips(container, working, onchange) {
         container.innerHTML = '';
         working.forEach((tag, idx) => {
             const chip = document.createElement('span');
@@ -3178,7 +3207,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             const x = document.createElement('button');
             x.textContent = '✕';
             x.title = 'Remove tag';
-            x.onclick = () => { working.splice(idx, 1); renderChips(container, working); };
+            x.onclick = () => {
+                working.splice(idx, 1);
+                renderChips(container, working, onchange);
+                if (onchange) onchange();
+            };
             chip.appendChild(label);
             chip.appendChild(x);
             container.appendChild(chip);
@@ -3194,52 +3227,40 @@ document.addEventListener('DOMContentLoaded', async () => {
         editor.innerHTML =
             '<div class="tag-editor-title">🏷️ Tags for this paper</div>' +
             '<div class="tag-chips"></div>' +
-            '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>' +
-            '<div class="tag-editor-actions"><button class="tag-save">💾 Save tags</button><button class="tag-close">Close</button></div>';
+            '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>';
 
         const working = (savedTags[meta.arxivId] || []).slice();
         const chips = editor.querySelector('.tag-chips');
         const input = editor.querySelector('input');
-        renderChips(chips, working);
+        const onchange = () => persistTags(meta.arxivId, working);
+        renderChips(chips, working, onchange);
 
         const addFromInput = () => {
             const tag = input.value.trim();
             if (!tag) return;
-            if (!working.some(t => t.toLowerCase() === tag.toLowerCase())) working.push(tag);
+            if (!working.some(t => t.toLowerCase() === tag.toLowerCase())) {
+                working.push(tag);
+                renderChips(chips, working, onchange);
+                onchange();
+            }
             input.value = '';
-            renderChips(chips, working);
         };
         editor.querySelector('.tag-add').onclick = addFromInput;
         input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
 
-        editor.querySelector('.tag-close').onclick = closeEditor;
-        editor.querySelector('.tag-save').onclick = async () => {
-            const saveEl = editor.querySelector('.tag-save');
-            saveEl.disabled = true;
-            try {
-                const resp = await fetch(ARX + '/api/update_tags', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ arxiv_id: meta.arxivId, tags: working })
-                });
-                const data = await resp.json();
-                if (data.success) {
-                    savedTags[meta.arxivId] = data.tags || [];
-                    updateTagButton(meta.arxivId);
-                    closeEditor();
-                } else {
-                    alert('Could not save tags: ' + (data.error || 'unknown error'));
-                }
-            } catch (e) {
-                alert('Could not save tags: ' + e.message);
-            } finally {
-                saveEl.disabled = false;
-            }
-        };
-
         openEditor = { arxivId: meta.arxivId, el: editor };
         paper.appendChild(editor);
+        input.focus();
     }
+
+    // Close the editor when the user clicks anywhere outside it (or on
+    // another paper's tag button).
+    document.addEventListener('click', (e) => {
+        if (!openEditor) return;
+        if (openEditor.el.contains(e.target)) return;
+        if (e.target.closest && e.target.closest('.tag-btn')) return;
+        closeEditor();
+    });
 
     document.addEventListener('DOMContentLoaded', async () => {
         try {
@@ -4714,10 +4735,6 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     .tag-input-row { display: flex; gap: 6px; margin-bottom: 8px; }
     .tag-input-row input { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.8em; }
     .tag-input-row button { padding: 4px 10px; background: #00796b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
-    .tag-editor-actions { display: flex; gap: 6px; }
-    .tag-editor-actions .tag-save { padding: 4px 10px; background: #b31b1b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
-    .tag-editor-actions .tag-save:disabled { background: #ccc; cursor: wait; }
-    .tag-editor-actions .tag-close { padding: 4px 10px; background: #eee; color: #555; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
     .delete-btn { float: right; background: #c62828; color: white; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 0.8em; }
     .chat-btn { float: right; margin-right: 8px; background: #555; color: white; border-radius: 4px; padding: 4px 10px; font-size: 0.8em; text-decoration: none; }
     .chat-btn:hover { background: #333; }
@@ -4747,6 +4764,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     let allPapers = [];
     let selectedTags = new Set();  // lowercased tag keys; papers must carry ALL of them
     let openEditorId = null;
+    let tagDbSaveQueue = Promise.resolve();  // serializes tag auto-saves
 
     function parseTags(value) {
       return String(value || '').split(',').map(t => t.trim()).filter(Boolean);
@@ -4875,7 +4893,52 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       }
     }
 
-    function renderTagChips(container, working) {
+    function refreshCardTags(arxivId) {
+      const card = document.getElementById(cardId(arxivId));
+      if (!card) return;
+      const row = card.querySelector('.paper-tags');
+      if (!row) return;
+      const paper = allPapers.find(p => p.arxiv_id === arxivId);
+      if (!paper) return;
+      const tags = paperTags(paper);
+      row.innerHTML = tags.map(t => `<span class="paper-tag">${escapeHtml(t)}</span>`).join('') +
+        `<button class="tag-edit-btn" onclick="openTagEditor('${arxivId}')">🏷️ ${tags.length ? 'Edit tags' : 'Add tags'}</button>`;
+    }
+
+    function editorTitleOf(arxivId) {
+      return document.querySelector('#' + editorId(arxivId) + ' .tag-editor-title');
+    }
+
+    function persistDbTags(arxivId, working) {
+      // Auto-save: every add/remove persists the full list right away.
+      const paper = allPapers.find(p => p.arxiv_id === arxivId);
+      const snapshot = working.slice();
+      tagDbSaveQueue = tagDbSaveQueue.then(async () => {
+        try {
+          const resp = await fetch('/api/update_tags', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ arxiv_id: arxivId, tags: snapshot })
+          });
+          const data = await resp.json();
+          if (data.success) {
+            if (paper) paper.tags = (data.tags || []).join(', ');
+            refreshCardTags(arxivId);
+            renderTagBar();
+            const t = openEditorId === arxivId ? editorTitleOf(arxivId) : null;
+            if (t) t.textContent = '🏷️ Tags for this paper';
+          } else {
+            const t = openEditorId === arxivId ? editorTitleOf(arxivId) : null;
+            if (t) t.textContent = '🏷️ Could not save: ' + (data.error || 'unknown');
+          }
+        } catch (e) {
+          const t = openEditorId === arxivId ? editorTitleOf(arxivId) : null;
+          if (t) t.textContent = '🏷️ Could not save: ' + e.message;
+        }
+      });
+    }
+
+    function renderTagChips(container, working, onchange) {
       container.innerHTML = '';
       working.forEach((tag, idx) => {
         const chip = document.createElement('span');
@@ -4885,7 +4948,11 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
         const x = document.createElement('button');
         x.textContent = '✕';
         x.title = 'Remove tag';
-        x.onclick = () => { working.splice(idx, 1); renderTagChips(container, working); };
+        x.onclick = () => {
+          working.splice(idx, 1);
+          renderTagChips(container, working, onchange);
+          if (onchange) onchange();
+        };
         chip.appendChild(label);
         chip.appendChild(x);
         container.appendChild(chip);
@@ -4898,6 +4965,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       const paper = allPapers.find(p => p.arxiv_id === arxivId);
       const card = document.getElementById(cardId(arxivId));
       if (!paper || !card) return;
+      openEditorId = arxivId;  // reserved; guards against racing opens
 
       // Re-read the record so the editor never starts from a stale
       // page-load snapshot (which would wipe newer tags on save).
@@ -4906,6 +4974,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
         const data = await resp.json();
         if (data.success && data.paper) paper.tags = data.paper.tags || '';
       } catch (e) {}
+      if (openEditorId !== arxivId) return;
 
       const editor = document.createElement('div');
       editor.className = 'tag-editor';
@@ -4913,52 +4982,39 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       editor.innerHTML =
         '<div class="tag-editor-title">🏷️ Tags for this paper</div>' +
         '<div class="tag-chips"></div>' +
-        '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>' +
-        '<div class="tag-editor-actions"><button class="tag-save">💾 Save tags</button><button class="tag-close">Close</button></div>';
+        '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>';
 
       const working = paperTags(paper).slice();
       const chips = editor.querySelector('.tag-chips');
       const input = editor.querySelector('input');
-      renderTagChips(chips, working);
+      const onchange = () => persistDbTags(arxivId, working);
+      renderTagChips(chips, working, onchange);
 
       const addFromInput = () => {
         const tag = input.value.trim();
         if (!tag) return;
-        if (!working.some(t => tagKey(t) === tagKey(tag))) working.push(tag);
+        if (!working.some(t => tagKey(t) === tagKey(tag))) {
+          working.push(tag);
+          renderTagChips(chips, working, onchange);
+          onchange();
+        }
         input.value = '';
-        renderTagChips(chips, working);
       };
       editor.querySelector('.tag-add').onclick = addFromInput;
       input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
-      editor.querySelector('.tag-close').onclick = closeTagEditor;
-      editor.querySelector('.tag-save').onclick = async () => {
-        const saveEl = editor.querySelector('.tag-save');
-        saveEl.disabled = true;
-        try {
-          const resp = await fetch('/api/update_tags', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ arxiv_id: arxivId, tags: working })
-          });
-          const data = await resp.json();
-          if (data.success) {
-            paper.tags = (data.tags || []).join(', ');
-            openEditorId = null;
-            renderTagBar();
-            applyFilters();
-          } else {
-            alert('Could not save tags: ' + (data.error || 'unknown error'));
-          }
-        } catch (e) {
-          alert('Could not save tags: ' + e.message);
-        } finally {
-          saveEl.disabled = false;
-        }
-      };
 
       card.appendChild(editor);
-      openEditorId = arxivId;
+      input.focus();
     }
+
+    // Close the tag editor when clicking outside it (or another edit button).
+    document.addEventListener('click', (e) => {
+      if (!openEditorId) return;
+      const el = document.getElementById(editorId(openEditorId));
+      if (el && el.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('.tag-edit-btn')) return;
+      closeTagEditor();
+    });
 
     async function deletePaper(arxivId) {
       if (!confirm('Delete this paper from your database?')) return;

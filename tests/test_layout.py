@@ -31,8 +31,11 @@ def _render(page_type):
 class DailyRecentLayoutTests(unittest.TestCase):
     def test_titles_carry_no_date_but_keep_it_as_data(self):
         html = _render("new")
+        # The daily page's data-date is the arXiv release date, not the
+        # passed-in date_str, so compute it rather than hard-coding.
+        release = ranker.get_arxiv_release_date()
         self.assertIn("<title>arXiv Astro-ph New Papers</title>", html)
-        self.assertIn('<h1 data-date="2026-08-25">arXiv Astro-ph New Papers</h1>', html)
+        self.assertIn(f'<h1 data-date="{release}">arXiv Astro-ph New Papers</h1>', html)
         self.assertNotIn("arXiv Astro-ph New Papers —", html)
 
         recent = _render("recent")
