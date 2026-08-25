@@ -45,13 +45,13 @@ def _make_db(path):
     conn.close()
 
 
-def _save_paper(db_path, arxiv_id, title="Title", notes="", updated_at=None):
+def _save_paper(db_path, arxiv_id, title="Title", notes="", tags="", updated_at=None):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute(
         "INSERT INTO saved_papers (arxiv_id, title, authors, abstract, relevance_score, "
-        "date_fetched, notes, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (arxiv_id, title, "A Author", "Abstract", 5, "2024-01-01", notes,
+        "date_fetched, notes, tags, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (arxiv_id, title, "A Author", "Abstract", 5, "2024-01-01", notes, tags,
          updated_at or sync.now_iso()),
     )
     conn.commit()
@@ -62,6 +62,15 @@ def _paper_notes(db_path, arxiv_id):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute("SELECT notes FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _paper_tags(db_path, arxiv_id):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("SELECT tags FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
     row = c.fetchone()
     conn.close()
     return row[0] if row else None
@@ -125,6 +134,49 @@ class SnapshotMergeTests(unittest.TestCase):
         stats = sync.import_and_merge(sync.export_snapshot(self.db_a), self.db_b)
         self.assertEqual(stats["saved_papers"]["deleted"], 1)
         self.assertEqual(_paper_count(self.db_b), 0)
+
+    def test_migration_adds_tags_column_to_legacy_db(self):
+        # _make_db creates the pre-tags schema; migrate_db must add the column.
+        self.assertEqual(_paper_tags(self.db_a, "missing"), None)
+        conn = sqlite3.connect(self.db_a)
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(saved_papers)")
+        columns = {row[1] for row in c.fetchall()}
+        conn.close()
+        self.assertIn("tags", columns)
+
+    def test_tags_roundtrip_through_snapshot(self):
+        _save_paper(self.db_a, "1901.01234", tags="jwst,black holes")
+        snapshot = sync.export_snapshot(self.db_a)
+        self.assertEqual(snapshot["saved_papers"][0]["tags"], "jwst,black holes")
+
+        stats = sync.import_and_merge(snapshot, self.db_b)
+        self.assertEqual(stats["saved_papers"]["added"], 1)
+        self.assertEqual(_paper_tags(self.db_b, "1901.01234"), "jwst,black holes")
+
+    def test_tags_last_write_wins(self):
+        _save_paper(self.db_a, "1901.01234", tags="old-tag")
+        sync.import_and_merge(sync.export_snapshot(self.db_a), self.db_b)
+
+        conn = sqlite3.connect(self.db_b)
+        c = conn.cursor()
+        c.execute("UPDATE saved_papers SET tags = ?, updated_at = ? WHERE arxiv_id = ?",
+                  ("new-tag", sync.now_iso(), "1901.01234"))
+        conn.commit()
+        conn.close()
+
+        sync.import_and_merge(sync.export_snapshot(self.db_b), self.db_a)
+        self.assertEqual(_paper_tags(self.db_a, "1901.01234"), "new-tag")
+
+    def test_legacy_snapshot_without_tags_imports_as_empty(self):
+        _save_paper(self.db_a, "1901.01234", tags="jwst")
+        snapshot = sync.export_snapshot(self.db_a)
+        for rec in snapshot["saved_papers"]:
+            del rec["tags"]  # simulate a snapshot from a pre-tags version
+
+        stats = sync.import_and_merge(snapshot, self.db_b)
+        self.assertEqual(stats["saved_papers"]["added"], 1)
+        self.assertEqual(_paper_tags(self.db_b, "1901.01234"), "")
 
     def test_keyword_merge_union_with_positive_wins(self):
         pos, neg = sync.merge_keywords(

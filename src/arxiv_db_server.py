@@ -1216,6 +1216,42 @@ def fetch_paper_fulltext(arxiv_id):
 
 # --- End chat helpers --------------------------------------------------------
 
+def normalize_tags(value):
+    """Canonicalize a tag list into the comma-joined TEXT column format.
+
+    Accepts a list of tags or a comma-separated string. Tags are trimmed,
+    empty entries dropped, and duplicates removed case-insensitively (the
+    first spelling wins). Returns a comma-joined string.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = [value]
+    seen = set()
+    out = []
+    for item in items:
+        tag = str(item).strip()
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag[:60])
+    return ",".join(out[:50])
+
+
+def split_tags(value):
+    """Parse the comma-joined tags column back into a list of tags."""
+    if not value:
+        return []
+    return [t for t in (part.strip() for part in str(value).split(",")) if t]
+
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1231,7 +1267,8 @@ def init_db():
             relevance_score INTEGER DEFAULT 0,
             date_fetched TEXT,
             date_saved TEXT DEFAULT CURRENT_TIMESTAMP,
-            notes TEXT DEFAULT ''
+            notes TEXT DEFAULT '',
+            tags TEXT DEFAULT ''
         )
     ''')
     
@@ -2008,12 +2045,18 @@ class Handler(BaseHTTPRequestHandler):
             c = conn.cursor()
             try:
                 arxiv_id = data.get("arxiv_id", "")
-                c.execute("SELECT 1 FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
-                was_saved = c.fetchone() is not None
+                c.execute("SELECT notes, tags FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
+                existing = c.fetchone()
+                was_saved = existing is not None
+                # Re-saving an existing paper must not wipe notes or tags the
+                # user already stored; callers only override what they send.
+                notes = data.get("notes", existing[0] if existing else "") or ""
+                tags = normalize_tags(data["tags"]) if "tags" in data else (
+                    existing[1] if existing else "") or ""
                 c.execute('''
                     INSERT OR REPLACE INTO saved_papers 
-                    (arxiv_id, title, authors, abstract, relevance_score, date_fetched, notes, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (arxiv_id, title, authors, abstract, relevance_score, date_fetched, notes, tags, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     arxiv_id,
                     data.get("title", ""),
@@ -2021,7 +2064,8 @@ class Handler(BaseHTTPRequestHandler):
                     data.get("abstract", ""),
                     data.get("relevance_score", 0),
                     data.get("date_fetched", ""),
-                    data.get("notes", ""),
+                    notes,
+                    tags,
                     arxistant_sync.now_iso()
                 ))
                 conn.commit()
@@ -2060,6 +2104,24 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             arxistant_sync.schedule_auto_sync()
             self._send_json({"success": True, "message": "Notes updated"})
+
+        elif path == "/api/update_tags":
+            arxiv_id = data.get("arxiv_id", "")
+            tags = normalize_tags(data.get("tags"))
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("UPDATE saved_papers SET tags = ?, updated_at = ? WHERE arxiv_id = ?",
+                      (tags, arxistant_sync.now_iso(), arxiv_id))
+            updated = c.rowcount > 0
+            conn.commit()
+            conn.close()
+            if updated:
+                arxistant_sync.schedule_auto_sync()
+                self._send_json({"success": True, "message": "Tags updated",
+                                 "tags": split_tags(tags)})
+            else:
+                self._send_json({"success": False,
+                                 "error": "Paper is not in your saved papers"}, 404)
 
         elif path == "/api/custom-positive":
             keyword = data.get("keyword", "")
@@ -2919,6 +2981,208 @@ document.addEventListener('DOMContentLoaded', async () => {
         paper.appendChild(btn);
     });
 });
+</script>
+<script>
+// ── Tag editor (issue #3): create/assign/remove tags on saved papers ──
+(function () {
+    const ARX = '';
+    const savedTags = {};   // arxivId -> [tags] as stored on the server
+    let openEditor = null;  // { arxivId, el }
+
+    if (!document.getElementById('arx-tag-styles')) {
+        const style = document.createElement('style');
+        style.id = 'arx-tag-styles';
+        style.textContent = `
+            .tag-btn { margin-top:6px; margin-left:6px; padding:1px 6px; color:white; border:none; border-radius:3px; cursor:pointer; font-size:0.7em; white-space:nowrap; background:#00796b; }
+            .tag-btn:hover { opacity: 0.9; }
+            .tag-editor { margin-top:8px; padding:10px 12px; background:#fff; border:1px solid #d7d7d7; border-radius:6px; }
+            .tag-editor-title { font-size:0.8em; font-weight:bold; color:#00695c; margin-bottom:6px; }
+            .tag-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+            .tag-chips:empty::after { content:'No tags yet.'; color:#999; font-size:0.75em; }
+            .tag-chip { display:inline-flex; align-items:center; gap:5px; background:#e0f2f1; color:#00695c; border:1px solid #b2dfdb; border-radius:10px; padding:1px 8px; font-size:0.75em; }
+            .tag-chip button { background:none; border:none; color:#00695c; cursor:pointer; padding:0; font-size:1em; line-height:1; }
+            .tag-chip button:hover { color:#c62828; }
+            .tag-input-row { display:flex; gap:6px; margin-bottom:8px; }
+            .tag-input-row input { flex:1; min-width:0; padding:4px 8px; border:1px solid #ccc; border-radius:4px; font-size:0.8em; }
+            .tag-input-row button { padding:4px 10px; background:#00796b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
+            .tag-editor-actions { display:flex; gap:6px; }
+            .tag-editor-actions .tag-save { padding:4px 10px; background:#b31b1b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
+            .tag-editor-actions .tag-save:disabled { background:#ccc; cursor:wait; }
+            .tag-editor-actions .tag-close { padding:4px 10px; background:#eee; color:#555; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function parseTags(value) {
+        return String(value || '').split(',').map(t => t.trim()).filter(Boolean);
+    }
+
+    function paperMeta(paper) {
+        const arxivLink = paper.querySelector('.arxiv-id a');
+        const titleLink = paper.querySelector('h2 > a');
+        const authorsEl = paper.querySelector('.authors');
+        const abstractEl = paper.querySelector('.abstract-full');
+        const scoreEl = paper.querySelector('.score');
+        const scoreText = scoreEl ? scoreEl.textContent.replace('Relevance: ', '') : '0';
+        const h1 = document.querySelector('h1');
+        return {
+            arxivId: arxivLink ? arxivLink.href.split('/abs/')[1] : '',
+            title: titleLink ? titleLink.textContent : '',
+            authors: authorsEl ? authorsEl.textContent.replace('Authors:', '').trim() : '',
+            abstract: abstractEl ? abstractEl.textContent : '',
+            score: parseInt(scoreText) || 0,
+            dateFetched: h1 ? h1.textContent : ''
+        };
+    }
+
+    function updateTagButton(arxivId) {
+        const btn = document.getElementById('tag-btn-' + arxivId.replace(/\\./g, '_'));
+        if (btn) {
+            const n = (savedTags[arxivId] || []).length;
+            btn.textContent = n ? '🏷️ ' + n : '🏷️';
+            btn.title = 'Edit tags';
+        }
+    }
+
+    async function ensureSaved(meta) {
+        const saveBtn = document.getElementById('save-btn-' + meta.arxivId);
+        if (saveBtn && saveBtn.dataset.saved === 'true') return true;
+        const resp = await fetch(ARX + '/api/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                arxiv_id: meta.arxivId, title: meta.title, authors: meta.authors,
+                abstract: meta.abstract, relevance_score: meta.score,
+                date_fetched: meta.dateFetched
+            })
+        });
+        const data = await resp.json();
+        if (data.success && saveBtn) {
+            saveBtn.textContent = '✓';
+            saveBtn.style.background = '#2e7d32';
+            saveBtn.dataset.saved = 'true';
+        }
+        return data.success;
+    }
+
+    function closeEditor() {
+        if (openEditor) { openEditor.el.remove(); openEditor = null; }
+    }
+
+    function renderChips(container, working) {
+        container.innerHTML = '';
+        working.forEach((tag, idx) => {
+            const chip = document.createElement('span');
+            chip.className = 'tag-chip';
+            const label = document.createElement('span');
+            label.textContent = tag;
+            const x = document.createElement('button');
+            x.textContent = '✕';
+            x.title = 'Remove tag';
+            x.onclick = () => { working.splice(idx, 1); renderChips(container, working); };
+            chip.appendChild(label);
+            chip.appendChild(x);
+            container.appendChild(chip);
+        });
+    }
+
+    function openTagEditor(paper, meta) {
+        if (openEditor && openEditor.arxivId === meta.arxivId) { closeEditor(); return; }
+        closeEditor();
+
+        const editor = document.createElement('div');
+        editor.className = 'tag-editor';
+        editor.innerHTML =
+            '<div class="tag-editor-title">🏷️ Tags for this paper</div>' +
+            '<div class="tag-chips"></div>' +
+            '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>' +
+            '<div class="tag-editor-actions"><button class="tag-save">💾 Save tags</button><button class="tag-close">Close</button></div>';
+
+        const working = (savedTags[meta.arxivId] || []).slice();
+        const chips = editor.querySelector('.tag-chips');
+        const input = editor.querySelector('input');
+        renderChips(chips, working);
+
+        const addFromInput = () => {
+            const tag = input.value.trim();
+            if (!tag) return;
+            if (!working.some(t => t.toLowerCase() === tag.toLowerCase())) working.push(tag);
+            input.value = '';
+            renderChips(chips, working);
+        };
+        editor.querySelector('.tag-add').onclick = addFromInput;
+        input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
+
+        editor.querySelector('.tag-close').onclick = closeEditor;
+        editor.querySelector('.tag-save').onclick = async () => {
+            const saveEl = editor.querySelector('.tag-save');
+            saveEl.disabled = true;
+            try {
+                const resp = await fetch(ARX + '/api/update_tags', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ arxiv_id: meta.arxivId, tags: working })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    savedTags[meta.arxivId] = data.tags || [];
+                    updateTagButton(meta.arxivId);
+                    closeEditor();
+                } else {
+                    alert('Could not save tags: ' + (data.error || 'unknown error'));
+                }
+            } catch (e) {
+                alert('Could not save tags: ' + e.message);
+            } finally {
+                saveEl.disabled = false;
+            }
+        };
+
+        openEditor = { arxivId: meta.arxivId, el: editor };
+        paper.appendChild(editor);
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            const resp = await fetch(ARX + '/api/papers');
+            const data = await resp.json();
+            (data.papers || []).forEach(p => { savedTags[p.arxiv_id] = parseTags(p.tags); });
+        } catch (e) {
+            console.warn('Could not fetch saved-paper tags:', e);
+        }
+
+        document.querySelectorAll('.paper').forEach((paper) => {
+            const meta = paperMeta(paper);
+            if (!meta.arxivId) return;
+            const btn = document.createElement('button');
+            btn.id = 'tag-btn-' + meta.arxivId.replace(/\\./g, '_');
+            btn.className = 'tag-btn';
+            const n = (savedTags[meta.arxivId] || []).length;
+            btn.textContent = n ? '🏷️ ' + n : '🏷️';
+            btn.title = 'Edit tags';
+            btn.onclick = async () => {
+                let saved;
+                try { saved = await ensureSaved(meta); } catch (e) { saved = false; }
+                if (!saved) { alert('Could not save the paper; tags require a saved paper.'); return; }
+                if (!savedTags[meta.arxivId]) savedTags[meta.arxivId] = [];
+                openTagEditor(paper, meta);
+            };
+            // The save button is appended asynchronously; place the tag button
+            // right after it once it exists.
+            const place = (tries) => {
+                const saveBtn = document.getElementById('save-btn-' + meta.arxivId);
+                if (saveBtn) {
+                    saveBtn.insertAdjacentElement('afterend', btn);
+                } else if (tries > 0) {
+                    setTimeout(() => place(tries - 1), 150);
+                } else {
+                    paper.appendChild(btn);
+                }
+            };
+            place(20);
+        });
+    });
+})();
 </script>
 """
 
@@ -4142,6 +4406,34 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     .notes { margin-top: 10px; }
     .notes textarea { width: 100%; min-height: 60px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 0.9em; box-sizing: border-box; }
     .notes button { margin-top: 6px; padding: 4px 12px; background: #b31b1b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+    .tag-bar { margin: 0 0 16px 0; padding: 10px 12px; background: #f0f7f6; border: 1px solid #d5e8e5; border-radius: 6px; }
+    .tag-bar-title { font-size: 0.8em; font-weight: bold; color: #00695c; margin-bottom: 6px; }
+    .tag-bar-title .hint { font-weight: normal; color: #888; }
+    .tag-bar-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag-bar-chips:empty::after { content: 'No tags yet. Add tags with the 🏷️ button on a paper below, or from the Daily/Recent pages.'; color: #888; font-size: 0.8em; }
+    .tag-filter-chip { display: inline-flex; align-items: center; gap: 5px; background: white; color: #00695c; border: 1px solid #b2dfdb; border-radius: 12px; padding: 2px 10px; font-size: 0.8em; cursor: pointer; user-select: none; }
+    .tag-filter-chip:hover { background: #e0f2f1; }
+    .tag-filter-chip.selected { background: #00796b; color: white; border-color: #00796b; }
+    .tag-filter-chip .count { opacity: 0.7; font-size: 0.85em; }
+    .tag-clear { background: none; border: none; color: #b31b1b; font-size: 0.8em; cursor: pointer; margin-left: 8px; font-weight: normal; }
+    .paper-tags { margin: 6px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .paper-tag { background: #e0f2f1; color: #00695c; border: 1px solid #b2dfdb; border-radius: 10px; padding: 1px 8px; font-size: 0.75em; }
+    .tag-edit-btn { background: none; border: 1px solid #b2dfdb; color: #00695c; border-radius: 10px; padding: 1px 8px; font-size: 0.75em; cursor: pointer; }
+    .tag-edit-btn:hover { background: #e0f2f1; }
+    .tag-editor { margin-top: 8px; padding: 10px 12px; background: #fff; border: 1px solid #d7d7d7; border-radius: 6px; clear: both; }
+    .tag-editor-title { font-size: 0.8em; font-weight: bold; color: #00695c; margin-bottom: 6px; }
+    .tag-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .tag-chips:empty::after { content: 'No tags yet.'; color: #999; font-size: 0.75em; }
+    .tag-chip { display: inline-flex; align-items: center; gap: 5px; background: #e0f2f1; color: #00695c; border: 1px solid #b2dfdb; border-radius: 10px; padding: 1px 8px; font-size: 0.75em; }
+    .tag-chip button { background: none; border: none; color: #00695c; cursor: pointer; padding: 0; font-size: 1em; line-height: 1; }
+    .tag-chip button:hover { color: #c62828; }
+    .tag-input-row { display: flex; gap: 6px; margin-bottom: 8px; }
+    .tag-input-row input { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.8em; }
+    .tag-input-row button { padding: 4px 10px; background: #00796b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
+    .tag-editor-actions { display: flex; gap: 6px; }
+    .tag-editor-actions .tag-save { padding: 4px 10px; background: #b31b1b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
+    .tag-editor-actions .tag-save:disabled { background: #ccc; cursor: wait; }
+    .tag-editor-actions .tag-close { padding: 4px 10px; background: #eee; color: #555; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
     .delete-btn { float: right; background: #c62828; color: white; border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 0.8em; }
     .chat-btn { float: right; margin-right: 8px; background: #555; color: white; border-radius: 4px; padding: 4px 10px; font-size: 0.8em; text-decoration: none; }
     .chat-btn:hover { background: #333; }
@@ -4163,47 +4455,121 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
   </div>
   <h1>My arXiv Paper Database</h1>
   <input type="text" class="search-box" id="searchInput" placeholder="Search by title, author, abstract, or notes..." oninput="searchPapers()">
+  <div id="tagBar" class="tag-bar"></div>
   <p class="stats" id="stats">Loading...</p>
   <div id="paperList"></div>
 
   <script>
     let allPapers = [];
+    let selectedTags = new Set();  // lowercased tag keys; papers must carry ALL of them
+    let openEditorId = null;
+
+    function parseTags(value) {
+      return String(value || '').split(',').map(t => t.trim()).filter(Boolean);
+    }
+    function paperTags(p) { return parseTags(p.tags); }
+    function tagKey(t) { return t.toLowerCase(); }
+    function cardId(arxivId) { return 'papercard-' + arxivId.replace(/\\./g, '_'); }
+    function editorId(arxivId) { return 'tageditor-' + arxivId.replace(/\\./g, '_'); }
 
     async function loadPapers() {
       const resp = await fetch('/api/papers');
       const data = await resp.json();
       allPapers = data.papers;
-      renderPapers(allPapers);
+      renderTagBar();
+      applyFilters();
     }
 
-    async function searchPapers() {
-      const q = document.getElementById('searchInput').value.trim();
-      if (!q) {
-        renderPapers(allPapers);
+    function searchPapers() {
+      applyFilters();
+    }
+
+    // ── Tag filtering (issue #3) ──
+    function allTagCounts() {
+      const counts = new Map();  // key -> { label, count }
+      allPapers.forEach(p => {
+        const seen = new Set();
+        paperTags(p).forEach(t => {
+          const k = tagKey(t);
+          if (seen.has(k)) return;
+          seen.add(k);
+          const entry = counts.get(k) || { label: t, count: 0 };
+          entry.count += 1;
+          counts.set(k, entry);
+        });
+      });
+      return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    }
+
+    function renderTagBar() {
+      const bar = document.getElementById('tagBar');
+      const entries = allTagCounts();
+      let html = '<div class="tag-bar-title">🏷️ Filter by tags <span class="hint">(papers must have ALL selected tags)</span>' +
+        (selectedTags.size ? '<button class="tag-clear" data-action="clear">Clear filter</button>' : '') +
+        '</div>';
+      html += '<div class="tag-bar-chips">' + entries.map(([k, e]) =>
+        `<span class="tag-filter-chip${selectedTags.has(k) ? ' selected' : ''}" data-tag="${escapeAttr(k)}">${escapeHtml(e.label)} <span class="count">${e.count}</span></span>`
+      ).join('') + '</div>';
+      bar.innerHTML = html;
+    }
+
+    document.getElementById('tagBar').addEventListener('click', (e) => {
+      const chip = e.target.closest('.tag-filter-chip');
+      if (chip) {
+        const k = chip.dataset.tag;
+        if (selectedTags.has(k)) selectedTags.delete(k); else selectedTags.add(k);
+        renderTagBar();
+        applyFilters();
         return;
       }
-      const resp = await fetch('/api/search?q=' + encodeURIComponent(q));
-      const data = await resp.json();
-      renderPapers(data.papers);
+      if (e.target.closest('[data-action="clear"]')) {
+        selectedTags.clear();
+        renderTagBar();
+        applyFilters();
+      }
+    });
+
+    async function applyFilters() {
+      const q = document.getElementById('searchInput').value.trim();
+      let base = allPapers;
+      if (q) {
+        const resp = await fetch('/api/search?q=' + encodeURIComponent(q));
+        const data = await resp.json();
+        base = data.papers;
+      }
+      if (selectedTags.size) {
+        base = base.filter(p => {
+          const have = new Set(paperTags(p).map(tagKey));
+          return [...selectedTags].every(k => have.has(k));
+        });
+      }
+      renderPapers(base);
     }
 
     function renderPapers(papers) {
       const container = document.getElementById('paperList');
-      document.getElementById('stats').textContent = papers.length + ' paper' + (papers.length !== 1 ? 's' : '') + ' saved';
-      
+      const filtered = papers.length !== allPapers.length;
+      document.getElementById('stats').textContent = filtered
+        ? 'Showing ' + papers.length + ' of ' + allPapers.length + ' saved papers'
+        : papers.length + ' paper' + (papers.length !== 1 ? 's' : '') + ' saved';
+
       if (papers.length === 0) {
         container.innerHTML = '<p class="empty">No papers found. Go to the daily list and click "💾 Save to DB" on papers you want to keep.</p>';
         return;
       }
-      
-      container.innerHTML = papers.map(p => `
-        <div class="paper">
+
+      container.innerHTML = papers.map(p => {
+        const tags = paperTags(p);
+        const tagsHtml = tags.map(t => `<span class="paper-tag">${escapeHtml(t)}</span>`).join('');
+        return `
+        <div class="paper" id="${cardId(p.arxiv_id)}">
           <button class="delete-btn" onclick="deletePaper('${p.arxiv_id}')">🗑 Delete</button>
           <a class="chat-btn" href="/chat.html?paper=${p.arxiv_id}">💬 Chat</a>
           <h2><a href="https://arxiv.org/abs/${p.arxiv_id}" target="_blank">${escapeHtml(p.title)}</a></h2>
           <span class="score">Relevance: ${p.relevance_score}</span>
           <p class="authors"><strong>Authors:</strong> ${escapeHtml(p.authors)}</p>
           <p class="meta">Saved: ${p.date_saved} | Fetched: ${p.date_fetched || 'N/A'}</p>
+          <div class="paper-tags">${tagsHtml}<button class="tag-edit-btn" onclick="openTagEditor('${p.arxiv_id}')">🏷️ ${tags.length ? 'Edit tags' : 'Add tags'}</button></div>
           <details>
             <summary><strong style="color:#b31b1b;">View abstract</strong></summary>
             <p class="abstract-full">${escapeHtml(p.abstract)}</p>
@@ -4213,7 +4579,93 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
             <button onclick="saveNotes('${p.arxiv_id}')">💾 Save Notes</button>
           </div>
         </div>
-      `).join('');
+      `}).join('');
+    }
+
+    // ── Tag editing (issue #3) ──
+    function closeTagEditor() {
+      if (openEditorId) {
+        const el = document.getElementById(editorId(openEditorId));
+        if (el) el.remove();
+        openEditorId = null;
+      }
+    }
+
+    function renderTagChips(container, working) {
+      container.innerHTML = '';
+      working.forEach((tag, idx) => {
+        const chip = document.createElement('span');
+        chip.className = 'tag-chip';
+        const label = document.createElement('span');
+        label.textContent = tag;
+        const x = document.createElement('button');
+        x.textContent = '✕';
+        x.title = 'Remove tag';
+        x.onclick = () => { working.splice(idx, 1); renderTagChips(container, working); };
+        chip.appendChild(label);
+        chip.appendChild(x);
+        container.appendChild(chip);
+      });
+    }
+
+    function openTagEditor(arxivId) {
+      if (openEditorId === arxivId) { closeTagEditor(); return; }
+      closeTagEditor();
+      const paper = allPapers.find(p => p.arxiv_id === arxivId);
+      const card = document.getElementById(cardId(arxivId));
+      if (!paper || !card) return;
+
+      const editor = document.createElement('div');
+      editor.className = 'tag-editor';
+      editor.id = editorId(arxivId);
+      editor.innerHTML =
+        '<div class="tag-editor-title">🏷️ Tags for this paper</div>' +
+        '<div class="tag-chips"></div>' +
+        '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>' +
+        '<div class="tag-editor-actions"><button class="tag-save">💾 Save tags</button><button class="tag-close">Close</button></div>';
+
+      const working = paperTags(paper).slice();
+      const chips = editor.querySelector('.tag-chips');
+      const input = editor.querySelector('input');
+      renderTagChips(chips, working);
+
+      const addFromInput = () => {
+        const tag = input.value.trim();
+        if (!tag) return;
+        if (!working.some(t => tagKey(t) === tagKey(tag))) working.push(tag);
+        input.value = '';
+        renderTagChips(chips, working);
+      };
+      editor.querySelector('.tag-add').onclick = addFromInput;
+      input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
+      editor.querySelector('.tag-close').onclick = closeTagEditor;
+      editor.querySelector('.tag-save').onclick = async () => {
+        const saveEl = editor.querySelector('.tag-save');
+        saveEl.disabled = true;
+        try {
+          const resp = await fetch('/api/update_tags', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ arxiv_id: arxivId, tags: working })
+          });
+          const data = await resp.json();
+          if (data.success) {
+            paper.tags = (data.tags || []).join(', ');
+            openEditorId = null;
+            renderTagBar();
+            applyFilters();
+          } else {
+            alert('Could not save tags: ' + (data.error || 'unknown error'));
+          }
+        } catch (e) {
+          alert('Could not save tags: ' + e.message);
+        } finally {
+          saveEl.disabled = false;
+        }
+      };
+
+      card.appendChild(editor);
+      openEditorId = arxivId;
     }
 
     async function deletePaper(arxivId) {
@@ -4240,6 +4692,10 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    function escapeAttr(text) {
+      return escapeHtml(text).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
     }
 
     loadPapers();

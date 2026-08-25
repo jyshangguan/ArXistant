@@ -40,6 +40,12 @@ matching custom keywords.
 Click **💾** to save a useful paper. Saved papers become positive examples for
 future model training. Removing a saved paper updates the local training state.
 
+Click **🏷️** next to the save button to organize a paper with tags. If the
+paper is not saved yet, ArXistant saves it first and then opens a small tag
+editor: type a tag and press Enter (or **Add**) to attach it, **✕** to remove
+one, and **💾 Save tags** to store the change. Tags are stored with the saved
+paper and sync with your library.
+
 ## Chat: the paper reading helper
 
 The Chat page lets you read a paper with an LLM: pick one paper, then ask
@@ -145,6 +151,12 @@ The Saved Papers page provides full-text-style filtering across locally stored
 metadata. You can edit notes and remove records. The database is SQLite and
 never needs a hosted ArXistant account.
 
+Every paper card shows its tags, and **🏷️ Edit tags** opens the same tag
+editor as the Daily/Recent pages. The **Filter by tags** bar above the list
+shows every tag in your library with a count; click one or more tags to show
+only papers that carry *all* selected tags. Tag filtering combines with the
+text search box.
+
 ## Cloud sync
 
 ArXistant can mirror your paper database (saved papers, publications, and custom
@@ -176,8 +188,8 @@ ArXistant file. Use **Disconnect** to remove it and turn sync off.
 
 ### What is and is not synced
 
-Synced and merged (last-write-wins): saved papers with notes, publications, and
-custom keywords. Not synced: the ML model and generated daily/recent pages,
+Synced and merged (last-write-wins): saved papers with notes and tags,
+publications, and custom keywords. Not synced: the ML model and generated daily/recent pages,
 which each device rebuilds from its local database.
 
 The **Local folder** provider is an alternative that writes the snapshot into a
