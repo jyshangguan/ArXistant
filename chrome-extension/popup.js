@@ -7,11 +7,12 @@ const SERVER_API_VERSION = 2;
 // ── DOM Elements ──
 const serverSection = document.getElementById('server-section');
 const btnDaily = document.getElementById('btn-daily');
+const btnSearch = document.getElementById('btn-search');
+const btnChat = document.getElementById('btn-chat');
 const btnRecent = document.getElementById('btn-recent');
 const btnML = document.getElementById('btn-ml');
 const btnDB = document.getElementById('btn-db');
-const linkPubs = document.getElementById('link-pubs');
-const linkSearch = document.getElementById('link-search');
+const btnPubs = document.getElementById('btn-pubs');
 const linkOptions = document.getElementById('link-options');
 const linkPower = document.getElementById('link-power');
 const serverHelp = document.getElementById('server-help');
@@ -153,11 +154,12 @@ async function toggleServer() {
 // ── Button Bindings ──
 function bindButtons() {
   btnDaily.addEventListener('click', () => openPage('/daily.html'));
+  btnSearch.addEventListener('click', () => openPage('/search-arxiv.html'));
+  btnChat.addEventListener('click', () => openPage('/chat.html'));
   btnRecent.addEventListener('click', () => openPage('/recent.html'));
   btnML.addEventListener('click', () => openPage('/ml-features.html'));
   btnDB.addEventListener('click', () => openPage('/database.html'));
-  linkPubs.addEventListener('click', (e) => { e.preventDefault(); openPage('/publications.html'); });
-  linkSearch.addEventListener('click', (e) => { e.preventDefault(); openPage('/search-arxiv.html'); });
+  btnPubs.addEventListener('click', () => openPage('/publications.html'));
 
   linkOptions.addEventListener('click', (e) => {
     e.preventDefault();

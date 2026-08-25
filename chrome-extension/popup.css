@@ -114,27 +114,43 @@ body {
   background: #e0e0e0;
 }
 
-/* ── Quick Links ── */
-.quick-links {
+/* ── Compact Actions (single row of secondary pages) ── */
+.compact-actions {
   padding: 0 16px 12px;
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  flex-direction: row;
+  gap: 6px;
 }
 
-.quick-links a {
-  font-size: 12px;
-  color: #666;
-  text-decoration: none;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: #f5f5f5;
-  transition: background 0.15s;
+.btn-compact {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 7px 2px;
+  background: #f0f0f0;
+  color: #333;
+  text-align: center;
 }
 
-.quick-links a:hover {
-  background: #e8e8e8;
-  color: #b31b1b;
+.btn-compact:hover {
+  background: #e0e0e0;
+}
+
+.btn-compact .icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.btn-compact .label {
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 /* ── Footer ── */
