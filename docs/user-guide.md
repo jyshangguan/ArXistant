@@ -80,8 +80,36 @@ picker.
 In **Text** view you can select any passage and click **💬 Ask about this** to
 attach it as quoted context for your next question. Answers are grounded in the
 paper's full text; when the assistant cites a passage it returns exact quotes,
-which ArXistant highlights in the Text view so you can see where the answer
-comes from.
+which ArXistant highlights in the Text view (matching is tolerant of case and
+small differences) so you can see where the answer comes from.
+
+The assistant can also use a **web search** tool (keyless DuckDuckGo) for
+up-to-date or general information beyond the paper; while it searches, the chat
+shows a "🔎 Searching the web…" note and the answer cites the URLs it used.
+
+### Finding more papers, right in the chat
+
+The chat assistant has paper-search tools it can call on its own, so you can
+simply ask — with or without a paper selected:
+
+- "Find papers on X" → **search_papers** (Semantic Scholar, with citation
+  counts and TLDRs).
+- "More papers like this one" → **find_related** (S2 recommendations, falling
+  back to TF-IDF similarity over your saved/daily library).
+- "What cites / does this paper reference" → **citation_graph** (ADS).
+- Anything general or up-to-date → **web_search** (keyless DuckDuckGo).
+
+When the assistant runs a search, the matching papers appear in the chat as a
+"📚 N papers found" list; each entry offers **Read** (opens it in the reader)
+and an arXiv link. Semantic Scholar is keyless and rate-limited — if it errors,
+the assistant falls back to your local library or ADS (which uses your
+configured ADS token).
+
+For complex questions the assistant first breaks the request into
+sub-questions, resolves each with the right tool or the paper, then synthesizes
+a single structured answer with consistent sections: **Answer**, **Evidence**
+(exact `QUOTE:` lines that get highlighted), **Related papers**, and **Sources
+& caveats**.
 
 The LLM settings live in the left panel, which starts hidden, and the
 conversation in the right one. Red arrow handles at the panel edges toggle each

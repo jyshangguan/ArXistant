@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from html import escape as html_escape
+from html import unescape as html_unescape
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
@@ -599,6 +600,481 @@ def iter_chat_sse(resp):
         yield "data: [DONE]"
 
 
+# --- Web search (keyless DuckDuckGo) + tool-calling agent loop --------------
+
+CHAT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": ("Search the internet for up-to-date or general information "
+                            "that is not in the paper. Use only when the question needs "
+                            "external knowledge."),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "The search query."}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_papers",
+            "description": ("Search the scientific literature (Semantic Scholar) for papers "
+                            "on a topic. Returns a list of papers with title, arXiv id, year "
+                            "and citation count. Use when the user asks to find/search papers."),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "The topic to search."}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_related",
+            "description": ("Given an arXiv id, return similar/related papers. Use to suggest "
+                            "more papers like one already being discussed."),
+            "parameters": {
+                "type": "object",
+                "properties": {"arxiv_id": {"type": "string", "description": "The arXiv id seed."}},
+                "required": ["arxiv_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "citation_graph",
+            "description": ("Return papers that cite a given paper (kind=citedby) or the papers "
+                            "it references (kind=references), via ADS."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "arxiv_id": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["citedby", "references"]},
+                },
+                "required": ["arxiv_id"],
+            },
+        },
+    },
+]
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _clean_text(s):
+    s = _TAG_RE.sub("", s or "")
+    return re.sub(r"\s+", " ", html_unescape(s)).strip()
+
+
+def _ddg_real_url(href):
+    # DuckDuckGo wraps outbound links in a redirect with a uddg= parameter.
+    if "uddg=" in href:
+        try:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+            return q.get("uddg", [href])[0]
+        except Exception:
+            return href
+    if href.startswith("//"):
+        return "https:" + href
+    return href
+
+
+def web_search(query, max_results=6):
+    """Keyless web search via DuckDuckGo HTML. Returns a plain-text summary."""
+    url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            html = resp.read().decode("utf-8", "replace")
+    except Exception as e:
+        return "Web search failed: %s" % e
+    hrefs = re.findall(r'class="result__a"[^>]*href="([^"]*)"', html)
+    titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.S)
+    snips = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.S)
+    lines = []
+    for i in range(min(max_results, len(titles))):
+        title = _clean_text(titles[i]) if i < len(titles) else ""
+        snip = _clean_text(snips[i]) if i < len(snips) else ""
+        link = _ddg_real_url(hrefs[i]) if i < len(hrefs) else ""
+        if not title:
+            continue
+        lines.append(f"{len(lines) + 1}. {title}" + (f" — {snip}" if snip else "") + (f" [{link}]" if link else ""))
+    if not lines:
+        return "No web results found for: " + query
+    return "Web results for \"%s\":\n" % query + "\n".join(lines)
+
+
+def _extract_text_tool_queries(content):
+    """Pull web_search queries out of tool calls the model wrote as plain text.
+
+    Some providers emit DeepSeek-style DSML (or JSON) tool calls in the message
+    content instead of the structured ``tool_calls`` field.
+    """
+    qs = re.findall(r'name="query"[^>]*string="true">([^<]+)', content or "")
+    if not qs:
+        qs = re.findall(r'"name"\s*:\s*"web_search"[^}]*?"query"\s*:\s*"([^"]+)"', content or "", re.S)
+    return [q.strip() for q in qs if q.strip()]
+
+
+def _extract_text_tool_calls(content):
+    """Pull (name, params) tool calls out of DSML/JSON written as plain text."""
+    calls = []
+    if not content:
+        return calls
+    for m in re.finditer(r'<｜｜DSML｜｜invoke name="([^"]+)">(.*?)(?=<｜｜DSML｜｜/invoke>|<｜｜DSML｜｜invoke|$)',
+                         content, re.S):
+        name = m.group(1)
+        block = m.group(2)
+        params = dict(re.findall(r'<｜｜DSML｜｜parameter name="([^"]+)"[^>]*>([^<]*)', block))
+        calls.append((name, params))
+    if not calls:
+        for m in re.finditer(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})', content or "", re.S):
+            try:
+                calls.append((m.group(1), json.loads(m.group(2))))
+            except Exception:
+                pass
+    return calls
+
+
+def _strip_tool_markup(content):
+    """Remove any raw tool-call markup so it never reaches the user."""
+    if not content:
+        return ""
+    idx = content.find("<｜｜DSML｜｜")
+    if idx != -1:
+        content = content[:idx]
+    content = re.sub(r"```(?:json)?\s*\{\s*\"name\"\s*:\s*\"web_search\".*?```", "", content, flags=re.S)
+    return content.strip()
+
+
+# --- Paper discovery helpers (Semantic Scholar / ADS / local / full-text) ----
+
+S2_FIELDS = "title,year,authors,externalIds,citationCount,tldr,abstract"
+
+
+def _s2_to_item(p):
+    ext = p.get("externalIds") or {}
+    authors = p.get("authors") or []
+    if authors and isinstance(authors[0], dict):
+        authors = [a.get("name", "") for a in authors]
+    tldr = p.get("tldr")
+    return {
+        "arxiv_id": ext.get("ArXiv") or "",
+        "title": p.get("title") or "",
+        "authors": ", ".join(authors),
+        "year": p.get("year"),
+        "citations": p.get("citationCount") or 0,
+        "tldr": (tldr or {}).get("text") if isinstance(tldr, dict) else "",
+        "abstract": p.get("abstract") or "",
+        "source": "semanticscholar",
+    }
+
+
+def s2_search(query, limit=10):
+    """Semantic Scholar keyword search with citation counts + TLDR (keyless)."""
+    url = ("https://api.semanticscholar.org/graph/v1/paper/search?query="
+           + urllib.parse.quote(query) + f"&limit={limit}&fields=" + S2_FIELDS)
+    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.1"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return [_s2_to_item(p) for p in (data.get("data") or [])]
+
+
+def s2_related(arxiv_id, limit=10):
+    """Semantic Scholar 'more like this' recommendations (keyless)."""
+    url = f"https://api.semanticscholar.org/recommendations/v1/papers/?limit={limit}&fields={S2_FIELDS}"
+    req = urllib.request.Request(
+        url, data=json.dumps({"positivePaperIds": ["arXiv:" + arxiv_id]}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.1"},
+        method="POST")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return [_s2_to_item(p) for p in (data.get("recommendedPapers") or [])]
+
+
+def ads_bibcode_for(arxiv_id):
+    token = load_ads_token()
+    if not token:
+        return None, None
+    q = urllib.parse.quote("arXiv:" + arxiv_id)
+    url = ("https://api.adsabs.harvard.edu/v1/search/query?q=" + q
+           + "&fl=bibcode,title&rows=1")
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    docs = (data.get("response") or {}).get("docs") or []
+    if not docs:
+        return None, token
+    return docs[0].get("bibcode"), token
+
+
+def _ads_query(q, token, limit=10):
+    params = urllib.parse.urlencode({"q": q, "fl": "bibcode,title,author,year,citation_count,arxiv", "rows": limit})
+    url = "https://api.adsabs.harvard.edu/v1/search/query?" + params
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    items = []
+    for d in (data.get("response") or {}).get("docs") or []:
+        authors = d.get("author") or []
+        arxiv = d.get("arxiv") or ""
+        items.append({
+            "arxiv_id": arxiv if arxiv and "." in arxiv else "",
+            "title": (d.get("title") or [""])[0] if isinstance(d.get("title"), list) else (d.get("title") or ""),
+            "authors": ", ".join(authors),
+            "year": d.get("year"),
+            "citations": d.get("citation_count") or 0,
+            "tldr": "", "abstract": "", "source": "ads",
+        })
+    return items
+
+
+def ads_graph(arxiv_id, kind, limit=10):
+    """ADS citation graph: kind in {citedby, references}."""
+    bib, token = ads_bibcode_for(arxiv_id)
+    if not token:
+        raise ValueError("ADS token not configured")
+    if not bib:
+        return []
+    op = "citations" if kind == "citedby" else "references"
+    return _ads_query(f"{op}(bibcode:{bib})", token, limit)
+
+
+def ads_topic(kind, query, limit=10):
+    """ADS second-order operators: reviews(<q>) / trending(<q>)."""
+    token = load_ads_token()
+    if not token:
+        raise ValueError("ADS token not configured")
+    return _ads_query(f"{kind}({query})", token, limit)
+
+
+def local_similar(arxiv_id, limit=10):
+    """TF-IDF cosine similarity over the saved+daily library (offline, private)."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    papers = collect_chat_library()
+    seed = next((p for p in papers if p["arxiv_id"] == arxiv_id), None)
+    if seed is None:
+        return []
+    corpus = [(p["title"] or "") + " " + (p["abstract"] or "") for p in papers]
+    vec = TfidfVectorizer(max_features=20000, stop_words="english")
+    try:
+        m = vec.fit_transform(corpus)
+    except ValueError:
+        return []
+    idx = papers.index(seed)
+    sims = cosine_similarity(m[idx:idx + 1], m)[0]
+    order = sorted(range(len(papers)), key=lambda i: -sims[i])
+    out = []
+    for i in order:
+        if papers[i]["arxiv_id"] == arxiv_id:
+            continue
+        out.append({**papers[i], "citations": 0, "tldr": "", "source": papers[i]["source"] + " (similar)"})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fulltext_search(query, limit=10):
+    """Search the cached full-text HTML of papers you've opened."""
+    q = query.lower()
+    results = []
+    try:
+        names = os.listdir(FULLTEXT_CACHE_DIR)
+    except OSError:
+        return []
+    for name in sorted(names):
+        if not name.endswith(".html"):
+            continue
+        path = os.path.join(FULLTEXT_CACHE_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                html = f.read()
+        except OSError:
+            continue
+        low = html.lower()
+        pos = low.find(q)
+        if pos == -1:
+            continue
+        snippet = _clean_text(html[max(0, pos - 120): pos + 240])
+        results.append({"arxiv_id": name[:-5], "snippet": snippet, "source": "fulltext"})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def expand_query_with_llm(query):
+    """Ask the LLM to produce strong search queries/keywords for a topic."""
+    config = load_chat_config()
+    base_url = config.get("base_url", "").strip()
+    model = config.get("model", "").strip()
+    api_key = get_chat_api_key()
+    if not base_url or not model:
+        return []
+    msgs = [
+        {"role": "system", "content":
+         "You expand astronomy literature search topics. Return ONLY a JSON array of 3-5 "
+         "search queries (strings) suitable for arXiv/Semantic Scholar, using precise "
+         "astronomy terminology. No prose."},
+        {"role": "user", "content": query},
+    ]
+    try:
+        resp = _chat_completion(base_url, model, msgs, 0.3, api_key, tools=None)
+    except Exception:
+        return []
+    content = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    m = re.search(r"\[.*\]", content, re.S)
+    if not m:
+        return []
+    try:
+        arr = json.loads(m.group(0))
+        return [str(x) for x in arr if isinstance(x, (str, int))][:5]
+    except Exception:
+        return []
+
+
+def _chat_completion(base_url, model, messages, temperature, api_key, tools=None):
+    """One non-streaming OpenAI-compatible chat completion; returns parsed JSON."""
+    url = base_url.strip().rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url += "/chat/completions"
+    payload = {"model": model, "messages": messages, "stream": False}
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if tools:
+        payload["tools"] = tools
+    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.1"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                 headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=240) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def papers_to_text(papers):
+    """Compact text summary of paper results, for feeding back to the LLM."""
+    if not papers:
+        return "No papers found."
+    lines = []
+    for i, p in enumerate(papers[:10]):
+        lines.append(f"{i + 1}. {p.get('title', '')} "
+                     f"(arXiv:{p.get('arxiv_id', '')}, {p.get('year') or '?'}, "
+                     f"{p.get('citations') or 0} citations)")
+    return "\n".join(lines)
+
+
+def run_tool(name, args):
+    """Dispatch a chat tool. Returns (kind, value): kind 'text' or 'papers'."""
+    try:
+        if name == "web_search":
+            return "text", web_search(args.get("query") or "")
+        if name == "search_papers":
+            return "papers", s2_search(args.get("query") or "")
+        if name == "find_related":
+            aid = args.get("arxiv_id") or ""
+            try:
+                rel = s2_related(aid)
+            except Exception:
+                rel = []
+            return "papers", (rel or local_similar(aid))
+        if name == "citation_graph":
+            return "papers", ads_graph(args.get("arxiv_id") or "", args.get("kind") or "citedby")
+        return "text", "Unknown tool: " + str(name)
+    except Exception as e:
+        return "text", f"Tool {name} failed: {e}"
+
+
+def run_chat_agent(base_url, model, messages, temperature, api_key, max_iters=4):
+    """Run a tool-calling loop (web_search). Returns a dict.
+
+    {"unsupported": True}  -> provider rejected tools; caller should fall back.
+    {"error": ...}         -> hard failure.
+    {"final": str, "statuses": [queries]} -> success.
+    """
+    msgs = [dict(m) for m in messages]
+    statuses = []
+
+    def complete(use_tools):
+        return _chat_completion(base_url, model, msgs, temperature, api_key,
+                                tools=CHAT_TOOLS if use_tools else None)
+
+    def http_error(e):
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")[:500]
+        except Exception:
+            pass
+        return {"unsupported": False, "error": f"LLM API returned HTTP {e.code}", "details": body}
+
+    for _ in range(max_iters):
+        try:
+            resp = complete(use_tools=True)
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                pass
+            if e.code == 400 and ("tool" in body.lower() or "function" in body.lower()):
+                return {"unsupported": True}
+            return http_error(e)
+        except Exception as e:
+            return {"unsupported": False, "error": str(e)}
+        choice = (resp.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        tool_calls = msg.get("tool_calls") or []
+        content = msg.get("content") or ""
+        if not tool_calls:
+            text_queries = _extract_text_tool_queries(content)
+            if text_queries:
+                # Provider emitted tool calls as text: run them and feed results
+                # back as a user message (works with any provider).
+                for q in text_queries[:3]:
+                    statuses.append(q)
+                results = "\n\n".join(web_search(q) for q in text_queries[:3])
+                msgs.append({"role": "assistant",
+                             "content": _strip_tool_markup(content) or "(searching)"})
+                msgs.append({"role": "user", "content": "Web search results:\n" + results})
+                continue
+            if content:
+                return {"unsupported": False, "final": _strip_tool_markup(content), "statuses": statuses}
+            break  # empty answer; fall through to a forced final answer
+        msgs.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            name = fn.get("name")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            kind, value = run_tool(name, args)
+            if name == "web_search":
+                statuses.append((args.get("query") or "").strip())
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id"),
+                         "content": value if kind == "text" else papers_to_text(value)})
+
+    # Forced final answer (no tools) so a search question never returns empty.
+    msgs.append({"role": "system", "content":
+                 "Answer the user's question now using the information gathered above. "
+                 "Do not call any tools. Cite web URLs where relevant."})
+    try:
+        resp = complete(use_tools=False)
+    except urllib.error.HTTPError as e:
+        return http_error(e)
+    except Exception as e:
+        return {"unsupported": False, "error": str(e)}
+    choice = (resp.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    return {"unsupported": False, "final": _strip_tool_markup(msg.get("content") or ""), "statuses": statuses}
+
+
 PDF_CACHE_DIR = data_path("pdf")
 PDF_CACHE_MAX_FILES = 200
 PDF_MAX_BYTES = 80 * 1024 * 1024
@@ -1173,6 +1649,54 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(
                     {"success": False, "error": str(e), "papers": []}, 500)
 
+        elif path == "/api/discover/related":
+            arxiv_id = query.get("arxiv_id", [""])[0]
+            try:
+                self._send_json({"success": True, "papers": s2_related(arxiv_id)})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e), "papers": []}, 502)
+
+        elif path == "/api/discover/similar":
+            arxiv_id = query.get("arxiv_id", [""])[0]
+            try:
+                self._send_json({"success": True, "papers": local_similar(arxiv_id)})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e), "papers": []}, 500)
+
+        elif path == "/api/discover/scholar":
+            q = query.get("q", [""])[0]
+            try:
+                self._send_json({"success": True, "papers": s2_search(q)})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e), "papers": []}, 502)
+
+        elif path == "/api/discover/ads":
+            arxiv_id = query.get("arxiv_id", [""])[0]
+            kind = query.get("kind", ["citedby"])[0]
+            try:
+                self._send_json({"success": True, "papers": ads_graph(arxiv_id, kind)})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e), "papers": []}, 502)
+
+        elif path == "/api/discover/ads-topic":
+            kind = query.get("kind", ["reviews"])[0]
+            q = query.get("q", [""])[0]
+            try:
+                self._send_json({"success": True, "papers": ads_topic(kind, q)})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e), "papers": []}, 502)
+
+        elif path == "/api/discover/fulltext":
+            q = query.get("q", [""])[0]
+            try:
+                self._send_json({"success": True, "papers": fulltext_search(q)})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e), "papers": []}, 500)
+
+        elif path == "/api/discover/expand":
+            q = query.get("q", [""])[0]
+            self._send_json({"success": True, "queries": expand_query_with_llm(q)})
+
         elif path == "/api/chat/pdf":
             arxiv_id = query.get("arxiv_id", [""])[0]
             filename = _safe_pdf_filename(arxiv_id)
@@ -1223,6 +1747,170 @@ class Handler(BaseHTTPRequestHandler):
 
         else:
             self._send_text("Not found", 404)
+
+    def _start_sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+    def _sse_write(self, obj):
+        if isinstance(obj, (bytes, bytearray)):
+            self.wfile.write(obj)
+        else:
+            self.wfile.write(("data: " + json.dumps(obj) + "\n\n").encode("utf-8"))
+        self.wfile.flush()
+
+    def _stream_one(self, base_url, model, msgs, temperature, api_key, use_tools):
+        """One streaming completion.
+
+        Forwards content deltas to the client live (suppressing any tool-call
+        markup so it never reaches the user). Returns (content, tool_calls).
+        """
+        url = base_url.strip().rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url += "/chat/completions"
+        payload = {"model": model, "messages": msgs, "stream": True}
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if use_tools:
+            payload["tools"] = CHAT_TOOLS
+        headers = {"Content-Type": "application/json",
+                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.1"}
+        if api_key:
+            headers["Authorization"] = "Bearer " + api_key
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                     headers=headers, method="POST")
+        resp = urllib.request.urlopen(req, timeout=240)
+        content = ""
+        tool_calls = {}
+        suppress = False
+        try:
+            ct = resp.headers.get("Content-Type", "") if hasattr(resp, "headers") else ""
+            if "text/event-stream" not in ct:
+                # Provider ignored stream: read whole body, forward as one delta.
+                body = json.loads(resp.read().decode("utf-8"))
+                msg = ((body.get("choices") or [{}])[0]).get("message") or {}
+                content = msg.get("content") or ""
+                for i, tc in enumerate(msg.get("tool_calls") or []):
+                    fn = tc.get("function") or {}
+                    tool_calls[i] = {"id": tc.get("id"), "name": fn.get("name") or "",
+                                     "arguments": fn.get("arguments") or ""}
+                if content and not _extract_text_tool_queries(content):
+                    self._sse_write({"choices": [{"delta": {"content": content}}]})
+                return content, [tool_calls[i] for i in sorted(tool_calls)]
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload_s = line[5:].strip()
+                if payload_s == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload_s)
+                except Exception:
+                    continue
+                if obj.get("error"):
+                    err = obj["error"]
+                    raise RuntimeError(err.get("message") if isinstance(err, dict) else str(err))
+                choice = (obj.get("choices") or [{}])[0]
+                delta = choice.get("delta") or {}
+                c = delta.get("content")
+                if c:
+                    if not suppress:
+                        if "<｜｜DSML｜｜" in (content + c):
+                            suppress = True   # tool markup begins; stop forwarding
+                        else:
+                            self._sse_write({"choices": [{"delta": {"content": c}}]})
+                    content += c
+                for part in (delta.get("tool_calls") or []):
+                    idx = part.get("index", 0)
+                    slot = tool_calls.setdefault(idx, {"id": None, "name": "", "arguments": ""})
+                    if part.get("id"):
+                        slot["id"] = part["id"]
+                    fn = part.get("function") or {}
+                    if fn.get("name"):
+                        slot["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        slot["arguments"] += fn["arguments"]
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        return content, [tool_calls[i] for i in sorted(tool_calls)]
+
+    def _run_streaming_agent(self, msgs, base_url, model, temperature, api_key, max_iters=4):
+        """Tool-calling loop that streams intermediate output live to the client."""
+        for _ in range(max_iters):
+            try:
+                content, tool_calls = self._stream_one(
+                    base_url, model, msgs, temperature, api_key, use_tools=True)
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", "replace")[:500]
+                except Exception:
+                    pass
+                if e.code == 400 and ("tool" in body.lower() or "function" in body.lower()):
+                    self._stream_one(base_url, model, msgs, temperature, api_key, use_tools=False)
+                    self._sse_write(b"data: [DONE]\n\n")
+                    return
+                self._sse_write({"error": f"LLM API returned HTTP {e.code}"})
+                self._sse_write(b"data: [DONE]\n\n")
+                return
+            except Exception as e:
+                self._sse_write({"error": str(e)})
+                self._sse_write(b"data: [DONE]\n\n")
+                return
+            if not tool_calls:
+                text_calls = _extract_text_tool_calls(content)
+                if text_calls:
+                    tool_results = []
+                    for name, params in text_calls[:4]:
+                        if name == "web_search":
+                            self._sse_write({"status": "web_search", "query": params.get("query", "")})
+                        kind, value = run_tool(name, params)
+                        if kind == "papers":
+                            self._sse_write({"status": "papers", "papers": value})
+                            tool_results.append(papers_to_text(value))
+                        else:
+                            tool_results.append(value)
+                    msgs.append({"role": "assistant",
+                                 "content": _strip_tool_markup(content) or "(searching)"})
+                    msgs.append({"role": "user", "content": "Tool results:\n" + "\n\n".join(tool_results)})
+                    continue
+                self._sse_write(b"data: [DONE]\n\n")
+                return
+            tc_formatted = []
+            for i, tc in enumerate(tool_calls):
+                tc_formatted.append({"id": tc.get("id") or f"call_{i}", "type": "function",
+                                     "function": {"name": tc["name"], "arguments": tc["arguments"]}})
+            msgs.append({"role": "assistant", "content": content, "tool_calls": tc_formatted})
+            for i, tc in enumerate(tool_calls):
+                try:
+                    args = json.loads(tc["arguments"] or "{}")
+                except Exception:
+                    args = {}
+                if tc["name"] == "web_search":
+                    self._sse_write({"status": "web_search", "query": (args.get("query") or "").strip()})
+                kind, value = run_tool(tc["name"], args)
+                if kind == "papers":
+                    self._sse_write({"status": "papers", "papers": value})
+                    llm_text = papers_to_text(value)
+                else:
+                    llm_text = value
+                msgs.append({"role": "tool", "tool_call_id": tc_formatted[i]["id"], "content": llm_text})
+        # Exhausted iterations: force a streamed final answer.
+        msgs.append({"role": "system", "content":
+                     "Answer the user's question now using the information gathered above. "
+                     "Do not call any tools. Cite web URLs where relevant."})
+        try:
+            self._stream_one(base_url, model, msgs, temperature, api_key, use_tools=False)
+        except Exception as e:
+            self._sse_write({"error": str(e)})
+        self._sse_write(b"data: [DONE]\n\n")
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1536,50 +2224,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             temperature = data.get("temperature", config.get("temperature", 0.7))
             api_key = get_chat_api_key()
-            req = build_chat_request(base_url, model, messages, temperature, api_key)
+            self._start_sse()
             try:
-                resp = urllib.request.urlopen(req, timeout=120)
-            except urllib.error.HTTPError as e:
-                details = ""
-                try:
-                    details = e.read().decode("utf-8", "replace")[:2000]
-                except Exception:
-                    pass
-                self._send_json({
-                    "success": False,
-                    "error": f"LLM API returned HTTP {e.code}",
-                    "details": details,
-                }, 502)
-                return
-            except Exception as e:
-                self._send_json(
-                    {"success": False,
-                     "error": f"Could not reach the LLM API: {e}"}, 502)
-                return
-            # Stream the upstream answer back to the browser as SSE.
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            try:
-                for line in iter_chat_sse(resp):
-                    self.wfile.write(line.encode("utf-8") + b"\n\n")
-                    self.wfile.flush()
+                self._run_streaming_agent(
+                    [dict(m) for m in messages], base_url, model, temperature, api_key)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # The browser closed the chat.
             except Exception as exc:
                 try:
-                    error_event = "data: " + json.dumps({"error": str(exc)})
-                    self.wfile.write(error_event.encode("utf-8") + b"\n\n")
+                    self._sse_write({"error": str(exc)})
+                    self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                 except Exception:
                     pass
-            finally:
-                try:
-                    resp.close()
-                except Exception:
-                    pass
+            return
 
         elif path == "/api/shutdown":
             self._send_json({"success": True, "message": "Server stopping"})
@@ -2374,6 +3032,14 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .pdf-status a { color: #ffe082; }
     .text-wrap { background: #fff; }
     .text-wrap iframe { background: #fff; }
+    .paper-results { margin: 0 0 12px; padding: 10px 12px; border: 1px solid #d8c9c9; border-radius: 8px; background: #fff; }
+    .paper-results .pr-head { font-size: 0.78em; font-weight: bold; color: #7a1010; margin-bottom: 6px; }
+    .paper-results .pr-item { padding: 6px 0; border-top: 1px solid #eee; font-size: 0.83em; }
+    .paper-results .pr-item:first-of-type { border-top: none; }
+    .paper-results .pr-title { font-weight: bold; color: #333; }
+    .paper-results .pr-meta { color: #888; font-size: 0.9em; }
+    .paper-results button { margin-top: 2px; }
+    .paper-results a { color: #b31b1b; margin-left: 6px; font-size: 0.9em; }
     .sel-bubble { position: absolute; z-index: 30; background: #b31b1b; color: #fff; border: none; border-radius: 14px; padding: 5px 12px; font-size: 0.78em; font-weight: bold; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3); transform: translateX(-50%); }
     .sel-bubble:hover { background: #8a1515; }
 
@@ -2983,6 +3649,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         $('viewHint').textContent = 'Select any text, then ask about it.';
         doc.addEventListener('mouseup', onTextSelect);
         doc.addEventListener('keyup', onTextSelect);
+        doc.addEventListener('selectionchange', scheduleSelect);
+        try {
+          frame.contentWindow.addEventListener('scroll', hideSelectBubble, { passive: true });
+        } catch (e) {}
+        // Catch mouse releases that land outside the iframe (common when dragging).
+        if (!parentMouseUpBound) { window.addEventListener('mouseup', onParentMouseUp); parentMouseUpBound = true; }
         if (pendingHighlights.length) {
           const nH = highlightQuotes(pendingHighlights);
           pendingHighlights = [];
@@ -2990,6 +3662,20 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         }
       }, 300);
     }
+
+    let lastSelect = 0;
+    let parentMouseUpBound = false;
+    function scheduleSelect() {
+      const now = Date.now();
+      if (now - lastSelect < 80) return;
+      lastSelect = now;
+      onTextSelect();
+    }
+    function onParentMouseUp() {
+      if (currentView !== 'text' || !pinned) return;
+      setTimeout(onTextSelect, 0);
+    }
+    function hideSelectBubble() { $('selBubble').classList.add('hidden'); }
 
     function onTextSelect() {
       const frame = $('textFrame');
@@ -3050,9 +3736,20 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       while ((n = walker.nextNode())) nodes.push(n);
       const cleaned = nodes.map(nd => nd.data.replace(/\\s+/g, ' '));
       const total = cleaned.join('');
-      const idx = total.indexOf(needle);
+      const lt = total.toLowerCase();
+      const ln = needle.toLowerCase();
+      let idx = total.indexOf(needle);
+      let matchLen = needle.length;
+      if (idx === -1) idx = lt.indexOf(ln);                 // case-insensitive
+      if (idx === -1) {                                     // tolerant prefix match
+        for (const L of [60, 40, 30, 24]) {
+          if (ln.length <= L) continue;
+          const i = lt.indexOf(ln.substring(0, L));
+          if (i !== -1) { idx = i; matchLen = L; break; }
+        }
+      }
       if (idx === -1) return false;
-      const end = idx + needle.length;
+      const end = idx + matchLen;
       let pos = 0, sNode = null, sOff = 0, eNode = null, eOff = 0;
       for (let i = 0; i < nodes.length; i++) {
         const len = cleaned[i].length;
@@ -3118,11 +3815,64 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       }
     }
 
+    // ---------- Paper search results rendered in chat ----------
+
+    let resultPapers = [];   // accumulated tool-result papers, indexed by Read buttons
+
+    function renderPaperResults(papers) {
+      const container = $('chatMessages');
+      const emptyEl = container.querySelector('.empty-chat');
+      if (emptyEl) emptyEl.remove();
+      const base = resultPapers.length;
+      const div = document.createElement('div');
+      div.className = 'paper-results';
+      let html = '<div class="pr-head">📚 ' + papers.length + ' paper' + (papers.length !== 1 ? 's' : '') + ' found</div>';
+      papers.forEach((p, i) => {
+        const gi = base + i;
+        resultPapers.push(p);
+        const meta = [p.year, (p.citations != null ? p.citations + ' citations' : ''), (p.source || '')].filter(Boolean).join(' · ');
+        html += '<div class="pr-item">' +
+          '<div class="pr-title">' + escapeHtml(p.title || p.arxiv_id || '') + '</div>' +
+          (meta ? '<div class="pr-meta">' + escapeHtml(meta) + '</div>' : '') +
+          (p.tldr ? '<div class="pr-meta">' + escapeHtml(p.tldr) + '</div>' : '') +
+          (p.arxiv_id ? '<button class="view-btn" onclick="readResultPaper(' + gi + ')">Read</button>' +
+            '<a target="_blank" href="https://arxiv.org/abs/' + escapeHtml(p.arxiv_id) + '">arXiv ↗</a>' : '') +
+          '</div>';
+      });
+      div.innerHTML = html;
+      container.appendChild(div);
+      scrollChat();
+    }
+
+    function readResultPaper(i) {
+      const p = resultPapers[i];
+      if (!p || !p.arxiv_id) return;
+      pinPaper({ arxiv_id: p.arxiv_id, title: p.title || '', authors: p.authors || '',
+                 abstract: p.abstract || '', source: p.source || 'discover' });
+      switchView('text');
+    }
+
     // ---------- Prompt building ----------
 
     function buildSystemPrompt() {
+      const toolsNote = 'You have tools: search_papers(query) to find papers on a topic, ' +
+        'find_related(arxiv_id) for similar papers, citation_graph(arxiv_id, kind) for ' +
+        'cited-by/references, and web_search(query) for general web info.';
+      const methodNote = 'Method: for a complex request, first decompose it into 2-5 concrete ' +
+        'sub-questions; resolve each with the most suitable tool or the paper content; then ' +
+        'synthesize ONE coherent answer. ' + toolsNote;
+      const formatNote = 'Answer format (Markdown, concise): ' +
+        '"## Answer" (the direct answer); ' +
+        '"## Evidence" (up to 3 exact verbatim quotes from the paper, each on its own line ' +
+        'prefixed "QUOTE: " — these are highlighted for the reader; omit if none); ' +
+        '"## Related papers" (most relevant papers you found, title + arXiv id; omit if none); ' +
+        '"## Sources & caveats" (web URLs relied on and any uncertainty; omit if none). ' +
+        'Do not invent results, numbers, or author statements.';
       if (!pinned) {
-        return 'You are ArXistant, a research assistant for an astronomer. Answer questions about astronomy papers and research. Be concise and use Markdown.';
+        return 'You are ArXistant, a research assistant for an astronomer. Help the user answer ' +
+          'questions and find papers. ' + methodNote + ' ' +
+          'Answer format (Markdown, concise): "## Answer"; "## Related papers" (title + arXiv id); ' +
+          '"## Sources & caveats" (URLs + uncertainty; omit if none).';
       }
       const hasFull = fullText && fullText.length > 200;
       const body = hasFull ? fullText.substring(0, 24000) : (pinned.abstract || '(no abstract available)');
@@ -3138,9 +3888,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         '',
         'Rules:',
         '- Ground your answers in the provided paper content. If a question needs details not present, say so briefly, then answer what you can.',
-        '- Be specific and concise. Use Markdown.',
-        '- Do not invent results, numbers or author statements.',
-        '- After your answer, list up to 3 short EXACT verbatim quotes from the paper that you referred to, each on its own line prefixed with "QUOTE: ". These highlight the passage for the reader. Omit if none apply.'
+        '- ' + methodNote,
+        '- ' + formatNote
       ].join('\\n');
     }
 
@@ -3266,6 +4015,14 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             let obj;
             try { obj = JSON.parse(payload); } catch (e) { continue; }
             if (obj.error) throw new Error(obj.error);
+            if (obj.status === 'web_search') {
+              addSystemMessage('🔎 Searching the web: ' + (obj.query || ''));
+              continue;
+            }
+            if (obj.status === 'papers') {
+              renderPaperResults(obj.papers || []);
+              continue;
+            }
             const choice = obj.choices && obj.choices[0];
             const delta = choice && ((choice.delta && choice.delta.content) ||
                                      (choice.message && choice.message.content));

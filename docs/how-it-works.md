@@ -69,6 +69,12 @@ and JSON endpoints. It:
   them locally; the Chat page renders the HTML in a same-origin iframe so text
   can be selected and LLM-cited passages highlighted.
 - Stores model retraining state and launches training in a background thread.
+- Serves paper-discovery endpoints (`/api/discover/*`): Semantic Scholar search
+  and recommendations (keyless), the ADS citation graph and reviews/trending
+  operators (token), TF-IDF similarity over the local library, and full-text
+  search of cached papers. The chat assistant exposes these as callable tools
+  (search_papers, find_related, citation_graph) alongside web_search; results
+  are rendered in the conversation as clickable paper lists.
 
 Requests are handled on separate threads (a threading HTTP server) so a slow
 or streaming LLM response cannot block the rest of the app.

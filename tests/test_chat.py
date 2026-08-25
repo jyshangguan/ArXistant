@@ -290,5 +290,147 @@ class FulltextTests(unittest.TestCase):
         self.assertIn("Hello full text", html)
 
 
+class WebSearchTests(unittest.TestCase):
+    def test_ddg_real_url_decodes_uddg(self):
+        href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&rut=abc"
+        self.assertEqual(
+            arxiv_db_server._ddg_real_url(href), "https://example.com/a")
+
+    def test_ddg_real_url_passthrough(self):
+        self.assertEqual(
+            arxiv_db_server._ddg_real_url("https://x.org/y"), "https://x.org/y")
+
+    def test_clean_text_strips_tags_and_entities(self):
+        self.assertEqual(
+            arxiv_db_server._clean_text("<b>A &amp; B</b>  c"), "A & B c")
+
+    def test_run_chat_agent_tool_loop(self):
+        calls = {"n": 0}
+        def fake_completion(base_url, model, messages, temperature, api_key, tools=None):
+            calls["n"] += 1
+            has_tool = any(m.get("role") == "tool" for m in messages)
+            if not has_tool and tools:
+                return {"choices": [{"message": {
+                    "role": "assistant", "content": "",
+                    "tool_calls": [{"id": "c1", "type": "function",
+                                    "function": {"name": "web_search",
+                                                 "arguments": json.dumps({"query": "q"})}}]}}]}
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+        real_search = arxiv_db_server.web_search
+        real_cc = arxiv_db_server._chat_completion
+        arxiv_db_server.web_search = lambda q, max_results=6: "1. mock " + q
+        arxiv_db_server._chat_completion = fake_completion
+        try:
+            out = arxiv_db_server.run_chat_agent(
+                "http://x/v1", "m", [{"role": "user", "content": "hi"}], 0.7, "k")
+        finally:
+            arxiv_db_server.web_search = real_search
+            arxiv_db_server._chat_completion = real_cc
+        self.assertFalse(out["unsupported"])
+        self.assertEqual(out["statuses"], ["q"])
+        self.assertEqual(out["final"], "done")
+        self.assertEqual(calls["n"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TextToolCallTests(unittest.TestCase):
+    DSML = ('Some prose.<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="web_search">\n'
+            '<｜｜DSML｜｜parameter name="query" string="true">[Ne V] black hole mass</｜｜DSML｜｜parameter>\n'
+            '</｜｜DSML｜｜invoke>\n<｜｜DSML｜｜tool_calls>')
+
+    def test_extract_dsml_query(self):
+        self.assertEqual(
+            arxiv_db_server._extract_text_tool_queries(self.DSML),
+            ["[Ne V] black hole mass"])
+
+    def test_strip_tool_markup(self):
+        self.assertEqual(
+            arxiv_db_server._strip_tool_markup(self.DSML), "Some prose.")
+
+    def test_run_agent_handles_text_tool_calls(self):
+        calls = {"n": 0}
+        def fake(base_url, model, messages, temperature, api_key, tools=None):
+            calls["n"] += 1
+            if any(m.get("role") == "user" and m.get("content", "").startswith("Web search results") for m in messages):
+                return {"choices": [{"message": {"role": "assistant", "content": "Answer from results."}}]}
+            return {"choices": [{"message": {"role": "assistant", "content": TextToolCallTests.DSML}}]}
+        real_cc, real_ws = arxiv_db_server._chat_completion, arxiv_db_server.web_search
+        arxiv_db_server._chat_completion = fake
+        arxiv_db_server.web_search = lambda q, max_results=6: "1. mock " + q
+        try:
+            out = arxiv_db_server.run_chat_agent("http://x/v1", "m", [{"role": "user", "content": "hi"}], 0.7, "k")
+        finally:
+            arxiv_db_server._chat_completion, arxiv_db_server.web_search = real_cc, real_ws
+        self.assertEqual(out["final"], "Answer from results.")
+        self.assertEqual(out["statuses"], ["[Ne V] black hole mass"])
+
+
+class DiscoverHelperTests(unittest.TestCase):
+    def test_s2_to_item(self):
+        item = arxiv_db_server._s2_to_item({
+            "title": "T", "year": 2020, "citationCount": 5,
+            "externalIds": {"ArXiv": "2001.00001"},
+            "authors": [{"name": "A"}, {"name": "B"}],
+            "tldr": {"text": "sum"},
+        })
+        self.assertEqual(item["arxiv_id"], "2001.00001")
+        self.assertEqual(item["authors"], "A, B")
+        self.assertEqual(item["citations"], 5)
+        self.assertEqual(item["tldr"], "sum")
+
+    def test_fulltext_search(self):
+        import tempfile, os
+        tmp = tempfile.mkdtemp()
+        with open(os.path.join(tmp, "2606.99999.html"), "w") as f:
+            f.write("<html><body><p>the accretion disk is bright</p></body></html>")
+        real = arxiv_db_server.FULLTEXT_CACHE_DIR
+        arxiv_db_server.FULLTEXT_CACHE_DIR = tmp
+        try:
+            r = arxiv_db_server.fulltext_search("accretion disk")
+        finally:
+            arxiv_db_server.FULLTEXT_CACHE_DIR = real
+        self.assertEqual(len(r), 1)
+        self.assertEqual(r[0]["arxiv_id"], "2606.99999")
+        self.assertIn("accretion", r[0]["snippet"].lower())
+
+
+class StreamingAgentPapersTests(unittest.TestCase):
+    def test_emits_papers_event_for_search_tool(self):
+        events = []
+        class Stub:
+            def _sse_write(self, obj): events.append(obj)
+        calls = {"n": 0}
+        def fake_stream(self, base_url, model, msgs, temperature, api_key, use_tools):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "", [{"id": "c1", "name": "search_papers",
+                             "arguments": json.dumps({"query": "q"})}]
+            return "Final answer.", []
+        real_stream = arxiv_db_server.Handler._stream_one
+        real_s2 = arxiv_db_server.s2_search
+        Stub._stream_one = fake_stream
+        arxiv_db_server.s2_search = lambda q, limit=10: [
+            {"arxiv_id": "1", "title": "T", "year": 2020, "citations": 3,
+             "source": "s2", "tldr": "", "authors": ""}]
+        try:
+            arxiv_db_server.Handler._run_streaming_agent(
+                Stub(), [{"role": "user", "content": "find papers"}],
+                "u", "m", 0.7, "k")
+        finally:
+            arxiv_db_server.Handler._stream_one = real_stream
+            arxiv_db_server.s2_search = real_s2
+            if hasattr(Stub, '_stream_one'): del Stub._stream_one
+        statuses = [e.get("status") for e in events if isinstance(e, dict) and e.get("status")]
+        self.assertIn("papers", statuses)
+
+    def test_extract_text_tool_calls_dsml(self):
+        dsml = ('<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="search_papers">'
+                '<｜｜DSML｜｜parameter name="query" string="true">neutron star</｜｜DSML｜｜parameter>'
+                '</｜｜DSML｜｜invoke><｜｜DSML｜｜tool_calls>')
+        calls = arxiv_db_server._extract_text_tool_calls(dsml)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "search_papers")
+        self.assertEqual(calls[0][1].get("query"), "neutron star")
