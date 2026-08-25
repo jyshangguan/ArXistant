@@ -1637,6 +1637,21 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             self._send_json({"papers": rows, "count": len(rows)})
 
+        elif path == "/api/paper":
+            # Fresh state for one saved paper; the pages use this before
+            # editing tags so an editor never overwrites a stale snapshot.
+            arxiv_id = query.get("arxiv_id", [""])[0]
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT * FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
+            row = c.fetchone()
+            conn.close()
+            if row is None:
+                self._send_json({"success": False, "error": "Paper not found"}, 404)
+            else:
+                self._send_json({"success": True, "paper": dict(row)})
+
         elif path == "/api/search":
             q = query.get("q", [""])[0].lower()
             conn = sqlite3.connect(DB_PATH)
@@ -3248,7 +3263,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 let saved;
                 try { saved = await ensureSaved(meta); } catch (e) { saved = false; }
                 if (!saved) { alert('Could not save the paper; tags require a saved paper.'); return; }
-                if (!savedTags[meta.arxivId]) savedTags[meta.arxivId] = [];
+                // Re-read this paper's tags so the editor never starts from a
+                // stale page-load snapshot (which would wipe newer tags on save).
+                try {
+                    const resp = await fetch(ARX + '/api/paper?arxiv_id=' + encodeURIComponent(meta.arxivId));
+                    const data = await resp.json();
+                    if (data.success && data.paper) {
+                        savedTags[meta.arxivId] = parseTags(data.paper.tags);
+                    }
+                } catch (e) {
+                    if (!savedTags[meta.arxivId]) savedTags[meta.arxivId] = [];
+                }
                 openTagEditor(paper, meta);
             };
             // The save and chat buttons are appended asynchronously; keep the
@@ -4867,12 +4892,20 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       });
     }
 
-    function openTagEditor(arxivId) {
+    async function openTagEditor(arxivId) {
       if (openEditorId === arxivId) { closeTagEditor(); return; }
       closeTagEditor();
       const paper = allPapers.find(p => p.arxiv_id === arxivId);
       const card = document.getElementById(cardId(arxivId));
       if (!paper || !card) return;
+
+      // Re-read the record so the editor never starts from a stale
+      // page-load snapshot (which would wipe newer tags on save).
+      try {
+        const resp = await fetch('/api/paper?arxiv_id=' + encodeURIComponent(arxivId));
+        const data = await resp.json();
+        if (data.success && data.paper) paper.tags = data.paper.tags || '';
+      } catch (e) {}
 
       const editor = document.createElement('div');
       editor.className = 'tag-editor';

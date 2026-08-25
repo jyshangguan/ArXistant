@@ -360,7 +360,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 let saved;
                 try { saved = await ensureSaved(meta); } catch (e) { saved = false; }
                 if (!saved) { alert('Could not save the paper; tags require a saved paper.'); return; }
-                if (!savedTags[meta.arxivId]) savedTags[meta.arxivId] = [];
+                // Re-read this paper's tags so the editor never starts from a
+                // stale page-load snapshot (which would wipe newer tags on save).
+                try {
+                    const resp = await fetch(ARX + '/api/paper?arxiv_id=' + encodeURIComponent(meta.arxivId));
+                    const data = await resp.json();
+                    if (data.success && data.paper) {
+                        savedTags[meta.arxivId] = parseTags(data.paper.tags);
+                    }
+                } catch (e) {
+                    if (!savedTags[meta.arxivId]) savedTags[meta.arxivId] = [];
+                }
                 openTagEditor(paper, meta);
             };
             // The save and chat buttons are appended asynchronously; keep the

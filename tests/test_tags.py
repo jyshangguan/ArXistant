@@ -109,6 +109,14 @@ class TagApiEndToEndTests(unittest.TestCase):
                 f"http://127.0.0.1:{self.port}{path}") as resp:
             return json.loads(resp.read().decode("utf-8"))
 
+    def _get_status(self, path):
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{self.port}{path}") as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+
     def test_save_with_tags_and_persistence(self):
         status, body = self._post("/api/save", {
             "arxiv_id": "2501.00001", "title": "T", "authors": "A",
@@ -146,6 +154,19 @@ class TagApiEndToEndTests(unittest.TestCase):
         status, body = self._post("/api/update_tags", {
             "arxiv_id": "2501.99999", "tags": "x",
         })
+        self.assertEqual(status, 404)
+        self.assertFalse(body["success"])
+
+    def test_api_paper_returns_fresh_state(self):
+        self._post("/api/save", {
+            "arxiv_id": "2501.00003", "title": "T3", "authors": "A",
+            "abstract": "B", "tags": ["fresh"],
+        })
+        status, body = self._get_status("/api/paper?arxiv_id=2501.00003")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["paper"]["tags"], "fresh")
+
+        status, body = self._get_status("/api/paper?arxiv_id=2501.40404")
         self.assertEqual(status, 404)
         self.assertFalse(body["success"])
 
