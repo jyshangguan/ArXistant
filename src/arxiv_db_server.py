@@ -4199,6 +4199,25 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     function addSystemMessage(text) { addMessage('system', text); }
 
+    // Single self-updating status box (the yellow one). While the model works,
+    // every status update rewrites this one box in place; as soon as the answer
+    // starts streaming, the box is removed and replaced by the result box.
+    let statusBox = null;
+    function setStatus(text) {
+      const container = $('chatMessages');
+      if (!statusBox || !statusBox.isConnected) {
+        statusBox = addMessage('system', text);
+      } else {
+        statusBox.querySelector('.msg-content').textContent = text;
+        container.appendChild(statusBox);  // keep it as the newest line
+      }
+      scrollChat();
+    }
+    function clearStatus() {
+      if (statusBox && statusBox.isConnected) statusBox.remove();
+      statusBox = null;
+    }
+
     function scrollChat() {
       const container = $('chatMessages');
       container.scrollTop = container.scrollHeight;
@@ -4219,6 +4238,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     function newChat() {
       if (chatHistory.length && !confirm('Start a new chat? The current conversation will be cleared.')) return;
       chatHistory = [];
+      statusBox = null;
       $('chatMessages').innerHTML = '<div class="empty-chat" id="emptyChat"></div>';
       renderQuickPrompts();
       updateEmptyHint();
@@ -4235,9 +4255,14 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       }
       input.value = '';
       addMessage('user', message);
-      const holder = addMessage('assistant', '');
-      const contentEl = holder.querySelector('.msg-content');
-      contentEl.innerHTML = '<span class="thinking">Thinking…</span>';
+      setStatus('💭 Thinking…');
+      let holder = null;
+      let contentEl = null;
+      const startResultBox = () => {
+        clearStatus();
+        holder = addMessage('assistant', '');
+        contentEl = holder.querySelector('.msg-content');
+      };
       renderQuickPrompts();
 
       let llmMessage = message;
@@ -4288,7 +4313,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             try { obj = JSON.parse(payload); } catch (e) { continue; }
             if (obj.error) throw new Error(obj.error);
             if (obj.status === 'web_search') {
-              addSystemMessage('🔎 Searching the web: ' + (obj.query || ''));
+              setStatus('🔎 Searching the web: ' + (obj.query || ''));
               continue;
             }
             if (obj.status === 'papers') {
@@ -4299,6 +4324,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             const delta = choice && ((choice.delta && choice.delta.content) ||
                                      (choice.message && choice.message.content));
             if (delta) {
+              if (!holder) startResultBox();  // the result box replaces the status box
               acc += delta;
               contentEl.innerHTML = renderMarkdown(acc);
               scrollChat();
@@ -4308,6 +4334,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         let display = acc;
         let quotes = (acc.match(/^QUOTE:\\s*(.+)$/gm) || [])
           .map(s => s.replace(/^QUOTE:\\s*/, '').trim()).filter(Boolean);
+        if (!holder) startResultBox();  // e.g. an empty response with no deltas
         if (quotes.length) {
           display = acc.replace(/^QUOTE:.*$/gm, '').trim();
           contentEl.innerHTML = renderMarkdown(display);
@@ -4329,10 +4356,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         chatHistory.push({ role: 'assistant', content: display });
         if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
       } catch (e) {
-        holder.remove();
+        if (holder) holder.remove();
+        clearStatus();
         addSystemMessage('⚠️ ' + e.message);
       } finally {
         streaming = false;
+        clearStatus();
         btn.disabled = false;
         input.focus();
         renderQuickPrompts();
