@@ -53,6 +53,15 @@ class TagUiHtmlTests(unittest.TestCase):
         self.assertIn("/api/update_tags", ranker.SAVE_BUTTON_SCRIPT)
         self.assertIn("<!-- save-button-embedded -->", ranker.SAVE_BUTTON_SCRIPT)
 
+    def test_daily_and_recent_tag_editor_supports_tab_autocomplete(self):
+        for script in (server.SAVE_BUTTON_SCRIPT, ranker.SAVE_BUTTON_SCRIPT):
+            self.assertIn("closestExistingTag", script)
+            self.assertIn("editDistance", script)
+            self.assertIn("e.key === 'Tab'", script)
+            self.assertIn("tag-ghost", script)
+            self.assertIn("tag-ghost-prefix", script)
+            self.assertNotIn("tag-suggestion", script)
+
     def test_saved_papers_page_has_tag_filter_and_editor(self):
         self.assertIn('id="tagBar"', server.DATABASE_VIEWER_HTML)
         self.assertIn("Filter by tags", server.DATABASE_VIEWER_HTML)

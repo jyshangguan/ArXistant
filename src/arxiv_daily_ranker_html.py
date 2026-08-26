@@ -201,14 +201,53 @@ document.addEventListener('DOMContentLoaded', async () => {
             .tag-chip button { background:none; border:none; color:#00695c; cursor:pointer; padding:0; font-size:1em; line-height:1; }
             .tag-chip button:hover { color:#c62828; }
             .tag-input-row { display:flex; gap:6px; margin-bottom:8px; }
-            .tag-input-row input { flex:1; min-width:0; padding:4px 8px; border:1px solid #ccc; border-radius:4px; font-size:0.8em; }
+            .tag-input-wrap { position:relative; flex:1; min-width:0; border:1px solid #ccc; border-radius:4px; background:#fff; overflow:hidden; }
+            .tag-input-wrap:focus-within { border-color:#00796b; }
+            .tag-input-row input { position:relative; z-index:1; width:100%; box-sizing:border-box; padding:4px 8px; border:none; outline:none; background:transparent; font-size:0.8em; }
             .tag-input-row button { padding:4px 10px; background:#00796b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
+            .tag-ghost { position:absolute; z-index:0; left:0; top:0; padding:4px 8px; font-size:0.8em; line-height:normal; white-space:pre; color:#aaa; pointer-events:none; }
+            .tag-ghost-prefix { color:transparent; }
         `;
         document.head.appendChild(style);
     }
 
     function parseTags(value) {
         return String(value || '').split(',').map(t => t.trim()).filter(Boolean);
+    }
+
+    function editDistance(a, b) {
+        const row = Array.from({length: b.length + 1}, (_, i) => i);
+        for (let i = 1; i <= a.length; i++) {
+            let prev = row[0]; row[0] = i;
+            for (let j = 1; j <= b.length; j++) {
+                const old = row[j];
+                row[j] = Math.min(row[j] + 1, row[j - 1] + 1,
+                    prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+                prev = old;
+            }
+        }
+        return row[b.length];
+    }
+
+    function closestExistingTag(value, working) {
+        const query = value.trim().toLowerCase();
+        if (!query) return '';
+        const assigned = new Set(working.map(t => t.toLowerCase()));
+        const existing = [...new Set(Object.values(savedTags).flat().map(t => t.toLowerCase()))]
+            .filter(tag => tag && !assigned.has(tag) && tag !== query);
+        let best = '', bestScore = Infinity, bestDistance = Infinity;
+        existing.forEach(tag => {
+            const distance = editDistance(query, tag);
+            const score = tag.startsWith(query) ? distance - 1000
+                : tag.includes(query) ? distance - 500 : distance;
+            if (score < bestScore || (score === bestScore && tag.length < best.length)) {
+                best = tag; bestScore = score; bestDistance = distance;
+            }
+        });
+        if (!best) return '';
+        const closeEnough = best.startsWith(query) || best.includes(query) ||
+            bestDistance <= Math.max(2, Math.floor(Math.max(query.length, best.length) * 0.35));
+        return closeEnough ? best : '';
     }
 
     function paperMeta(paper) {
@@ -328,13 +367,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         editor.className = 'tag-editor';
         editor.innerHTML =
             '<div class="tag-chips"></div>' +
-            '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>';
+            '<div class="tag-input-row"><div class="tag-input-wrap"><div class="tag-ghost"></div><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"></div><button class="tag-add">Add</button></div>';
 
         const working = (savedTags[meta.arxivId] || []).slice();
         const chips = editor.querySelector('.tag-chips');
         const input = editor.querySelector('input');
+        const suggestion = editor.querySelector('.tag-ghost');
+        let suggestedTag = '';
         const onchange = () => persistTags(meta.arxivId, working);
         renderChips(chips, working, onchange);
+
+        const updateSuggestion = () => {
+            suggestedTag = closestExistingTag(input.value, working);
+            suggestion.innerHTML = '';
+            if (suggestedTag) {
+                const prefix = document.createElement('span');
+                prefix.className = 'tag-ghost-prefix'; prefix.textContent = input.value;
+                const tail = document.createElement('span');
+                const query = input.value.trim().toLowerCase();
+                tail.textContent = suggestedTag.startsWith(query)
+                    ? suggestedTag.slice(query.length) : ' → ' + suggestedTag;
+                suggestion.appendChild(prefix); suggestion.appendChild(tail);
+            }
+        };
 
         const addFromInput = () => {
             const tag = input.value.trim().toLowerCase();
@@ -345,9 +400,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 onchange();
             }
             input.value = '';
+            updateSuggestion();
         };
         editor.querySelector('.tag-add').onclick = addFromInput;
-        input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
+        input.oninput = updateSuggestion;
+        input.onkeydown = (e) => {
+            if (e.key === 'Tab' && suggestedTag) {
+                e.preventDefault(); input.value = suggestedTag; updateSuggestion();
+            } else if (e.key === 'Enter') {
+                e.preventDefault(); addFromInput();
+            }
+        };
 
         openEditor = { arxivId: meta.arxivId, el: editor };
         // Sit the editor right below the action icons row.
