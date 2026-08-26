@@ -14,4 +14,9 @@ for f in "$REPO_ROOT"/src/*.py; do
 done
 
 echo "Copied src/*.py -> $DEST"
+
+# The Chat page is desktop-oriented and will be redesigned for the phone
+# later; keep it out of the Android build. Idempotent.
+python3 "$SCRIPT_DIR/strip_chat.py"
+
 echo "Re-run this script after changing the Python sources."
