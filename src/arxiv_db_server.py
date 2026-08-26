@@ -11,6 +11,7 @@ Usage:
 import json
 import os
 import re
+import hashlib
 import sqlite3
 import threading
 import urllib.parse
@@ -40,6 +41,8 @@ ADS_TOKEN_PATH = data_path("ads_token.txt")
 SCIX_CONFIG_PATH = data_path("scix_config.json")
 ML_RANKER_DIR = data_path("ml_ranker")
 RETRAIN_STATE_PATH = os.path.join(ML_RANKER_DIR, "retrain_state.json")
+LOCAL_DOCUMENT_DIR = data_path("local_documents")
+LOCAL_PDF_MAX_BYTES = 80 * 1024 * 1024
 DEFAULT_RETRAIN_AFTER_CHANGES = 5
 SERVER_API_VERSION = 2
 RETRAIN_STATE_LOCK = threading.Lock()
@@ -558,6 +561,23 @@ def collect_chat_library():
     for source, path in (("daily", DAILY_JSON), ("recent", RECENT_JSON)):
         for item in _load_ranked_papers(path, source):
             papers.setdefault(item["arxiv_id"], item)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        try:
+            rows = conn.execute('''SELECT document_id,title,filename,highlights,date_added
+                                   FROM local_documents ORDER BY date_added DESC''').fetchall()
+        except sqlite3.OperationalError:
+            # Legacy/test databases may be inspected before init_db migration.
+            rows = []
+        for document_id, title, filename, highlights, _ in rows:
+            papers[document_id] = {
+                "arxiv_id": document_id, "document_id": document_id,
+                "title": title or filename, "authors": "", "abstract": "",
+                "source": "local", "score": 0, "filename": filename,
+                "highlights": parse_highlights(highlights), "local": True,
+            }
+    finally:
+        conn.close()
     return list(papers.values())
 
 
@@ -1161,6 +1181,162 @@ def _evict_pdf_cache():
         pass
 
 
+def _local_document_paths(document_id):
+    """Return validated storage paths for a local document ID."""
+    if not re.fullmatch(r"local-[0-9a-f]{24}", str(document_id or "")):
+        raise ValueError("Invalid local document ID")
+    os.makedirs(LOCAL_DOCUMENT_DIR, exist_ok=True)
+    return (os.path.join(LOCAL_DOCUMENT_DIR, document_id + ".pdf"),
+            os.path.join(LOCAL_DOCUMENT_DIR, document_id + ".html"))
+
+
+def _chunk_pdf_pages(pages, target=3500, overlap=400):
+    """Build bounded, overlapping text chunks while retaining page numbers."""
+    chunks = []
+    carry = ""
+    carry_page = 1
+    for page_no, page_text in enumerate(pages, 1):
+        text = (carry + "\n\n" + page_text).strip() if carry else page_text.strip()
+        start_page = carry_page if carry else page_no
+        while len(text) > target:
+            cut = text.rfind("\n", 0, target)
+            if cut < target // 2:
+                cut = text.rfind(" ", 0, target)
+            if cut < target // 2:
+                cut = target
+            chunks.append({"page_start": start_page, "page_end": page_no,
+                           "text": text[:cut].strip()})
+            text = text[max(0, cut - overlap):].strip()
+            start_page = page_no
+        carry = text
+        carry_page = start_page
+    if carry:
+        chunks.append({"page_start": carry_page, "page_end": len(pages),
+                       "text": carry.strip()})
+    return [c for c in chunks if c["text"]]
+
+
+def ingest_local_pdf(pdf_bytes, filename):
+    """Extract an uploaded PDF and persist its local reader representation."""
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise ValueError("The dropped file is not a valid PDF")
+    if len(pdf_bytes) > LOCAL_PDF_MAX_BYTES:
+        raise ValueError("The PDF is larger than 80 MB")
+    try:
+        import fitz
+    except ImportError as exc:
+        raise ValueError("PDF text extraction requires PyMuPDF") from exc
+
+    digest = hashlib.sha256(pdf_bytes).hexdigest()
+    document_id = "local-" + digest[:24]
+    pdf_path, text_path = _local_document_paths(document_id)
+    safe_filename = os.path.basename(str(filename or "uploaded-paper.pdf"))[:240]
+    try:
+        pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        raise ValueError("The PDF could not be opened: " + str(exc)) from exc
+    if pdf.page_count < 1:
+        pdf.close()
+        raise ValueError("The PDF has no pages")
+    metadata = pdf.metadata or {}
+    title = (metadata.get("title") or os.path.splitext(safe_filename)[0] or
+             "Uploaded PDF").strip()[:1000]
+    pages = []
+    page_html = []
+    for index, page in enumerate(pdf, 1):
+        blocks = page.get_text("blocks", sort=True)
+        texts = [str(block[4]).strip() for block in blocks
+                 if len(block) > 4 and str(block[4]).strip()]
+        page_text = "\n\n".join(texts)
+        pages.append(page_text)
+        rendered = "".join("<p>" + html_escape(part).replace("\n", "<br>") + "</p>"
+                           for part in texts)
+        page_html.append('<section class="pdf-page" data-page="' + str(index) + '">'
+                         '<div class="pdf-page-label">Page ' + str(index) + '</div>' +
+                         (rendered or '<p class="empty-page">No selectable text on this page.</p>') +
+                         '</section>')
+    pdf.close()
+    full_text = "\n\n".join(pages).strip()
+    if len(full_text) < 100:
+        raise ValueError("No selectable text was found. This PDF may require OCR.")
+    html = ("<!doctype html><html><head><meta charset=\"utf-8\"><title>" +
+            html_escape(title) + "</title><style>"
+            "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "max-width:900px;margin:0 auto;padding:28px 42px;line-height:1.55;color:#222}"
+            "h1{font-size:1.55em}.pdf-page{padding:18px 0;border-top:1px solid #ddd}"
+            ".pdf-page-label{position:sticky;top:0;float:right;background:#eee;color:#666;"
+            "padding:2px 8px;border-radius:10px;font-size:.72em}.empty-page{color:#999}"
+            "p{white-space:normal;margin:.7em 0}</style></head><body><h1>" +
+            html_escape(title) + "</h1>" + "".join(page_html) + "</body></html>")
+    temp_pdf, temp_html = pdf_path + ".tmp", text_path + ".tmp"
+    with open(temp_pdf, "wb") as f:
+        f.write(pdf_bytes)
+    with open(temp_html, "w", encoding="utf-8") as f:
+        f.write(html)
+    os.replace(temp_pdf, pdf_path)
+    os.replace(temp_html, text_path)
+    chunks = _chunk_pdf_pages(pages)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT highlights, date_added FROM local_documents WHERE document_id = ?",
+                  (document_id,))
+        existing = c.fetchone()
+        highlights = existing[0] if existing else ""
+        date_added = existing[1] if existing else arxistant_sync.now_iso()
+        c.execute('''INSERT OR REPLACE INTO local_documents
+                     (document_id,title,filename,pdf_path,text_path,highlights,date_added,updated_at)
+                     VALUES (?,?,?,?,?,?,?,?)''',
+                  (document_id, title, safe_filename, pdf_path, text_path, highlights,
+                   date_added, arxistant_sync.now_iso()))
+        c.execute("DELETE FROM local_document_chunks WHERE document_id = ?", (document_id,))
+        c.executemany('''INSERT INTO local_document_chunks
+                         (document_id,chunk_index,page_start,page_end,text) VALUES (?,?,?,?,?)''',
+                      [(document_id, i, ch["page_start"], ch["page_end"], ch["text"])
+                       for i, ch in enumerate(chunks)])
+        conn.commit()
+    finally:
+        conn.close()
+    return {"arxiv_id": document_id, "document_id": document_id, "title": title,
+            "authors": "", "abstract": full_text[:2000], "source": "local",
+            "score": 0, "filename": safe_filename,
+            "highlights": parse_highlights(highlights), "page_count": len(pages),
+            "chunk_count": len(chunks), "local": True}
+
+
+def local_document_context(document_id, query, limit=6, max_chars=24000):
+    """Return the most query-relevant stored chunks for a local document."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute('''SELECT chunk_index,page_start,page_end,text
+                               FROM local_document_chunks WHERE document_id = ?
+                               ORDER BY chunk_index''', (document_id,)).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return []
+    terms = set(re.findall(r"[a-z0-9]{3,}", str(query).lower()))
+    scored = []
+    for row in rows:
+        low = row[3].lower()
+        score = sum(low.count(term) for term in terms)
+        scored.append((score, row[0], row))
+    if terms and any(item[0] for item in scored):
+        chosen = sorted(scored, key=lambda item: (-item[0], item[1]))[:limit]
+        chosen.sort(key=lambda item: item[1])
+    else:
+        chosen = scored[:limit]
+    out, used = [], 0
+    for _, _, row in chosen:
+        if used >= max_chars:
+            break
+        text = row[3][:max_chars - used]
+        out.append({"chunk_index": row[0], "page_start": row[1],
+                    "page_end": row[2], "text": text})
+        used += len(text)
+    return out
+
+
 FULLTEXT_CACHE_DIR = data_path("fulltext")
 FULLTEXT_MAX_BYTES = 8 * 1024 * 1024
 ARXIV_HTML_URLS = (
@@ -1390,6 +1566,33 @@ def init_db():
             keywords TEXT,
             year TEXT,
             date_added TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # User-uploaded PDFs are local-only. Their binary files deliberately stay
+    # outside cloud-sync snapshots; annotations live with the local record.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS local_documents (
+            document_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            pdf_path TEXT NOT NULL,
+            text_path TEXT NOT NULL,
+            highlights TEXT DEFAULT '',
+            date_added TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS local_document_chunks (
+            document_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            page_start INTEGER,
+            page_end INTEGER,
+            text TEXT NOT NULL,
+            PRIMARY KEY (document_id, chunk_index),
+            FOREIGN KEY (document_id) REFERENCES local_documents(document_id)
+                ON DELETE CASCADE
         )
     ''')
     
@@ -1896,6 +2099,39 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
 
+        elif path in ("/api/chat/local-pdf", "/api/chat/local-text"):
+            document_id = query.get("document_id", [""])[0]
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                row = conn.execute("SELECT pdf_path,text_path FROM local_documents WHERE document_id = ?",
+                                   (document_id,)).fetchone()
+            finally:
+                conn.close()
+            if not row:
+                self._send_json({"success": False, "error": "Local document not found"}, 404)
+                return
+            file_path = row[0] if path.endswith("local-pdf") else row[1]
+            mode = "rb" if path.endswith("local-pdf") else "r"
+            try:
+                with open(file_path, mode, **({} if mode == "rb" else {"encoding": "utf-8"})) as f:
+                    content = f.read()
+            except OSError as exc:
+                self._send_json({"success": False, "error": str(exc)}, 404)
+                return
+            payload = content if isinstance(content, bytes) else content.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf" if mode == "rb" else "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        elif path == "/api/chat/local-context":
+            document_id = query.get("document_id", [""])[0]
+            q = query.get("q", [""])[0]
+            chunks = local_document_context(document_id, q)
+            self._send_json({"success": True, "chunks": chunks})
+
         elif path == "/api/chat/fulltext":
             arxiv_id = query.get("arxiv_id", [""])[0]
             try:
@@ -2086,8 +2322,29 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8')
-        data = json.loads(body) if body else {}
+        if path == "/api/chat/upload-pdf" and content_length > LOCAL_PDF_MAX_BYTES:
+            self._send_json({"success": False, "error": "The PDF is larger than 80 MB"}, 413)
+            return
+        raw_body = self.rfile.read(content_length)
+        if path == "/api/chat/upload-pdf":
+            if content_length <= 0:
+                self._send_json({"success": False, "error": "No PDF data received"}, 400)
+                return
+            filename = urllib.parse.unquote(self.headers.get("X-Filename", "uploaded-paper.pdf"))
+            try:
+                document = ingest_local_pdf(raw_body, filename)
+                self._send_json({"success": True, "document": document})
+            except ValueError as exc:
+                self._send_json({"success": False, "error": str(exc)}, 400)
+            except Exception as exc:
+                self._send_json({"success": False, "error": "PDF extraction failed: " + str(exc)}, 500)
+            return
+        try:
+            body = raw_body.decode('utf-8')
+            data = json.loads(body) if body else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json({"success": False, "error": "Invalid JSON request"}, 400)
+            return
 
         if path == "/api/scix/fetch":
             scix_link = data.get("scix_link", "").strip()
@@ -2231,6 +2488,26 @@ class Handler(BaseHTTPRequestHandler):
                              "preference_changed": removed,
                              "retraining": retraining})
 
+        elif path == "/api/chat/delete-local":
+            document_id = data.get("document_id", "")
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                row = conn.execute("SELECT pdf_path,text_path FROM local_documents WHERE document_id = ?",
+                                   (document_id,)).fetchone()
+                conn.execute("DELETE FROM local_document_chunks WHERE document_id = ?", (document_id,))
+                cur = conn.execute("DELETE FROM local_documents WHERE document_id = ?", (document_id,))
+                removed = cur.rowcount > 0
+                conn.commit()
+            finally:
+                conn.close()
+            if row:
+                for file_path in row:
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+            self._send_json({"success": True, "removed": removed})
+
         elif path == "/api/update_notes":
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
@@ -2269,13 +2546,18 @@ class Handler(BaseHTTPRequestHandler):
             highlights = normalize_highlights(data.get("highlights"))
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute("UPDATE saved_papers SET highlights = ?, updated_at = ? WHERE arxiv_id = ?",
-                      (highlights, arxistant_sync.now_iso(), arxiv_id))
+            if str(arxiv_id).startswith("local-"):
+                c.execute("UPDATE local_documents SET highlights = ?, updated_at = ? WHERE document_id = ?",
+                          (highlights, arxistant_sync.now_iso(), arxiv_id))
+            else:
+                c.execute("UPDATE saved_papers SET highlights = ?, updated_at = ? WHERE arxiv_id = ?",
+                          (highlights, arxistant_sync.now_iso(), arxiv_id))
             updated = c.rowcount > 0
             conn.commit()
             conn.close()
             if updated:
-                arxistant_sync.schedule_auto_sync()
+                if not str(arxiv_id).startswith("local-"):
+                    arxistant_sync.schedule_auto_sync()
                 self._send_json({"success": True, "message": "Highlights updated",
                                  "highlights": parse_highlights(highlights)})
             else:
@@ -3622,6 +3904,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .chat-header button:hover { background: #555; }
 
     .chat-messages { flex: 1; min-height: 200px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; background: #fafafa; margin-bottom: 10px; }
+    .chat-messages.pdf-drag { border: 2px dashed #b31b1b; background: #fff3f3; }
+    .pdf-drop-message { display:none; text-align:center; color:#8a1515; font-weight:bold; padding:28px 10px; pointer-events:none; }
+    .chat-messages.pdf-drag .pdf-drop-message { display:block; }
+    .chat-messages.pdf-drag .empty-chat { display:none; }
     .message { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; max-width: 95%; word-wrap: break-word; }
     .message.user { background: #b31b1b; color: white; margin-left: auto; }
     .message.assistant { background: white; border: 1px solid #ddd; margin-right: auto; }
@@ -3702,6 +3988,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           <select id="sourceFilter" onchange="renderPaperList()">
             <option value="all">All sources</option>
             <option value="saved">💾 Saved papers</option>
+            <option value="local">📄 Local PDFs</option>
             <option value="daily">📅 Daily list</option>
             <option value="recent">📆 Recent list</option>
           </select>
@@ -3765,6 +4052,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         </div>
         <div class="chat-messages" id="chatMessages">
           <div class="empty-chat" id="emptyChat"></div>
+          <div class="pdf-drop-message" id="pdfDropMessage">Drop PDF to extract and read it locally</div>
         </div>
         <div id="selChip" class="sel-chip hidden" onclick="clearSelection()" title="Click to remove the selected excerpt">
           <span>📄</span><span class="sel-t" id="selChipText"></span><span class="sel-x">×</span>
@@ -3789,7 +4077,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       zhipu:      { label: 'Zhipu (GLM)',      baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
       ollama:     { label: 'Local Ollama',     baseUrl: 'http://localhost:11434/v1',            model: 'llama3.1' }
     };
-    const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv' };
+    const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv', local: '📄 Local PDF' };
     const HIGHLIGHT_COLORS = ['#9be7ff', '#ffe08a', '#b9f6ca', '#ffccbc', '#e1bee7', '#d7ccc8'];
 
     let library = [];
@@ -4045,9 +4333,14 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       $('pickerView').classList.add('hidden');
       $('readerView').classList.remove('hidden');
       $('paperInfo').classList.remove('hidden');
-      $('paperIdText').textContent = 'arXiv:' + p.arxiv_id;
-      $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
-      $('paperScixLink').href = scixUrlFor(p);
+      const local = p.source === 'local' || p.local;
+      $('paperIdText').textContent = local ? 'Local PDF' : 'arXiv:' + p.arxiv_id;
+      $('paperAbsLink').classList.toggle('hidden', !!local);
+      $('paperScixLink').classList.toggle('hidden', !!local);
+      if (!local) {
+        $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
+        $('paperScixLink').href = scixUrlFor(p);
+      }
       userHighlights = Array.isArray(p.highlights) ? p.highlights.slice() : [];
       $('notesBox').classList.remove('hidden');
       $('notesBox').open = userHighlights.length > 0;
@@ -4081,6 +4374,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     function renderSaveToggle() {
       const btn = $('saveToggle');
       if (!pinned) return;
+      if (pinned.source === 'local' || pinned.local) {
+        btn.textContent = '🗑 Remove local PDF';
+        btn.classList.add('saved');
+        btn.title = 'Remove this PDF and its local annotations';
+        return;
+      }
       const saved = savedIds.has(normalizeId(pinned.arxiv_id));
       btn.textContent = saved ? '✓ Saved' : '💾 Save';
       btn.classList.toggle('saved', saved);
@@ -4089,6 +4388,22 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     async function toggleSavePinned() {
       if (!pinned) return;
+      if (pinned.source === 'local' || pinned.local) {
+        if (!confirm('Remove this local PDF and all of its annotations?')) return;
+        try {
+          const resp = await fetch('/api/chat/delete-local', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ document_id: pinned.document_id || pinned.arxiv_id })
+          });
+          const data = await resp.json();
+          if (!data.success) throw new Error(data.error || 'Could not remove the document');
+          const id = pinned.arxiv_id;
+          library = library.filter(p => p.arxiv_id !== id);
+          delete libraryById[normalizeId(id)];
+          unpinPaper();
+        } catch (e) { addSystemMessage('⚠️ ' + e.message); }
+        return;
+      }
       const id = normalizeId(pinned.arxiv_id);
       const wasSaved = savedIds.has(id);
       if (wasSaved && !confirm('Remove this paper from your saved library?')) return;
@@ -4129,13 +4444,14 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); currentPdfUrl = null; }
       frame.removeAttribute('src');
       status.className = 'pdf-status';
-      const arxivUrl = 'https://arxiv.org/pdf/' + encodeURIComponent(p.arxiv_id);
+      const local = p.source === 'local' || p.local;
+      const arxivUrl = local ? '' : 'https://arxiv.org/pdf/' + encodeURIComponent(p.arxiv_id);
       const started = Date.now();
       const renderStatus = () => {
         const secs = Math.round((Date.now() - started) / 1000);
-        status.innerHTML = '⏳ Loading PDF… ' + secs +
-          's &nbsp;·&nbsp; large papers can take a while &nbsp;·&nbsp; ' +
-          '<a href="' + arxivUrl + '" target="_blank">read on arXiv ↗</a>';
+        status.innerHTML = '⏳ Loading PDF… ' + secs + 's' + (local ? '' :
+          ' &nbsp;·&nbsp; large papers can take a while &nbsp;·&nbsp; ' +
+          '<a href="' + arxivUrl + '" target="_blank">read on arXiv ↗</a>');
       };
       renderStatus();
       pdfTick = setInterval(renderStatus, 1000);
@@ -4143,7 +4459,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       pdfAbort = controller;
       const timer = setTimeout(() => controller.abort(), 180000);
       try {
-        const resp = await fetch('/api/chat/pdf?arxiv_id=' + encodeURIComponent(p.arxiv_id),
+        const pdfEndpoint = local
+          ? '/api/chat/local-pdf?document_id=' + encodeURIComponent(p.document_id || p.arxiv_id)
+          : '/api/chat/pdf?arxiv_id=' + encodeURIComponent(p.arxiv_id);
+        const resp = await fetch(pdfEndpoint,
                                  { signal: controller.signal });
         if (!resp.ok) throw new Error('Could not load the PDF (HTTP ' + resp.status + ')');
         const blob = await resp.blob();
@@ -4156,8 +4475,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         if (!pinned || normalizeId(pinned.arxiv_id) !== normalizeId(p.arxiv_id)) return;
         const reason = (e && e.name === 'AbortError')
           ? 'The PDF download timed out' : (e.message || String(e));
-        status.innerHTML = '⚠️ ' + escapeHtml(reason) +
-          ' — <a href="' + arxivUrl + '" target="_blank">read on arXiv ↗</a>';
+        status.innerHTML = '⚠️ ' + escapeHtml(reason) + (local ? '' :
+          ' — <a href="' + arxivUrl + '" target="_blank">read on arXiv ↗</a>');
         status.className = 'pdf-status error';
       } finally {
         clearTimeout(timer);
@@ -4218,7 +4537,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (textLoadedFor === nid || textLoadingFor === nid) return;
       textLoadingFor = nid;
       $('viewHint').textContent = 'Loading full text…';
-      frame.src = '/api/chat/fulltext?arxiv_id=' + encodeURIComponent(p.arxiv_id);
+      frame.src = (p.source === 'local' || p.local)
+        ? '/api/chat/local-text?document_id=' + encodeURIComponent(p.document_id || p.arxiv_id)
+        : '/api/chat/fulltext?arxiv_id=' + encodeURIComponent(p.arxiv_id);
       const poll = setInterval(() => {
         let doc = null;
         try { doc = frame.contentDocument; } catch (e) {}
@@ -4794,6 +5115,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     async function ensurePinnedSaved() {
       if (!pinned) return false;
+      if (pinned.source === 'local' || pinned.local) return true;
       if (savedIds.has(normalizeId(pinned.arxiv_id))) return true;
       try {
         const resp = await fetch('/api/save', {
@@ -4976,7 +5298,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     // ---------- Prompt building ----------
 
-    function buildSystemPrompt() {
+    function buildSystemPrompt(contextOverride) {
       const toolsNote = 'You have tools: search_papers(query) to find papers on a topic, ' +
         'find_related(arxiv_id) for similar papers, citation_graph(arxiv_id, kind) for ' +
         'cited-by/references, and web_search(query) for general web info.';
@@ -4996,16 +5318,20 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           'Answer format (Markdown, concise): "## Answer"; "## Related papers" (title + arXiv id); ' +
           '"## Sources & caveats" (URLs + uncertainty; omit if none).';
       }
+      const hasOverride = contextOverride && contextOverride.length > 200;
       const hasFull = fullText && fullText.length > 200;
-      const body = hasFull ? fullText.substring(0, 24000) : (pinned.abstract || '(no abstract available)');
+      const body = hasOverride ? contextOverride :
+        (hasFull ? fullText.substring(0, 24000) : (pinned.abstract || '(no abstract available)'));
+      const local = pinned.source === 'local' || pinned.local;
       return [
-        'You are ArXistant, a paper reading helper. The user is reading ONE arXiv paper right now.',
+        'You are ArXistant, a paper reading helper. The user is reading ONE ' +
+          (local ? 'locally uploaded PDF' : 'arXiv paper') + ' right now.',
         '',
         'Title: ' + pinned.title,
         'Authors: ' + (pinned.authors || 'unknown'),
-        'arXiv ID: ' + pinned.arxiv_id,
+        (local ? 'Local document ID: ' : 'arXiv ID: ') + pinned.arxiv_id,
         '',
-        (hasFull ? 'Full text (may be truncated):' : 'Abstract:'),
+        (hasOverride ? 'Query-relevant text chunks:' : (hasFull ? 'Full text (may be truncated):' : 'Abstract:')),
         body,
         '',
         'Rules:',
@@ -5017,15 +5343,67 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     // ---------- Chat ----------
 
+    function setupPdfDrop() {
+      const box = $('chatMessages');
+      let depth = 0;
+      const hasPdf = event => Array.from(event.dataTransfer?.items || [])
+        .some(item => item.kind === 'file' && (item.type === 'application/pdf' || !item.type ||
+          (item.getAsFile()?.name || '').toLowerCase().endsWith('.pdf')));
+      box.addEventListener('dragenter', event => {
+        if (pinned || !hasPdf(event)) return;
+        event.preventDefault(); depth++; box.classList.add('pdf-drag');
+      });
+      box.addEventListener('dragover', event => {
+        if (pinned || !hasPdf(event)) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
+      });
+      box.addEventListener('dragleave', () => {
+        if (--depth <= 0) { depth = 0; box.classList.remove('pdf-drag'); }
+      });
+      box.addEventListener('drop', async event => {
+        depth = 0; box.classList.remove('pdf-drag');
+        if (pinned) return;
+        event.preventDefault();
+        const file = Array.from(event.dataTransfer.files || []).find(f =>
+          f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+        if (!file) { addSystemMessage('Please drop a PDF file.'); return; }
+        await uploadLocalPdf(file);
+      });
+    }
+
+    async function uploadLocalPdf(file) {
+      if (file.size > 80 * 1024 * 1024) {
+        addSystemMessage('⚠️ The PDF is larger than 80 MB.'); return;
+      }
+      setStatus('📄 Extracting “' + file.name + '”…');
+      try {
+        const resp = await fetch('/api/chat/upload-pdf', {
+          method: 'POST', headers: {'Content-Type': 'application/pdf',
+            'X-Filename': encodeURIComponent(file.name)}, body: file
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || 'PDF extraction failed');
+        const p = data.document;
+        library = library.filter(item => item.arxiv_id !== p.arxiv_id);
+        library.unshift(p); libraryById[normalizeId(p.arxiv_id)] = p;
+        clearStatus();
+        addSystemMessage('Imported “' + p.title + '” — ' + p.page_count +
+          ' pages, ' + p.chunk_count + ' searchable text chunks.');
+        pinPaper(p);
+      } catch (e) {
+        clearStatus(); addSystemMessage('⚠️ Could not import PDF: ' + e.message);
+      }
+    }
+
     function updateEmptyHint() {
       const el = $('emptyChat');
       if (!el) return;
       if (!configured) {
-        el.textContent = 'Configure your LLM in the Settings panel (red arrow on the left), pick a paper, and start asking.';
+        el.textContent = 'Drag a PDF here to read it locally. Configure the LLM in Settings when you want to ask questions.';
       } else if (pinned) {
         el.textContent = 'Reading: “' + pinned.title + '”. Ask anything about it below.';
       } else {
-        el.textContent = 'Pick a paper to read, or just ask a general question.';
+        el.textContent = 'Pick a paper, drag a PDF here to read it locally, or ask a general question.';
       }
     }
 
@@ -5077,7 +5455,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (chatHistory.length && !confirm('Start a new chat? The current conversation will be cleared.')) return;
       chatHistory = [];
       statusBox = null;
-      $('chatMessages').innerHTML = '<div class="empty-chat" id="emptyChat"></div>';
+      $('chatMessages').innerHTML = '<div class="empty-chat" id="emptyChat"></div>' +
+        '<div class="pdf-drop-message" id="pdfDropMessage">Drop PDF to extract and read it locally</div>';
       updateEmptyHint();
     }
 
@@ -5105,8 +5484,19 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         llmMessage = 'I selected this excerpt from the paper:\\n' + activeSelection + '\\n\\nMy question: ' + message;
       }
 
+      let localContext = '';
+      if (pinned && (pinned.source === 'local' || pinned.local)) {
+        try {
+          const contextResp = await fetch('/api/chat/local-context?document_id=' +
+            encodeURIComponent(pinned.document_id || pinned.arxiv_id) + '&q=' + encodeURIComponent(message));
+          const contextData = await contextResp.json();
+          if (contextData.success) localContext = (contextData.chunks || []).map(chunk =>
+            '[Pages ' + chunk.page_start + '–' + chunk.page_end + ']\\n' + chunk.text).join('\\n\\n');
+        } catch (e) {}
+      }
+
       const messages = [
-        { role: 'system', content: buildSystemPrompt() },
+        { role: 'system', content: buildSystemPrompt(localContext) },
         ...chatHistory,
         { role: 'user', content: llmMessage }
       ];
@@ -5238,6 +5628,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           saveAnnotation();
         }
       });
+      setupPdfDrop();
       buildPresetOptions();
       initPanes();
       updateEmptyHint();

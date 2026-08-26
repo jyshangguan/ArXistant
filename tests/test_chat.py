@@ -159,6 +159,53 @@ class PdfCacheTests(unittest.TestCase):
             arxiv_db_server.fetch_paper_pdf("../escape")
 
 
+class LocalPdfReaderTests(unittest.TestCase):
+    def _pdf_bytes(self):
+        import fitz
+        doc = fitz.open()
+        for page_no in range(1, 4):
+            page = doc.new_page()
+            page.insert_textbox(
+                fitz.Rect(50, 50, 550, 750),
+                (f"Local Reader Test — Page {page_no}\n\n" +
+                 "Galaxy formation and black hole accretion are discussed in this paper. " * 18),
+                fontsize=11)
+        data = doc.tobytes()
+        doc.close()
+        return data
+
+    def test_ingest_extracts_html_chunks_and_library_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "papers.db")
+            docs_dir = os.path.join(tmp, "local_documents")
+            with mock.patch.object(arxiv_db_server, "DB_PATH", db_path), \
+                 mock.patch.object(arxiv_db_server, "LOCAL_DOCUMENT_DIR", docs_dir):
+                arxiv_db_server.init_db()
+                item = arxiv_db_server.ingest_local_pdf(self._pdf_bytes(), "reader-test.pdf")
+                self.assertTrue(item["document_id"].startswith("local-"))
+                self.assertEqual(item["source"], "local")
+                self.assertEqual(item["page_count"], 3)
+                self.assertGreater(item["chunk_count"], 0)
+                pdf_path, html_path = arxiv_db_server._local_document_paths(item["document_id"])
+                self.assertTrue(os.path.exists(pdf_path))
+                self.assertTrue(os.path.exists(html_path))
+                with open(html_path, encoding="utf-8") as f:
+                    html = f.read()
+                self.assertIn('data-page="2"', html)
+                self.assertIn("Galaxy formation", html)
+                library = arxiv_db_server.collect_chat_library()
+                local_item = next(p for p in library if p.get("source") == "local")
+                self.assertEqual(local_item["document_id"], item["document_id"])
+                context = arxiv_db_server.local_document_context(
+                    item["document_id"], "black hole accretion")
+                self.assertTrue(context)
+                self.assertIn("black hole accretion", context[0]["text"].lower())
+
+    def test_ingest_rejects_non_pdf(self):
+        with self.assertRaisesRegex(ValueError, "not a valid PDF"):
+            arxiv_db_server.ingest_local_pdf(b"not a pdf", "bad.pdf")
+
+
 class _FakePdfResponse:
     def __init__(self, data):
         self._data = data
