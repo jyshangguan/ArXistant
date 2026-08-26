@@ -305,6 +305,22 @@ class FulltextTests(unittest.TestCase):
         self.assertIn("<base href=", html)
         self.assertIn("Hello full text", html)
 
+    def test_clean_fulltext_title_drops_inline_thanks(self):
+        # arXiv/ar5iv nest \thanks / pub-notes inside the title <h1>; the
+        # cleaned <h1> must be just the <title> text (issue: wrong chat title).
+        html = (
+            "<html><head><title>Real Paper Title</title></head><body>"
+            '<h1 class="ltx_title ltx_title_document">Real Paper Title'
+            '<span class="ltx_pubnotes"><span class="ltx_note_name">Thanks: </span>'
+            'The code can be downloaded from: https://example.com.</span></h1>'
+            "<p>body</p></body></html>")
+        out = arxiv_db_server.clean_fulltext_title(html)
+        import re
+        m = re.search(r"<h1[^>]*>(.*?)</h1>", out, re.S)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1).strip(), "Real Paper Title")
+        self.assertNotIn("Thanks", m.group(1))
+
 
 class WebSearchTests(unittest.TestCase):
     def test_ddg_real_url_decodes_uddg(self):

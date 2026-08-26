@@ -1171,11 +1171,38 @@ ARXIV_HTML_URLS = (
 _SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
 
 
+_TITLE_H1_RE = re.compile(r'<h1\b[^>]*ltx_title_document[^>]*>.*?</h1>', re.S | re.I)
+_FIRST_H1_RE = re.compile(r'<h1\b[^>]*>.*?</h1>', re.S | re.I)
+
+
+def clean_fulltext_title(html):
+    """Rebuild the document <h1> from the clean <title> text.
+
+    arXiv/ar5iv embed \\thanks and publication notes (ltx_pubnotes) *inside*
+    the title <h1>; without the source site's CSS/JS those notes render inline
+    and garble the visible title (e.g. "…relation. Thanks: The code can be…").
+    The <title> element is unaffected, so use it as the source of truth.
+    """
+    m = re.search(r'<title[^>]*>(.*?)</title>', html, re.S | re.I)
+    if not m:
+        return html
+    clean = html_unescape(m.group(1)).strip()
+    if not clean:
+        return html
+    replacement = ('<h1 class="ltx_title ltx_title_document">'
+                   + html_escape(clean) + '</h1>')
+    new_html, n = _TITLE_H1_RE.subn(lambda mm: replacement, html, count=1)
+    if n == 0:
+        new_html, _ = _FIRST_H1_RE.subn(lambda mm: replacement, html, count=1)
+    return new_html
+
+
 def fetch_paper_fulltext(arxiv_id):
     """Return a local path to a sanitized HTML copy of the paper's full text.
 
-    Prefers arxiv.org/html, falling back to ar5iv. Scripts are stripped and a
-    <base> tag is injected so relative assets resolve at the source. Cached.
+    Prefers arxiv.org/html, falling back to ar5iv. Scripts are stripped, the
+    document title is cleaned of inline thanks/notes, and a <base> tag is
+    injected so relative assets resolve at the source. Cached.
     """
     base = _safe_pdf_filename(arxiv_id)
     if base is None:
@@ -1201,6 +1228,7 @@ def fetch_paper_fulltext(arxiv_id):
             last_err = ValueError("response is not HTML")
             continue
         html = _SCRIPT_RE.sub("", html)
+        html = clean_fulltext_title(html)
         base_href = "https://arxiv.org/html/" + urllib.parse.quote(arxiv_id, safe="/")
         if re.search(r"<head\b[^>]*>", html, re.I):
             html = re.sub(r"<head\b[^>]*>",
@@ -1868,6 +1896,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with open(ft_path, "r", encoding="utf-8") as f:
                 content = f.read()
+            # Also clean at serve time so previously cached (polluted) copies
+            # are corrected without a re-download.
+            content = clean_fulltext_title(content)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
