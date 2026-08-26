@@ -3096,8 +3096,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         style.textContent = `
             .tag-btn { padding:3px 10px; color:white; border:none; border-radius:12px; cursor:pointer; font-size:0.95em; white-space:nowrap; background:#00796b; display:inline-flex; align-items:center; line-height:1.4; }
             .tag-btn:hover { opacity: 0.9; }
-            .tag-editor { margin-top:8px; padding:10px 12px; background:#fff; border:1px solid #d7d7d7; border-radius:6px; }
-            .tag-editor-title { font-size:0.8em; font-weight:bold; color:#00695c; margin-bottom:6px; }
+            .tag-editor { margin-top:6px; padding:8px 10px; background:#fff; border:1px solid #d7d7d7; border-radius:6px; }
+            .tag-status { color:#c62828; font-size:0.72em; margin-top:4px; }
             .tag-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
             .tag-chips:empty::after { content:'No tags yet.'; color:#999; font-size:0.75em; }
             .tag-chip { display:inline-flex; align-items:center; gap:5px; background:#e0f2f1; color:#00695c; border:1px solid #b2dfdb; border-radius:10px; padding:1px 8px; font-size:0.75em; }
@@ -3166,6 +3166,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (openEditor) { openEditor.el.remove(); openEditor = null; }
     }
 
+    function editorStatus(el, msg) {
+        let s = el.querySelector('.tag-status');
+        if (!msg) { if (s) s.remove(); return; }
+        if (!s) {
+            s = document.createElement('div');
+            s.className = 'tag-status';
+            el.appendChild(s);
+        }
+        s.textContent = msg;
+    }
+
     function persistTags(arxivId, working) {
         // Auto-save: every add/remove persists the full list immediately (no
         // "Save tags" button). Serialized so writes never land out of order.
@@ -3181,19 +3192,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (data.success) {
                     savedTags[arxivId] = data.tags || [];
                     updateTagButton(arxivId);
-                    if (openEditor && openEditor.el) {
-                        const t = openEditor.el.querySelector('.tag-editor-title');
-                        if (t) t.textContent = '🏷️ Tags for this paper';
-                    }
+                    if (openEditor && openEditor.el) editorStatus(openEditor.el, '');
                 } else if (openEditor && openEditor.el) {
-                    const t = openEditor.el.querySelector('.tag-editor-title');
-                    if (t) t.textContent = '🏷️ Could not save: ' + (data.error || 'unknown');
+                    editorStatus(openEditor.el, 'Could not save: ' + (data.error || 'unknown'));
                 }
             } catch (e) {
-                if (openEditor && openEditor.el) {
-                    const t = openEditor.el.querySelector('.tag-editor-title');
-                    if (t) t.textContent = '🏷️ Could not save: ' + e.message;
-                }
+                if (openEditor && openEditor.el) editorStatus(openEditor.el, 'Could not save: ' + e.message);
             }
         });
     }
@@ -3226,7 +3230,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const editor = document.createElement('div');
         editor.className = 'tag-editor';
         editor.innerHTML =
-            '<div class="tag-editor-title">🏷️ Tags for this paper</div>' +
             '<div class="tag-chips"></div>' +
             '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>';
 
@@ -3250,7 +3253,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
 
         openEditor = { arxivId: meta.arxivId, el: editor };
-        paper.appendChild(editor);
+        // Sit the editor right below the action icons row.
+        const row = paper.querySelector('.score-row');
+        if (row) row.insertAdjacentElement('afterend', editor); else paper.appendChild(editor);
         input.focus();
     }
 
@@ -4728,8 +4733,8 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     .paper-tag { background: #e0f2f1; color: #00695c; border: 1px solid #b2dfdb; border-radius: 10px; padding: 1px 8px; font-size: 0.75em; }
     .tag-edit-btn { background: none; border: 1px solid #b2dfdb; color: #00695c; border-radius: 10px; padding: 1px 8px; font-size: 0.75em; cursor: pointer; }
     .tag-edit-btn:hover { background: #e0f2f1; }
-    .tag-editor { margin-top: 8px; padding: 10px 12px; background: #fff; border: 1px solid #d7d7d7; border-radius: 6px; clear: both; }
-    .tag-editor-title { font-size: 0.8em; font-weight: bold; color: #00695c; margin-bottom: 6px; }
+    .tag-editor { margin-top: 6px; padding: 8px 10px; background: #fff; border: 1px solid #d7d7d7; border-radius: 6px; clear: both; }
+    .tag-status { color: #c62828; font-size: 0.72em; margin-top: 4px; }
     .tag-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
     .tag-chips:empty::after { content: 'No tags yet.'; color: #999; font-size: 0.75em; }
     .tag-chip { display: inline-flex; align-items: center; gap: 5px; background: #e0f2f1; color: #00695c; border: 1px solid #b2dfdb; border-radius: 10px; padding: 1px 8px; font-size: 0.75em; }
@@ -4908,8 +4913,15 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
         `<button class="tag-edit-btn" onclick="openTagEditor('${arxivId}')">🏷️ ${tags.length ? 'Edit tags' : 'Add tags'}</button>`;
     }
 
-    function editorTitleOf(arxivId) {
-      return document.querySelector('#' + editorId(arxivId) + ' .tag-editor-title');
+    function editorStatus(el, msg) {
+      let s = el.querySelector('.tag-status');
+      if (!msg) { if (s) s.remove(); return; }
+      if (!s) {
+        s = document.createElement('div');
+        s.className = 'tag-status';
+        el.appendChild(s);
+      }
+      s.textContent = msg;
     }
 
     function persistDbTags(arxivId, working) {
@@ -4917,6 +4929,8 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       const paper = allPapers.find(p => p.arxiv_id === arxivId);
       const snapshot = working.slice();
       tagDbSaveQueue = tagDbSaveQueue.then(async () => {
+        const el = openEditorId === arxivId
+          ? document.getElementById(editorId(arxivId)) : null;
         try {
           const resp = await fetch('/api/update_tags', {
             method: 'POST',
@@ -4928,15 +4942,12 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
             if (paper) paper.tags = (data.tags || []).join(', ');
             refreshCardTags(arxivId);
             renderTagBar();
-            const t = openEditorId === arxivId ? editorTitleOf(arxivId) : null;
-            if (t) t.textContent = '🏷️ Tags for this paper';
+            if (el) editorStatus(el, '');
           } else {
-            const t = openEditorId === arxivId ? editorTitleOf(arxivId) : null;
-            if (t) t.textContent = '🏷️ Could not save: ' + (data.error || 'unknown');
+            if (el) editorStatus(el, 'Could not save: ' + (data.error || 'unknown'));
           }
         } catch (e) {
-          const t = openEditorId === arxivId ? editorTitleOf(arxivId) : null;
-          if (t) t.textContent = '🏷️ Could not save: ' + e.message;
+          if (el) editorStatus(el, 'Could not save: ' + e.message);
         }
       });
     }
@@ -4983,7 +4994,6 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       editor.className = 'tag-editor';
       editor.id = editorId(arxivId);
       editor.innerHTML =
-        '<div class="tag-editor-title">🏷️ Tags for this paper</div>' +
         '<div class="tag-chips"></div>' +
         '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>';
 
@@ -5006,7 +5016,9 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       editor.querySelector('.tag-add').onclick = addFromInput;
       input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
 
-      card.appendChild(editor);
+      // Sit the editor right below the tag/edit button row.
+      const tagsRow = card.querySelector('.paper-tags');
+      if (tagsRow) tagsRow.insertAdjacentElement('afterend', editor); else card.appendChild(editor);
       input.focus();
     }
 

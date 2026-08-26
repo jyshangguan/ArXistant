@@ -193,8 +193,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         style.textContent = `
             .tag-btn { padding:3px 10px; color:white; border:none; border-radius:12px; cursor:pointer; font-size:0.95em; white-space:nowrap; background:#00796b; display:inline-flex; align-items:center; line-height:1.4; }
             .tag-btn:hover { opacity: 0.9; }
-            .tag-editor { margin-top:8px; padding:10px 12px; background:#fff; border:1px solid #d7d7d7; border-radius:6px; }
-            .tag-editor-title { font-size:0.8em; font-weight:bold; color:#00695c; margin-bottom:6px; }
+            .tag-editor { margin-top:6px; padding:8px 10px; background:#fff; border:1px solid #d7d7d7; border-radius:6px; }
+            .tag-status { color:#c62828; font-size:0.72em; margin-top:4px; }
             .tag-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
             .tag-chips:empty::after { content:'No tags yet.'; color:#999; font-size:0.75em; }
             .tag-chip { display:inline-flex; align-items:center; gap:5px; background:#e0f2f1; color:#00695c; border:1px solid #b2dfdb; border-radius:10px; padding:1px 8px; font-size:0.75em; }
@@ -263,6 +263,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (openEditor) { openEditor.el.remove(); openEditor = null; }
     }
 
+    function editorStatus(el, msg) {
+        let s = el.querySelector('.tag-status');
+        if (!msg) { if (s) s.remove(); return; }
+        if (!s) {
+            s = document.createElement('div');
+            s.className = 'tag-status';
+            el.appendChild(s);
+        }
+        s.textContent = msg;
+    }
+
     function persistTags(arxivId, working) {
         // Auto-save: every add/remove persists the full list immediately (no
         // "Save tags" button). Serialized so writes never land out of order.
@@ -278,19 +289,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (data.success) {
                     savedTags[arxivId] = data.tags || [];
                     updateTagButton(arxivId);
-                    if (openEditor && openEditor.el) {
-                        const t = openEditor.el.querySelector('.tag-editor-title');
-                        if (t) t.textContent = '🏷️ Tags for this paper';
-                    }
+                    if (openEditor && openEditor.el) editorStatus(openEditor.el, '');
                 } else if (openEditor && openEditor.el) {
-                    const t = openEditor.el.querySelector('.tag-editor-title');
-                    if (t) t.textContent = '🏷️ Could not save: ' + (data.error || 'unknown');
+                    editorStatus(openEditor.el, 'Could not save: ' + (data.error || 'unknown'));
                 }
             } catch (e) {
-                if (openEditor && openEditor.el) {
-                    const t = openEditor.el.querySelector('.tag-editor-title');
-                    if (t) t.textContent = '🏷️ Could not save: ' + e.message;
-                }
+                if (openEditor && openEditor.el) editorStatus(openEditor.el, 'Could not save: ' + e.message);
             }
         });
     }
@@ -323,7 +327,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const editor = document.createElement('div');
         editor.className = 'tag-editor';
         editor.innerHTML =
-            '<div class="tag-editor-title">🏷️ Tags for this paper</div>' +
             '<div class="tag-chips"></div>' +
             '<div class="tag-input-row"><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button class="tag-add">Add</button></div>';
 
@@ -347,7 +350,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromInput(); } };
 
         openEditor = { arxivId: meta.arxivId, el: editor };
-        paper.appendChild(editor);
+        // Sit the editor right below the action icons row.
+        const row = paper.querySelector('.score-row');
+        if (row) row.insertAdjacentElement('afterend', editor); else paper.appendChild(editor);
         input.focus();
     }
 
@@ -691,12 +696,12 @@ def format_paper_list_html(scored_papers, date_str=None, page_type='new'):
 
             lines.append('  <div class="paper">')
             lines.append(f'    <h2>{i}. <span class="arxiv-id"><a href="{arxiv_url}" target="_blank">arXiv:{paper["id"]}</a></span> — <a href="https://alphaxiv.org/abs/{paper["id"]}" target="_blank">{title_escaped}</a></h2>')
+            lines.append(f'    <p class="authors"><strong>Authors:</strong> {author_str}</p>')
             lines.append('    <div class="score-row">')
             if norm_score > 0:
                 lines.append(f'      <span class="score">Relevance: {norm_score}/100</span>')
             lines.append('      <span class="paper-actions"></span>')
             lines.append('    </div>')
-            lines.append(f'    <p class="authors"><strong>Authors:</strong> {author_str}</p>')
             lines.append(f'    <button class="abstract-btn" onclick="document.getElementById(\'{abstract_id}\').style.display = (document.getElementById(\'{abstract_id}\').style.display === \'block\' ? \'none\' : \'block\'); this.textContent = (document.getElementById(\'{abstract_id}\').style.display === \'block\' ? \'▾ Hide abstract\' : \'▸ Show abstract\');">▸ Show abstract</button>')
             lines.append(f'    <p class="abstract-full" id="{abstract_id}">{abstract_escaped}</p>')
             lines.append('  </div>')
