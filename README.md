@@ -51,7 +51,7 @@ Browse the complete documentation at
   local data, background refresh, and project structure.
 - [Android app](docs/android.md) — run ArXistant standalone on a phone (arXiv
   fetch, ML ranking, and Nutstore sync, no server). Download the signed APK from
-  the [v0.1.3 release](https://github.com/jyshangguan/ArXistant/releases/latest).
+  the [v0.2.0 release](https://github.com/jyshangguan/ArXistant/releases/latest).
 
 ## At a glance
 
@@ -64,10 +64,10 @@ flowchart LR
     E --> C
 ```
 
-ArXistant is currently at version **0.1.3**. The Chrome extension is loaded as
+ArXistant is currently at version **0.2.0**. The Chrome extension is loaded as
 an unpacked extension. macOS has a bundled launcher, and Debian/Ubuntu has an
 experimental `.deb` package with a systemd user service. A standalone **Android
-app (v0.1.3)** runs the full pipeline on the phone via Chaquopy.
+app (v0.2.0)** runs the full pipeline on the phone via Chaquopy.
 
 ## License
 

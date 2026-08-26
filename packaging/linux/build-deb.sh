@@ -4,7 +4,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-VERSION=${1:-0.1.3}
+VERSION=${1:-0.2.0}
 
 case "$VERSION" in
     *[!0-9A-Za-z.+~-]*|'')

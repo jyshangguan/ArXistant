@@ -95,7 +95,7 @@ From a repository checkout:
 
 ```bash
 ./packaging/linux/build-deb.sh
-sudo apt install ./dist/arxistant_0.1.3_all.deb
+sudo apt install ./dist/arxistant_0.2.0_all.deb
 ```
 
 The dependency installation is relatively large because Debian's scientific
@@ -199,7 +199,7 @@ The Android app is self-contained: it runs the server, ML ranking, paper
 database, and cloud sync on the phone, so it needs no desktop install and no
 Chrome extension.
 
-1. Download `arxistant-release.v0.1.3.apk` from the
+1. Download `arxistant-release.v0.2.0.apk` from the
    [latest GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
 2. Copy the APK to the phone and open it. Android asks you to allow "install
    unknown apps" for the file manager or browser you used.

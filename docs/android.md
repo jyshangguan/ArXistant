@@ -16,9 +16,9 @@ server or a desktop Mac.
 
 Prebuilt, signed APKs are attached to each
 [GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
-For v0.1.3 the direct download is:
+For v0.2.0 the direct download is:
 
-<https://github.com/jyshangguan/ArXistant/releases/download/v0.1.3/arxistant-release.v0.1.3.apk>
+<https://github.com/jyshangguan/ArXistant/releases/download/v0.2.0/arxistant-release.v0.2.0.apk>
 
 Copy the APK to the phone and open it to install. If a debug build is already
 installed, uninstall it first (the debug and release builds use different
@@ -106,7 +106,7 @@ cd android
 
 # Release APK (signed; see "Release build" below):
 ./gradlew :app:assembleRelease
-#   -> app/build/outputs/apk/release/arxistant-release.v0.1.3.apk
+#   -> app/build/outputs/apk/release/arxistant-release.v0.2.0.apk
 ```
 
 The first build downloads Chaquopy, NumPy, and scikit-learn wheels for the
@@ -146,12 +146,12 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android release is
-**v0.1.3** (`versionName "0.1.3"`, `versionCode 3` in `app/build.gradle`), matching the desktop release.
+**v0.2.0** (`versionName "0.2.0"`, `versionCode 4` in `app/build.gradle`), matching the desktop release.
 
 ## Install and run
 
 - **Phone:** install the release APK
-  (`app/build/outputs/apk/release/arxistant-release.v0.1.3.apk`) or the debug APK
+  (`app/build/outputs/apk/release/arxistant-release.v0.2.0.apk`) or the debug APK
   (`app/build/outputs/apk/debug/app-debug.apk`) and launch it. The daily page
   appears in the WebView after the server starts.
 - **Emulator:** use an arm64 system image on Apple Silicon. The
