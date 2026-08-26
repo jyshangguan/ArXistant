@@ -1273,28 +1273,52 @@ def normalize_highlights(value):
     seen = set()
     out = []
     for item in value:
-        quote = " ".join(str(item).split())
+        # Entries may be plain quotes (legacy) or {q, n} objects carrying an
+        # annotation note (issue #10).
+        if isinstance(item, dict):
+            raw_q = item.get("q") or item.get("quote") or ""
+            raw_n = item.get("n") or item.get("note") or ""
+        else:
+            raw_q = item
+            raw_n = ""
+        quote = " ".join(str(raw_q).split())
         if len(quote) < 3 or len(quote) > 2000:
             continue
         key = quote.lower()
         if key in seen:
             continue
         seen.add(key)
-        out.append(quote)
+        note = " ".join(str(raw_n).split())[:2000]
+        out.append({"q": quote, "n": note})
         if len(out) >= 200:
             break
     return json.dumps(out, ensure_ascii=False) if out else ""
 
 
 def parse_highlights(value):
-    """Parse the highlights column back into a list of quotes."""
+    """Parse the highlights column into a list of {q, n} objects.
+
+    Legacy entries stored as bare quote strings are upgraded to objects with
+    an empty note.
+    """
     if not value:
         return []
     try:
         parsed = json.loads(value)
     except (json.JSONDecodeError, ValueError, TypeError):
         return []
-    return parsed if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    out = []
+    for item in parsed:
+        if isinstance(item, dict):
+            out.append({
+                "q": str(item.get("q") or item.get("quote") or ""),
+                "n": str(item.get("n") or item.get("note") or ""),
+            })
+        else:
+            out.append({"q": str(item), "n": ""})
+    return out
 
 
 def init_db():
@@ -3457,6 +3481,15 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .sel-bubble button:hover { background: #8a1515; }
     .sel-bubble button + button { border-left: 1px solid rgba(255,255,255,0.35); }
     mark.user-hl { background: #9be7ff; cursor: pointer; }
+    mark.user-hl.has-note { box-shadow: 0 2px 0 #00796b; }
+    .annot-pop { position: fixed; z-index: 60; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100vw - 32px)); background: #fff; border: 1px solid #d7d7d7; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); padding: 14px; box-sizing: border-box; }
+    .annot-pop .annot-quote { font-size: 0.8em; color: #555; background: #eaf8ff; border-left: 3px solid #9be7ff; padding: 6px 8px; margin-bottom: 10px; max-height: 90px; overflow: hidden; }
+    .annot-pop textarea { width: 100%; min-height: 70px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-family: inherit; font-size: 0.85em; box-sizing: border-box; }
+    .annot-pop .annot-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .annot-pop .annot-actions button { padding: 5px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+    .annot-save { background: #00796b; color: #fff; }
+    .annot-remove { background: #c62828; color: #fff; }
+    .annot-close { background: #eee; color: #555; }
     .notes-box { flex-shrink: 0; border: 1px solid #e0e0e0; border-left: 4px solid #00796b; border-radius: 8px; background: #f4fbf9; padding: 8px 12px; margin-bottom: 12px; }
     .notes-box summary { cursor: pointer; font-size: 0.85em; font-weight: bold; color: #00695c; }
     .notes-box .notes-status { font-weight: normal; font-size: 0.85em; color: #666; margin-left: 8px; }
@@ -3588,6 +3621,15 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             <div id="selBubble" class="sel-bubble hidden">
               <button onclick="attachSelection()">💬 Ask about this</button>
               <button onclick="highlightSelection()">🖍 Highlight</button>
+            </div>
+          </div>
+          <div id="annotPop" class="annot-pop hidden">
+            <div class="annot-quote" id="annotQuote"></div>
+            <textarea id="annotNote" placeholder="Add a note for this highlight…"></textarea>
+            <div class="annot-actions">
+              <button class="annot-save" onclick="saveAnnotation()">💾 Save note</button>
+              <button class="annot-remove" onclick="removeActiveHighlight()">🗑 Remove highlight</button>
+              <button class="annot-close" onclick="closeAnnotation()">Close</button>
             </div>
           </div>
         </div>
@@ -4088,9 +4130,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         fullText = doc.body.innerText;
         textLoadedFor = normalizeId(p.arxiv_id);
         $('viewHint').textContent = 'Select any text, then ask about it.';
-        doc.addEventListener('mouseup', onTextSelect);
-        doc.addEventListener('keyup', onTextSelect);
-        doc.addEventListener('selectionchange', scheduleSelect);
+        // Smooth selection: the bubble is only shown once a gesture finishes
+        // (mouseup / keyup), never during the drag. mousedown hides any stale
+        // bubble so it can't intercept the next drag.
+        doc.addEventListener('mousedown', hideSelectBubble);
+        doc.addEventListener('mouseup', () => setTimeout(onTextSelect, 0));
+        doc.addEventListener('keyup', scheduleSelect);
         try {
           frame.contentWindow.addEventListener('scroll', hideSelectBubble, { passive: true });
         } catch (e) {}
@@ -4105,13 +4150,13 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       }, 300);
     }
 
-    let lastSelect = 0;
     let parentMouseUpBound = false;
+    let selTrailingTimer = null;
+    // Keyboard selection (shift+arrows): reveal the bubble on the trailing
+    // edge once the user pauses, instead of on every selectionchange.
     function scheduleSelect() {
-      const now = Date.now();
-      if (now - lastSelect < 80) return;
-      lastSelect = now;
-      onTextSelect();
+      clearTimeout(selTrailingTimer);
+      selTrailingTimer = setTimeout(onTextSelect, 120);
     }
     function onParentMouseUp() {
       if (currentView !== 'text' || !pinned) return;
@@ -4119,6 +4164,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     }
     function hideSelectBubble() { $('selBubble').classList.add('hidden'); }
 
+    // Compute + reveal the bubble. Only invoked when a selection gesture has
+    // finished, so no layout reads / repositioning happen mid-drag.
     function onTextSelect() {
       const frame = $('textFrame');
       const bubble = $('selBubble');
@@ -4127,9 +4174,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         const txt = sel ? sel.toString().replace(/\\s+/g, ' ').trim() : '';
         if (!txt || txt.length < 3 || !sel.rangeCount) { bubble.classList.add('hidden'); pendingSelection = ''; return; }
         pendingSelection = txt;
+        // The range rect is in the iframe's viewport space; offset it by the
+        // iframe's position within the parent page before placing the bubble.
         const r = sel.getRangeAt(0).getBoundingClientRect();
-        bubble.style.left = Math.max(60, Math.min(r.left + r.width / 2, frame.clientWidth - 60)) + 'px';
-        bubble.style.top = Math.max(4, r.top - 36) + 'px';
+        const ox = frame.offsetLeft || 0, oy = frame.offsetTop || 0;
+        bubble.style.left = Math.max(60, Math.min(r.left + ox + r.width / 2, frame.clientWidth - 60)) + 'px';
+        bubble.style.top = Math.max(4, r.top + oy - 36) + 'px';
         bubble.classList.remove('hidden');
       } catch (e) { bubble.classList.add('hidden'); }
     }
@@ -4169,7 +4219,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       return count;
     }
 
-    function highlightOne(doc, quote, user) {
+    function highlightOne(doc, quote, user, entry) {
       const needle = quote.replace(/\\s+/g, ' ').trim();
       if (needle.length < 8) return false;
       const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, null);
@@ -4206,10 +4256,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         range.setEnd(eNode, cleanToRaw(eNode.data, eOff));
         const mark = doc.createElement('mark');
         if (user) {
-          mark.className = 'user-hl';
-          mark.title = 'Click to remove this highlight';
-          const q = quote;
-          mark.onclick = () => removeUserHighlight(q, mark);
+          mark.className = 'user-hl' + ((entry && hlNote(entry)) ? ' has-note' : '');
+          mark.title = 'Click to annotate this highlight';
+          const e = entry;
+          mark.onclick = () => openAnnotation(e, mark);
         } else {
           mark.style.background = '#ffe08a';
         }
@@ -4220,13 +4270,56 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       }
     }
 
-    // ---------- User highlights + notes (issue #6) ----------
+    // ---------- User highlights + per-highlight annotations (issue #6/#10) ----------
+
+    // Highlights are {q, n} objects (legacy bare strings are upgraded on parse).
+    function hlQuote(h) { return typeof h === 'string' ? h : (h.q || ''); }
+    function hlNote(h) { return typeof h === 'string' ? '' : (h.n || ''); }
 
     function applyUserHighlights() {
       let doc;
       try { doc = $('textFrame').contentDocument; } catch (e) { return; }
       if (!doc || !doc.body) return;
-      for (const q of userHighlights) highlightOne(doc, q, true);
+      for (const h of userHighlights) highlightOne(doc, hlQuote(h), true, h);
+    }
+
+    // Unwrap and re-draw user highlights so <mark> onclick handlers always bind
+    // to the current entry objects (e.g. after a persist round-trip).
+    function rerenderUserHighlights() {
+      let doc;
+      try { doc = $('textFrame').contentDocument; } catch (e) { return; }
+      if (!doc || !doc.body) return;
+      doc.querySelectorAll('mark.user-hl').forEach((m) => {
+        const parent = m.parentNode;
+        parent.replaceChild(doc.createTextNode(m.textContent), m);
+        parent.normalize();
+      });
+      applyUserHighlights();
+    }
+
+    let activeAnnot = null;  // { entry, mark }
+    function openAnnotation(entry, mark) {
+      activeAnnot = { entry, mark };
+      $('annotQuote').textContent = hlQuote(entry);
+      $('annotNote').value = hlNote(entry);
+      $('annotPop').classList.remove('hidden');
+      $('annotNote').focus();
+    }
+    function closeAnnotation() {
+      activeAnnot = null;
+      $('annotPop').classList.add('hidden');
+    }
+    async function saveAnnotation() {
+      if (!activeAnnot) return;
+      const entry = activeAnnot.entry, mark = activeAnnot.mark;
+      entry.n = $('annotNote').value.trim();
+      mark.classList.toggle('has-note', !!entry.n);
+      closeAnnotation();
+      await persistHighlights();
+    }
+    function removeActiveHighlight() {
+      if (!activeAnnot) return;
+      removeUserHighlight(activeAnnot.entry, activeAnnot.mark);
     }
 
     async function ensurePinnedSaved() {
@@ -4264,6 +4357,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         if (data.success) {
           userHighlights = data.highlights || [];
           pinned.highlights = userHighlights;
+          rerenderUserHighlights();
         } else {
           addSystemMessage('Could not save highlights: ' + (data.error || 'unknown error'));
         }
@@ -4282,23 +4376,26 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       }
       pendingSelection = '';
       try { $('textFrame').contentWindow.getSelection().removeAllRanges(); } catch (e) {}
-      if (userHighlights.some(q => q.toLowerCase() === quote.toLowerCase())) return;
-      userHighlights.push(quote);
+      if (userHighlights.some(h => hlQuote(h).toLowerCase() === quote.toLowerCase())) return;
+      const entry = { q: quote, n: '' };
+      userHighlights.push(entry);
       if (textLoadedFor === normalizeId(pinned.arxiv_id)) {
         let doc;
         try { doc = $('textFrame').contentDocument; } catch (e) { doc = null; }
-        if (doc) highlightOne(doc, quote, true);
+        if (doc) highlightOne(doc, quote, true, entry);
       }
       await persistHighlights();
     }
 
-    function removeUserHighlight(quote, mark) {
-      userHighlights = userHighlights.filter(q => q !== quote);
+    function removeUserHighlight(entry, mark) {
+      const q = hlQuote(entry).toLowerCase();
+      userHighlights = userHighlights.filter(h => hlQuote(h).toLowerCase() !== q);
       try {
         const parent = mark.parentNode;
         parent.replaceChild(mark.ownerDocument.createTextNode(mark.textContent), mark);
         parent.normalize();
       } catch (e) {}
+      closeAnnotation();
       persistHighlights();
     }
 

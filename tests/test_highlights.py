@@ -23,17 +23,27 @@ class NormalizeHighlightsTests(unittest.TestCase):
     def test_normalizes_and_dedupes(self):
         value = ["  a passage   of text ", "a passage of text", "okay", "x" * 3000]
         self.assertEqual(server.normalize_highlights(value),
-                         json.dumps(["a passage of text", "okay"], ensure_ascii=False))
+                         json.dumps([{"q": "a passage of text", "n": ""},
+                                     {"q": "okay", "n": ""}], ensure_ascii=False))
+
+    def test_accepts_objects_with_notes(self):
+        value = [{"q": "some quote", "n": "my note"}, "bare quote"]
+        self.assertEqual(server.normalize_highlights(value),
+                         json.dumps([{"q": "some quote", "n": "my note"},
+                                     {"q": "bare quote", "n": ""}], ensure_ascii=False))
 
     def test_accepts_json_string_and_rejects_garbage(self):
         self.assertEqual(server.normalize_highlights('["one two three"]'),
-                         '["one two three"]')
+                         json.dumps([{"q": "one two three", "n": ""}], ensure_ascii=False))
         self.assertEqual(server.normalize_highlights("not json"), "")
         self.assertEqual(server.normalize_highlights(None), "")
         self.assertEqual(server.normalize_highlights(42), "")
 
     def test_parse_roundtrip_and_garbage(self):
-        self.assertEqual(server.parse_highlights('["a b c"]'), ["a b c"])
+        # Legacy bare strings are upgraded to {q, n} objects.
+        self.assertEqual(server.parse_highlights('["a b c"]'), [{"q": "a b c", "n": ""}])
+        self.assertEqual(server.parse_highlights('[{"q": "x y", "n": "z"}]'),
+                         [{"q": "x y", "n": "z"}])
         self.assertEqual(server.parse_highlights(""), [])
         self.assertEqual(server.parse_highlights("nope"), [])
 
@@ -95,13 +105,15 @@ class HighlightsApiEndToEndTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
         self.assertEqual(body["highlights"],
-                         ["we observe a strong flare", "the spectrum hardens"])
+                         [{"q": "we observe a strong flare", "n": ""},
+                          {"q": "the spectrum hardens", "n": ""}])
 
         # Re-saving without highlights must not wipe them.
         self._save("2501.00010")
         lib = {p["arxiv_id"]: p for p in self._get("/api/chat/library")["papers"]}
         self.assertEqual(lib["2501.00010"]["highlights"],
-                         ["we observe a strong flare", "the spectrum hardens"])
+                         [{"q": "we observe a strong flare", "n": ""},
+                          {"q": "the spectrum hardens", "n": ""}])
 
     def test_update_highlights_unknown_paper_is_404(self):
         status, body = self._post("/api/update_highlights", {
