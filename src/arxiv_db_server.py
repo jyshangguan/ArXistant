@@ -4281,12 +4281,25 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       // token-by-token allowing arbitrary whitespace between tokens.
       const isWS = (ch) => ch.trim() === '';
       let start = -1, end = -1;
-      // Fast path: a stored *raw* selection is a contiguous slice of the raw
-      // node stream, so it matches exactly (this is what makes math-heavy
-      // paragraphs re-apply correctly after a reload).
-      const exactRaw = total.indexOf(quote);
-      if (exactRaw !== -1) { start = exactRaw; end = exactRaw + quote.length; }
-      else {
+      // Chrome's selection.toString() inserts line breaks at math /
+      // inline-block boundaries that are absent from the DOM text stream, so
+      // compare with ALL whitespace stripped (removes the artifact on both
+      // sides) and map the stripped offsets back to raw offsets.
+      let stripped = '';
+      const stripToRaw = [];
+      for (let i = 0; i < total.length; i++) {
+        if (!isWS(total[i])) { stripped += total[i].toLowerCase(); stripToRaw.push(i); }
+      }
+      const key = quote.replace(/\\s+/g, '').toLowerCase();
+      const si = stripped.indexOf(key);
+      if (si !== -1) {
+        const ei = si + key.length;
+        start = stripToRaw[si];
+        end = (ei < stripToRaw.length) ? stripToRaw[ei] : total.length;
+      }
+      if (start !== -1 && end > start) {
+        // matched via stripped stream; skip token fallback
+      } else {
         const lowerTotal = total.toLowerCase();
         const tokens = needle.toLowerCase().split(' ').filter(Boolean);
         if (!tokens.length) return false;
