@@ -25,27 +25,27 @@ class NormalizeHighlightsTests(unittest.TestCase):
         # trimmed and dedup is on the collapsed form.
         value = ["  a passage   of text ", "a passage of text", "okay", "x" * 5000]
         self.assertEqual(server.normalize_highlights(value),
-                         json.dumps([{"q": "a passage   of text", "n": ""},
-                                     {"q": "okay", "n": ""}], ensure_ascii=False))
+                         json.dumps([{"q": "a passage   of text", "n": "", "c": "#9be7ff"},
+                                     {"q": "okay", "n": "", "c": "#9be7ff"}], ensure_ascii=False))
 
     def test_accepts_objects_with_notes(self):
-        value = [{"q": "some quote", "n": "my note"}, "bare quote"]
+        value = [{"q": "some quote", "n": "my note", "c": "#ffe08a"}, "bare quote"]
         self.assertEqual(server.normalize_highlights(value),
-                         json.dumps([{"q": "some quote", "n": "my note"},
-                                     {"q": "bare quote", "n": ""}], ensure_ascii=False))
+                         json.dumps([{"q": "some quote", "n": "my note", "c": "#ffe08a"},
+                                     {"q": "bare quote", "n": "", "c": "#9be7ff"}], ensure_ascii=False))
 
     def test_accepts_json_string_and_rejects_garbage(self):
         self.assertEqual(server.normalize_highlights('["one two three"]'),
-                         json.dumps([{"q": "one two three", "n": ""}], ensure_ascii=False))
+                         json.dumps([{"q": "one two three", "n": "", "c": "#9be7ff"}], ensure_ascii=False))
         self.assertEqual(server.normalize_highlights("not json"), "")
         self.assertEqual(server.normalize_highlights(None), "")
         self.assertEqual(server.normalize_highlights(42), "")
 
     def test_parse_roundtrip_and_garbage(self):
         # Legacy bare strings are upgraded to {q, n} objects.
-        self.assertEqual(server.parse_highlights('["a b c"]'), [{"q": "a b c", "n": ""}])
+        self.assertEqual(server.parse_highlights('["a b c"]'), [{"q": "a b c", "n": "", "c": "#9be7ff"}])
         self.assertEqual(server.parse_highlights('[{"q": "x y", "n": "z"}]'),
-                         [{"q": "x y", "n": "z"}])
+                         [{"q": "x y", "n": "z", "c": "#9be7ff"}])
         self.assertEqual(server.parse_highlights(""), [])
         self.assertEqual(server.parse_highlights("nope"), [])
 
@@ -107,15 +107,36 @@ class HighlightsApiEndToEndTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
         self.assertEqual(body["highlights"],
-                         [{"q": "we observe a strong flare", "n": ""},
-                          {"q": "the   spectrum hardens", "n": ""}])
+                         [{"q": "we observe a strong flare", "n": "", "c": "#9be7ff"},
+                          {"q": "the   spectrum hardens", "n": "", "c": "#9be7ff"}])
 
         # Re-saving without highlights must not wipe them.
         self._save("2501.00010")
         lib = {p["arxiv_id"]: p for p in self._get("/api/chat/library")["papers"]}
         self.assertEqual(lib["2501.00010"]["highlights"],
-                         [{"q": "we observe a strong flare", "n": ""},
-                          {"q": "the   spectrum hardens", "n": ""}])
+                         [{"q": "we observe a strong flare", "n": "", "c": "#9be7ff"},
+                          {"q": "the   spectrum hardens", "n": "", "c": "#9be7ff"}])
+
+    def test_annotation_notes_roundtrip_and_survive_resave(self):
+        self._save("2501.00012")
+        status, body = self._post("/api/update_highlights", {
+            "arxiv_id": "2501.00012",
+            "highlights": [
+                {"q": "a carefully selected passage", "n": "check this result", "c": "#e1bee7"},
+                {"q": "a second passage", "n": "compare with section 4"},
+            ],
+        })
+        self.assertEqual(status, 200)
+        expected = [
+            {"q": "a carefully selected passage", "n": "check this result", "c": "#e1bee7"},
+            {"q": "a second passage", "n": "compare with section 4", "c": "#9be7ff"},
+        ]
+        self.assertEqual(body["highlights"], expected)
+
+        # Saving paper metadata again must retain every passage and note.
+        self._save("2501.00012", title="Updated title")
+        lib = {p["arxiv_id"]: p for p in self._get("/api/chat/library")["papers"]}
+        self.assertEqual(lib["2501.00012"]["highlights"], expected)
 
     def test_update_highlights_unknown_paper_is_404(self):
         status, body = self._post("/api/update_highlights", {
@@ -144,9 +165,16 @@ class ChatPageHtmlTests(unittest.TestCase):
         self.assertIn("highlightSelection", html)
         self.assertIn("/api/update_highlights", html)
         self.assertIn("user-hl", html)
-        self.assertIn('id="notesArea"', html)
-        self.assertIn("savePinnedNotes", html)
-        self.assertIn("/api/update_notes", html)
+        self.assertIn('id="annotationList"', html)
+        self.assertIn("renderAnnotationList", html)
+        self.assertIn("setAnnotationColor", html)
+        self.assertNotIn('id="notesArea"', html)
+        self.assertNotIn('id="quickPrompts"', html)
+        self.assertIn("handleHighlightClick", html)
+        self.assertIn("selectionWasDragged", html)
+        self.assertIn("CSS.highlights", html)
+        self.assertIn("new win.Highlight", html)
+        self.assertIn("handleTextDocumentClick", html)
 
 
 if __name__ == "__main__":

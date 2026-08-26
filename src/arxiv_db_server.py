@@ -1306,9 +1306,11 @@ def normalize_highlights(value):
         if isinstance(item, dict):
             raw_q = item.get("q") or item.get("quote") or ""
             raw_n = item.get("n") or item.get("note") or ""
+            raw_c = item.get("c") or item.get("color") or ""
         else:
             raw_q = item
             raw_n = ""
+            raw_c = ""
         # Keep the quote's internal whitespace verbatim (it is a contiguous
         # slice of the page's text stream, used for exact re-matching); only
         # trim the ends. Dedup on the collapsed form.
@@ -1320,7 +1322,10 @@ def normalize_highlights(value):
             continue
         seen.add(key)
         note = " ".join(str(raw_n).split())[:2000]
-        out.append({"q": quote, "n": note})
+        color = str(raw_c).lower()
+        if color not in {"#9be7ff", "#ffe08a", "#b9f6ca", "#ffccbc", "#e1bee7", "#d7ccc8"}:
+            color = "#9be7ff"
+        out.append({"q": quote, "n": note, "c": color})
         if len(out) >= 200:
             break
     return json.dumps(out, ensure_ascii=False) if out else ""
@@ -1346,9 +1351,10 @@ def parse_highlights(value):
             out.append({
                 "q": str(item.get("q") or item.get("quote") or ""),
                 "n": str(item.get("n") or item.get("note") or ""),
+                "c": str(item.get("c") or item.get("color") or "#9be7ff"),
             })
         else:
-            out.append({"q": str(item), "n": ""})
+            out.append({"q": str(item), "n": "", "c": "#9be7ff"})
     return out
 
 
@@ -3519,6 +3525,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .annot-pop { position: fixed; z-index: 60; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100vw - 32px)); background: #fff; border: 1px solid #d7d7d7; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); padding: 14px; box-sizing: border-box; }
     .annot-pop .annot-quote { font-size: 0.8em; color: #555; background: #eaf8ff; border-left: 3px solid #9be7ff; padding: 6px 8px; margin-bottom: 10px; max-height: 90px; overflow: hidden; }
     .annot-pop textarea { width: 100%; min-height: 70px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-family: inherit; font-size: 0.85em; box-sizing: border-box; }
+    .annot-colors { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 0.78em; color: #666; }
+    .annot-color { width: 22px; height: 22px; border: 2px solid transparent; border-radius: 50%; padding: 0; cursor: pointer; }
+    .annot-color.active { border-color: #333; box-shadow: 0 0 0 1px #fff inset; }
     .annot-pop .annot-actions { display: flex; gap: 8px; margin-top: 10px; }
     .annot-pop .annot-actions button { padding: 5px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
     .annot-save { background: #00796b; color: #fff; }
@@ -3526,9 +3535,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .annot-close { background: #eee; color: #555; }
     .notes-box { flex-shrink: 0; border: 1px solid #e0e0e0; border-left: 4px solid #00796b; border-radius: 8px; background: #f4fbf9; padding: 8px 12px; margin-bottom: 12px; }
     .notes-box summary { cursor: pointer; font-size: 0.85em; font-weight: bold; color: #00695c; }
-    .notes-box .notes-status { font-weight: normal; font-size: 0.85em; color: #666; margin-left: 8px; }
-    .notes-box textarea { width: 100%; min-height: 70px; margin-top: 8px; padding: 8px; border: 1px solid #cde8e2; border-radius: 4px; font-family: inherit; font-size: 0.85em; box-sizing: border-box; }
-    .notes-box button { margin-top: 6px; padding: 4px 12px; background: #00796b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+    .notes-box { max-height: 42%; overflow-y: auto; }
+    .annotation-empty { margin: 8px 0 2px; color: #888; font-size: 0.8em; font-style: italic; }
+    .annotation-card { margin-top: 8px; padding: 7px; border: 1px solid #cde8e2; border-left: 5px solid #9be7ff; border-radius: 5px; background: #fff; }
+    .annotation-quote { font-size: 0.76em; color: #444; line-height: 1.35; cursor: pointer; max-height: 3.9em; overflow: hidden; }
+    .annotation-quote:hover { color: #b31b1b; }
+    .annotation-card textarea { width: 100%; min-height: 48px; margin-top: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 0.8em; box-sizing: border-box; resize: vertical; }
 
     .paper-info { flex-shrink: 0; max-height: 45%; overflow-y: auto; border: 1px solid #e0e0e0; border-left: 4px solid #b31b1b; border-radius: 8px; background: #fdf6f6; padding: 9px 30px 9px 12px; margin-bottom: 12px; position: relative; box-sizing: border-box; }
     .paper-info .unpin { position: absolute; right: 8px; top: 6px; cursor: pointer; color: #c62828; font-weight: bold; font-size: 1.2em; }
@@ -3560,12 +3572,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .message li { margin-bottom: 4px; }
     .thinking { color: #999; font-style: italic; }
 
-    .quick-prompts { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; flex-shrink: 0; }
     .sel-chip { display: flex; align-items: center; gap: 8px; background: #fdf3f3; border: 1px solid #b31b1b; color: #7a1010; border-radius: 6px; padding: 4px 10px; font-size: 0.78em; margin-bottom: 8px; flex-shrink: 0; cursor: pointer; max-width: 100%; }
     .sel-chip .sel-x { font-weight: bold; color: #c62828; }
     .sel-chip .sel-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .quick-chip { font-size: 0.8em; padding: 4px 10px; background: #f0f0f0; border: 1px solid #ddd; border-radius: 14px; cursor: pointer; color: #444; }
-    .quick-chip:hover { border-color: #b31b1b; color: #b31b1b; }
 
     .chat-input { display: flex; gap: 8px; flex-shrink: 0; }
     .chat-input textarea { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; resize: none; min-height: 58px; font-size: 0.95em; }
@@ -3660,6 +3669,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           <div id="annotPop" class="annot-pop hidden">
             <div class="annot-quote" id="annotQuote"></div>
             <textarea id="annotNote" placeholder="Add a note for this highlight…"></textarea>
+            <div class="annot-colors" id="annotColors"><span>Color</span></div>
             <div class="annot-actions">
               <button class="annot-save" onclick="saveAnnotation()">💾 Save note</button>
               <button class="annot-remove" onclick="removeActiveHighlight()">🗑 Remove highlight</button>
@@ -3683,9 +3693,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           </div>
         </div>
         <details id="notesBox" class="notes-box hidden">
-          <summary>📝 Notes<span class="notes-status" id="notesStatus"></span></summary>
-          <textarea id="notesArea" placeholder="Your notes on this paper — stored locally with the saved paper, shared with the Saved Papers page…"></textarea>
-          <button onclick="savePinnedNotes()">💾 Save notes</button>
+          <summary>📝 Annotations <span id="annotationCount"></span></summary>
+          <div id="annotationList"></div>
         </details>
         <div class="chat-header">
           <h2>Conversation</h2>
@@ -3694,7 +3703,6 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         <div class="chat-messages" id="chatMessages">
           <div class="empty-chat" id="emptyChat"></div>
         </div>
-        <div class="quick-prompts" id="quickPrompts"></div>
         <div id="selChip" class="sel-chip hidden" onclick="clearSelection()" title="Click to remove the selected excerpt">
           <span>📄</span><span class="sel-t" id="selChipText"></span><span class="sel-x">×</span>
         </div>
@@ -3719,13 +3727,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       ollama:     { label: 'Local Ollama',     baseUrl: 'http://localhost:11434/v1',            model: 'llama3.1' }
     };
     const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv' };
-    const QUICK_PROMPTS = [
-      'Summarize this paper in 5 bullet points',
-      'What problem does this paper tackle, and what is the key idea?',
-      'What are the main results and their caveats?',
-      'Explain the method in simple terms',
-      'Which parts deserve a careful full read?'
-    ];
+    const HIGHLIGHT_COLORS = ['#9be7ff', '#ffe08a', '#b9f6ca', '#ffccbc', '#e1bee7', '#d7ccc8'];
 
     let library = [];
     let libraryById = {};
@@ -3975,6 +3977,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     function pinPaper(p) {
       if (!p || !p.arxiv_id) return;
+      flushAnnotationSave();
       pinned = p;
       $('pickerView').classList.add('hidden');
       $('readerView').classList.remove('hidden');
@@ -3982,16 +3985,13 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       $('paperIdText').textContent = 'arXiv:' + p.arxiv_id;
       $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
       $('paperScixLink').href = scixUrlFor(p);
-      // Notes + highlights (issue #6): same saved_papers record the Saved
-      // Papers page edits.
       userHighlights = Array.isArray(p.highlights) ? p.highlights.slice() : [];
       $('notesBox').classList.remove('hidden');
-      $('notesArea').value = p.notes || '';
-      $('notesStatus').textContent = '';
+      $('notesBox').open = userHighlights.length > 0;
+      renderAnnotationList();
       renderSaveToggle();
       resetReaderForNewPaper();
       renderPaperList();
-      renderQuickPrompts();
     }
 
     function scixUrlFor(p) {
@@ -4104,6 +4104,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     }
 
     function unpinPaper() {
+      flushAnnotationSave();
       pinned = null;
       if (pdfAbort) pdfAbort.abort();
       if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); currentPdfUrl = null; }
@@ -4116,7 +4117,6 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       $('pickerView').classList.remove('hidden');
       clearSelection();
       renderPaperList();
-      renderQuickPrompts();
     }
 
     // ---------- Text view: selection + highlighting ----------
@@ -4126,6 +4126,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       textLoadedFor = null;
       textLoadingFor = null;
       pendingSelection = '';
+      userHighlightRanges = [];
+      assistantHighlightRanges = [];
       clearSelection();
       $('textFrame').removeAttribute('src');
       $('selBubble').classList.add('hidden');
@@ -4167,11 +4169,17 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         // Smooth selection: the bubble is only shown once a gesture finishes
         // (mouseup / keyup), never during the drag. mousedown hides any stale
         // bubble so it can't intercept the next drag.
-        doc.addEventListener('mousedown', hideSelectBubble);
-        doc.addEventListener('mouseup', () => setTimeout(onTextSelect, 0));
+        doc.addEventListener('mousedown', beginTextSelection);
+        doc.addEventListener('mousemove', trackTextSelection);
+        doc.addEventListener('mouseup', finishTextSelection);
+        doc.addEventListener('click', handleTextDocumentClick);
         doc.addEventListener('keyup', scheduleSelect);
+        installHighlightStyles(doc);
         try {
-          frame.contentWindow.addEventListener('scroll', hideSelectBubble, { passive: true });
+          frame.contentWindow.addEventListener('scroll', () => {
+            hideSelectBubble();
+            refreshCssHighlights(doc);
+          }, { passive: true });
         } catch (e) {}
         // Catch mouse releases that land outside the iframe (common when dragging).
         if (!parentMouseUpBound) { window.addEventListener('mouseup', onParentMouseUp); parentMouseUpBound = true; }
@@ -4186,6 +4194,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     let parentMouseUpBound = false;
     let selTrailingTimer = null;
+    let selectionStartPoint = null;
+    let selectionWasDragged = false;
     // Keyboard selection (shift+arrows): reveal the bubble on the trailing
     // edge once the user pauses, instead of on every selectionchange.
     function scheduleSelect() {
@@ -4197,6 +4207,26 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       setTimeout(onTextSelect, 0);
     }
     function hideSelectBubble() { $('selBubble').classList.add('hidden'); }
+    function beginTextSelection(event) {
+      hideSelectBubble();
+      selectionStartPoint = { x: event.clientX, y: event.clientY };
+      selectionWasDragged = false;
+    }
+    function trackTextSelection(event) {
+      if (!selectionStartPoint || selectionWasDragged) return;
+      if (Math.abs(event.clientX - selectionStartPoint.x) > 3 ||
+          Math.abs(event.clientY - selectionStartPoint.y) > 3) {
+        selectionWasDragged = true;
+      }
+    }
+    function finishTextSelection() {
+      // Set this before the browser's subsequent click event.  This prevents
+      // a highlighted passage from opening its annotation popup after a drag.
+      if (selectionWasDragged) suppressAnnotClickUntil = Date.now() + 250;
+      selectionStartPoint = null;
+      selectionWasDragged = false;
+      setTimeout(onTextSelect, 0);
+    }
 
     // Compute + reveal the bubble. Only invoked when a selection gesture has
     // finished, so no layout reads / repositioning happen mid-drag.
@@ -4245,11 +4275,18 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (!doc || !doc.body) return 0;
       let count = 0;
       let first = null;
+      assistantHighlightRanges = [];
       for (const q of quotes) {
         const mk = highlightOne(doc, q);
         if (mk) { count++; if (!first) first = mk; }
       }
-      if (first) { try { first.scrollIntoView({ block: 'center' }); } catch (e) {} }
+      refreshCssHighlights(doc);
+      if (first) {
+        try {
+          const el = first && first.startContainer ? first.startContainer.parentElement : first;
+          el.scrollIntoView({ block: 'center' });
+        } catch (e) {}
+      }
       return count;
     }
 
@@ -4352,19 +4389,17 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         range.setStart(sNode, sOff);
         range.setEnd(eNode, eOff);
         if (range.collapsed) return false;
-        const mark = doc.createElement('mark');
-        if (user) {
-          mark.className = 'user-hl' + ((entry && hlNote(entry)) ? ' has-note' : '');
-          mark.title = 'Click to annotate this highlight';
-          mark.onclick = () => openAnnotation(quote, mark);
-        } else {
-          mark.style.background = '#ffe08a';
+        // CSS Custom Highlights paint a Range without changing the source
+        // document.  This is essential for smooth selection: extracting a
+        // cross-paragraph Range into <mark> rewrites arXiv's DOM and creates
+        // artificial selection boundaries around paragraphs and equations.
+        if (supportsCssHighlights(doc)) {
+          if (user) userHighlightRanges.push({ range, quote, entry });
+          else assistantHighlightRanges.push(range);
+          refreshCssHighlights(doc);
+          return range;
         }
-        // extract/insert tolerates boundaries inside math / inline elements,
-        // where surroundContents would throw and drop the highlight.
-        mark.appendChild(range.extractContents());
-        range.insertNode(mark);
-        return mark;
+        return wrapTextFragments(doc, range, quote, user, entry);
       } catch (e) {
         return null;
       }
@@ -4375,19 +4410,76 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     // Highlights are {q, n} objects (legacy bare strings are upgraded on parse).
     function hlQuote(h) { return typeof h === 'string' ? h : (h.q || ''); }
     function hlNote(h) { return typeof h === 'string' ? '' : (h.n || ''); }
+    function hlColor(h) {
+      const color = typeof h === 'string' ? '' : (h.c || h.color || '');
+      return HIGHLIGHT_COLORS.includes(String(color).toLowerCase()) ? String(color).toLowerCase() : HIGHLIGHT_COLORS[0];
+    }
+
+    // Compatibility path for WebViews without CSS Custom Highlights. Wrap
+    // only pieces of individual text nodes, never a Range containing <p>,
+    // <div>, MathML, or other source elements. The document hierarchy stays
+    // intact, so native selection remains continuous across paragraphs.
+    function highlightKey(quote) {
+      let h = 2166136261;
+      const s = String(quote).replace(/\s+/g, ' ').trim().toLowerCase();
+      for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+      return (h >>> 0).toString(36);
+    }
+    function wrapTextFragments(doc, sourceRange, quote, user, entry) {
+      const root = sourceRange.commonAncestorContainer;
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: nd => sourceRange.intersectsNode(nd) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+      });
+      const pieces = [];
+      let node;
+      if (root.nodeType === Node.TEXT_NODE && sourceRange.intersectsNode(root)) node = root;
+      if (node) {
+        const start = node === sourceRange.startContainer ? sourceRange.startOffset : 0;
+        const end = node === sourceRange.endContainer ? sourceRange.endOffset : node.data.length;
+        if (end > start && node.data.slice(start, end).trim()) pieces.push({ node, start, end });
+      }
+      while ((node = walker.nextNode())) {
+        let start = node === sourceRange.startContainer ? sourceRange.startOffset : 0;
+        let end = node === sourceRange.endContainer ? sourceRange.endOffset : node.data.length;
+        start = Math.max(0, Math.min(start, node.data.length));
+        end = Math.max(start, Math.min(end, node.data.length));
+        if (end > start && node.data.slice(start, end).trim()) pieces.push({ node, start, end });
+      }
+      const marks = [];
+      const key = highlightKey(quote);
+      // Work backwards so splitting a later text node cannot disturb an
+      // earlier boundary in the same document.
+      for (let i = pieces.length - 1; i >= 0; i--) {
+        const p = pieces[i];
+        try {
+          const r = doc.createRange(); r.setStart(p.node, p.start); r.setEnd(p.node, p.end);
+          const mark = doc.createElement('mark');
+          mark.dataset.arxistantKey = key;
+          if (user) {
+            mark.className = 'user-hl' + ((entry && hlNote(entry)) ? ' has-note' : '');
+            mark.style.backgroundColor = hlColor(entry);
+            mark.title = 'Click to annotate this highlight';
+            mark.onclick = event => handleHighlightClick(event, quote, mark);
+          } else mark.style.background = '#ffe08a';
+          r.surroundContents(mark);
+          marks.push(mark);
+        } catch (e) {}
+      }
+      return marks.length ? marks[marks.length - 1] : null;
+    }
 
     // Wrap the user's *live* selection range exactly. Re-matching math-heavy
     // text is lossy, so for the immediate highlight we trust the range.
     function wrapRange(doc, range, quote, entry) {
       if (!range || range.collapsed) return null;
       try {
-        const mark = doc.createElement('mark');
-        mark.className = 'user-hl' + ((entry && hlNote(entry)) ? ' has-note' : '');
-        mark.title = 'Click to annotate this highlight';
-        mark.onclick = () => openAnnotation(quote, mark);
-        mark.appendChild(range.extractContents());
-        range.insertNode(mark);
-        return mark;
+        if (supportsCssHighlights(doc)) {
+          const kept = range.cloneRange();
+          userHighlightRanges.push({ range: kept, quote, entry });
+          refreshCssHighlights(doc);
+          return kept;
+        }
+        return wrapTextFragments(doc, range, quote, true, entry);
       } catch (e) {
         return null;
       }
@@ -4397,7 +4489,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       let doc;
       try { doc = $('textFrame').contentDocument; } catch (e) { return; }
       if (!doc || !doc.body) return;
-      for (const h of userHighlights) highlightOne(doc, hlQuote(h), true, h);
+      userHighlightRanges = [];
+      let restored = 0;
+      for (const h of userHighlights) if (highlightOne(doc, hlQuote(h), true, h)) restored++;
+      refreshCssHighlights(doc);
+      $('textFrame').dataset.restoredHighlights = String(restored);
     }
 
     // Unwrap and re-draw user highlights so <mark> onclick handlers always bind
@@ -4414,7 +4510,87 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       applyUserHighlights();
     }
 
-    let activeAnnot = null;  // { entry, mark }
+    let userHighlightRanges = [];       // {range, quote, entry}; DOM stays untouched
+    let assistantHighlightRanges = [];  // LLM-cited passages
+    let activeAnnot = null;  // { entry, mark }; mark may be a Range
+    let suppressAnnotClickUntil = 0;
+    function supportsCssHighlights(doc) {
+      const win = doc.defaultView;
+      return !!(win && win.CSS && win.CSS.highlights && win.Highlight);
+    }
+    function installHighlightStyles(doc) {
+      if (doc.getElementById('arxistant-highlight-styles')) return;
+      const style = doc.createElement('style');
+      style.id = 'arxistant-highlight-styles';
+      style.textContent =
+        '::highlight(arxistant-citation){background:#ffe08a}' +
+        HIGHLIGHT_COLORS.map((color, i) =>
+          '::highlight(arxistant-user-' + i + '){background:' + color + '}' +
+          '::highlight(arxistant-user-note-' + i + '){background:' + color + ';text-decoration:underline 2px #00796b}'
+        ).join('') +
+        'mark.user-hl{background:#9be7ff;cursor:pointer}' +
+        'mark.user-hl.has-note{box-shadow:0 2px 0 #00796b}';
+      (doc.head || doc.documentElement).appendChild(style);
+    }
+    function refreshCssHighlights(doc) {
+      const win = doc.defaultView;
+      const groups = HIGHLIGHT_COLORS.map(() => ({ plain: [], noted: [] }));
+      for (const item of userHighlightRanges) {
+        const index = Math.max(0, HIGHLIGHT_COLORS.indexOf(hlColor(item.entry)));
+        (hlNote(item.entry) ? groups[index].noted : groups[index].plain).push(item.range);
+      }
+      if (supportsCssHighlights(doc)) {
+        win.CSS.highlights.set('arxistant-citation', new win.Highlight(...assistantHighlightRanges));
+        groups.forEach((group, i) => {
+          win.CSS.highlights.set('arxistant-user-' + i, new win.Highlight(...group.plain));
+          win.CSS.highlights.set('arxistant-user-note-' + i, new win.Highlight(...group.noted));
+        });
+        return;
+      }
+    }
+    function caretAtPoint(doc, x, y) {
+      if (doc.caretPositionFromPoint) {
+        const p = doc.caretPositionFromPoint(x, y);
+        return p ? { node: p.offsetNode, offset: p.offset } : null;
+      }
+      if (doc.caretRangeFromPoint) {
+        const r = doc.caretRangeFromPoint(x, y);
+        return r ? { node: r.startContainer, offset: r.startOffset } : null;
+      }
+      return null;
+    }
+    function handleTextDocumentClick(event) {
+      let selected = '';
+      try { selected = event.target.ownerDocument.defaultView.getSelection().toString().trim(); } catch (e) {}
+      if (selected || Date.now() < suppressAnnotClickUntil) return;
+      const point = caretAtPoint(event.target.ownerDocument, event.clientX, event.clientY);
+      if (!point) return;
+      // Last painted range wins when highlights overlap.
+      for (let i = userHighlightRanges.length - 1; i >= 0; i--) {
+        const item = userHighlightRanges[i];
+        try {
+          if (item.range.comparePoint(point.node, point.offset) === 0) {
+            openAnnotation(item.quote, item.range);
+            return;
+          }
+        } catch (e) {}
+      }
+    }
+    // A browser still dispatches `click` after a drag that starts/ends inside
+    // a <mark>.  Opening the annotation popup in that click steals focus and
+    // makes selection across an existing highlight appear to break.  Keep a
+    // real text selection authoritative; a plain click still opens the note.
+    function handleHighlightClick(event, quote, mark) {
+      let selected = '';
+      try { selected = mark.ownerDocument.defaultView.getSelection().toString().trim(); } catch (e) {}
+      if (selected || Date.now() < suppressAnnotClickUntil) {
+        event.preventDefault();
+        event.stopPropagation();
+        setTimeout(onTextSelect, 0);
+        return;
+      }
+      openAnnotation(quote, mark);
+    }
     // Marks bind by quote (not object identity) so they stay valid across
     // persist round-trips that replace the entry objects.
     function openAnnotation(quote, mark) {
@@ -4424,6 +4600,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       activeAnnot = { entry, mark };
       $('annotQuote').textContent = hlQuote(entry).replace(/\\s+/g, ' ').trim();
       $('annotNote').value = hlNote(entry);
+      renderAnnotationColors(entry);
       $('annotPop').classList.remove('hidden');
       $('annotNote').focus();
     }
@@ -4431,17 +4608,125 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       activeAnnot = null;
       $('annotPop').classList.add('hidden');
     }
+    function renderAnnotationColors(entry) {
+      const box = $('annotColors');
+      box.innerHTML = '<span>Color</span>';
+      HIGHLIGHT_COLORS.forEach(color => {
+        const button = document.createElement('button');
+        button.className = 'annot-color' + (hlColor(entry) === color ? ' active' : '');
+        button.style.background = color;
+        button.title = color;
+        button.type = 'button';
+        button.onclick = () => setAnnotationColor(color);
+        box.appendChild(button);
+      });
+    }
+    function repaintFallbackHighlight(entry, mark) {
+      if (!mark || !mark.classList) return;
+      const key = mark.dataset.arxistantKey, doc = mark.ownerDocument;
+      doc.querySelectorAll('mark.user-hl').forEach(m => {
+        if (!key || m.dataset.arxistantKey === key) {
+          m.style.backgroundColor = hlColor(entry);
+          m.classList.toggle('has-note', !!hlNote(entry));
+        }
+      });
+    }
+    function setAnnotationColor(color) {
+      if (!activeAnnot || !HIGHLIGHT_COLORS.includes(color)) return;
+      activeAnnot.entry.c = color;
+      const painted = userHighlightRanges.find(item => item.range === activeAnnot.mark);
+      if (painted) painted.entry = activeAnnot.entry;
+      repaintFallbackHighlight(activeAnnot.entry, activeAnnot.mark);
+      try { refreshCssHighlights($('textFrame').contentDocument); } catch (e) {}
+      renderAnnotationColors(activeAnnot.entry);
+      renderAnnotationList();
+    }
     async function saveAnnotation() {
       if (!activeAnnot) return;
       const entry = activeAnnot.entry, mark = activeAnnot.mark;
       entry.n = $('annotNote').value.trim();
-      mark.classList.toggle('has-note', !!entry.n);
+      const painted = userHighlightRanges.find(item => item.range === mark);
+      if (painted) painted.entry = entry;
+      if (mark && mark.classList) {
+        repaintFallbackHighlight(entry, mark);
+      }
+      else {
+        try { refreshCssHighlights($('textFrame').contentDocument); } catch (e) {}
+      }
       closeAnnotation();
       await persistHighlights();
+      renderAnnotationList();
     }
     function removeActiveHighlight() {
       if (!activeAnnot) return;
       removeUserHighlight(activeAnnot.entry, activeAnnot.mark);
+    }
+
+    let annotationSaveTimer = null;
+    function flushAnnotationSave() {
+      if (!annotationSaveTimer) return;
+      clearTimeout(annotationSaveTimer);
+      annotationSaveTimer = null;
+      persistHighlights();
+    }
+    function annotationTarget(entry) {
+      const key = highlightKey(hlQuote(entry));
+      const ranged = userHighlightRanges.find(item => highlightKey(item.quote) === key);
+      if (ranged) return ranged.range;
+      try {
+        return Array.from($('textFrame').contentDocument.querySelectorAll('mark.user-hl'))
+          .find(mark => mark.dataset.arxistantKey === key) || null;
+      } catch (e) { return null; }
+    }
+    function goToAnnotation(index) {
+      const entry = userHighlights[index];
+      if (!entry) return;
+      const target = annotationTarget(entry);
+      try {
+        const element = target && target.startContainer
+          ? target.startContainer.parentElement : target;
+        if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch (e) {}
+    }
+    function updateAnnotationFromList(index, value) {
+      const entry = userHighlights[index];
+      if (!entry) return;
+      entry.n = value;
+      const target = annotationTarget(entry);
+      const painted = userHighlightRanges.find(item => item.range === target);
+      if (painted) painted.entry = entry;
+      repaintFallbackHighlight(entry, target);
+      try { refreshCssHighlights($('textFrame').contentDocument); } catch (e) {}
+      clearTimeout(annotationSaveTimer);
+      annotationSaveTimer = setTimeout(() => {
+        annotationSaveTimer = null;
+        persistHighlights();
+      }, 450);
+    }
+    function renderAnnotationList() {
+      const list = $('annotationList');
+      if (!list) return;
+      $('annotationCount').textContent = userHighlights.length ? '(' + userHighlights.length + ')' : '';
+      list.innerHTML = '';
+      if (!userHighlights.length) {
+        list.innerHTML = '<p class="annotation-empty">No highlights yet.</p>';
+        return;
+      }
+      userHighlights.forEach((entry, index) => {
+        const card = document.createElement('div');
+        card.className = 'annotation-card';
+        card.style.borderLeftColor = hlColor(entry);
+        const quote = document.createElement('div');
+        quote.className = 'annotation-quote';
+        quote.textContent = hlQuote(entry).replace(/\\s+/g, ' ').trim();
+        quote.title = 'Click to show this highlight';
+        quote.onclick = () => goToAnnotation(index);
+        const note = document.createElement('textarea');
+        note.placeholder = 'Add an annotation…';
+        note.value = hlNote(entry);
+        note.oninput = () => updateAnnotationFromList(index, note.value);
+        card.appendChild(quote); card.appendChild(note); list.appendChild(card);
+      });
     }
 
     async function ensurePinnedSaved() {
@@ -4508,7 +4793,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (userHighlights.some(h => collapsed(hlQuote(h)) === collapsed(quote))) return;
       // Store the RAW selection (a contiguous slice of the node stream) so the
       // highlight re-applies exactly after a reload, even across math.
-      const entry = { q: (rawQuote || quote), n: '' };
+      const entry = { q: (rawQuote || quote), n: '', c: HIGHLIGHT_COLORS[0] };
       userHighlights.push(entry);
       if (textLoadedFor === normalizeId(pinned.arxiv_id)) {
         let doc;
@@ -4519,42 +4804,30 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         }
       }
       await persistHighlights();
+      renderAnnotationList();
     }
 
     function removeUserHighlight(entry, mark) {
       const q = hlQuote(entry).toLowerCase();
       userHighlights = userHighlights.filter(h => hlQuote(h).toLowerCase() !== q);
-      try {
-        const parent = mark.parentNode;
-        parent.replaceChild(mark.ownerDocument.createTextNode(mark.textContent), mark);
-        parent.normalize();
-      } catch (e) {}
+      if (mark && mark.startContainer) {
+        userHighlightRanges = userHighlightRanges.filter(item => item.range !== mark);
+        try { refreshCssHighlights($('textFrame').contentDocument); } catch (e) {}
+      } else {
+        try {
+          const doc = mark.ownerDocument, key = mark.dataset.arxistantKey;
+          const marks = Array.from(doc.querySelectorAll('mark.user-hl')).filter(
+            m => !key || m.dataset.arxistantKey === key);
+          marks.forEach(m => {
+            const parent = m.parentNode;
+            parent.replaceChild(doc.createTextNode(m.textContent), m);
+            parent.normalize();
+          });
+        } catch (e) {}
+      }
       closeAnnotation();
       persistHighlights();
-    }
-
-    async function savePinnedNotes() {
-      if (!pinned) return;
-      const notes = $('notesArea').value;
-      if (!(await ensurePinnedSaved())) {
-        alert('Notes are stored with saved papers; the paper could not be saved.');
-        return;
-      }
-      try {
-        const resp = await fetch('/api/update_notes', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ arxiv_id: pinned.arxiv_id, notes: notes })
-        });
-        const data = await resp.json();
-        if (data.success) {
-          pinned.notes = notes;
-          $('notesStatus').textContent = 'Saved ✓';
-        } else {
-          $('notesStatus').textContent = data.error || 'Save failed';
-        }
-      } catch (e) {
-        $('notesStatus').textContent = 'Save failed: ' + e.message;
-      }
+      renderAnnotationList();
     }
 
     function cleanToRaw(data, cleanOff) {
@@ -4737,24 +5010,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       container.scrollTop = container.scrollHeight;
     }
 
-    function renderQuickPrompts() {
-      const el = $('quickPrompts');
-      if (!pinned || chatHistory.length > 0 || streaming) { el.innerHTML = ''; return; }
-      el.innerHTML = QUICK_PROMPTS.map(q =>
-        '<button class="quick-chip" onclick="askQuick(this)">' + escapeHtml(q) + '</button>').join('');
-    }
-
-    function askQuick(btn) {
-      $('chatInput').value = btn.textContent;
-      sendMessage();
-    }
-
     function newChat() {
       if (chatHistory.length && !confirm('Start a new chat? The current conversation will be cleared.')) return;
       chatHistory = [];
       statusBox = null;
       $('chatMessages').innerHTML = '<div class="empty-chat" id="emptyChat"></div>';
-      renderQuickPrompts();
       updateEmptyHint();
     }
 
@@ -4777,8 +5037,6 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         holder = addMessage('assistant', '');
         contentEl = holder.querySelector('.msg-content');
       };
-      renderQuickPrompts();
-
       let llmMessage = message;
       if (activeSelection) {
         llmMessage = 'I selected this excerpt from the paper:\\n' + activeSelection + '\\n\\nMy question: ' + message;
@@ -4878,7 +5136,6 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         clearStatus();
         btn.disabled = false;
         input.focus();
-        renderQuickPrompts();
       }
     }
 
@@ -4912,6 +5169,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     // ---------- Init ----------
 
     (async function init() {
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && activeAnnot) {
+          event.preventDefault();
+          saveAnnotation();
+        }
+      });
       buildPresetOptions();
       initPanes();
       updateEmptyHint();

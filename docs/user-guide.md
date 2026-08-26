@@ -99,11 +99,11 @@ small differences) so you can see where the answer comes from.
 Selecting text also offers **🖍 Highlight**: your own highlights are stored
 locally with the paper (the paper is saved first if needed) and reappear every
 time you reopen it. Clicking a highlight opens a small popup where you can
-attach a per-highlight note (an underline marks highlighted passages that have
-one) or remove the highlight. Selection is smooth — the action bubble only
-appears once you finish selecting. The **📝 Notes** box above the conversation
-edits the same per-paper notes as the Saved Papers page — notes and highlights
-sync with your library like any other saved-paper field.
+attach a note, choose its color, or remove the highlight. Pressing **Esc** saves
+and closes the popup. Selection is smooth — the action bubble only appears once
+you finish selecting. The **📝 Annotations** box above the conversation lists
+every highlighted passage and its note; click a passage to jump to it, or edit
+the note directly in the list. An underline marks highlights that have notes.
 
 The assistant can also use a **web search** tool (keyless DuckDuckGo) for
 up-to-date or general information beyond the paper; while it searches, the chat
