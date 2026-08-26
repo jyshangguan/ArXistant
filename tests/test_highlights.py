@@ -21,9 +21,11 @@ import arxistant_sync as sync
 
 class NormalizeHighlightsTests(unittest.TestCase):
     def test_normalizes_and_dedupes(self):
-        value = ["  a passage   of text ", "a passage of text", "okay", "x" * 3000]
+        # Internal whitespace is preserved verbatim (exact re-match); ends are
+        # trimmed and dedup is on the collapsed form.
+        value = ["  a passage   of text ", "a passage of text", "okay", "x" * 5000]
         self.assertEqual(server.normalize_highlights(value),
-                         json.dumps([{"q": "a passage of text", "n": ""},
+                         json.dumps([{"q": "a passage   of text", "n": ""},
                                      {"q": "okay", "n": ""}], ensure_ascii=False))
 
     def test_accepts_objects_with_notes(self):
@@ -106,14 +108,14 @@ class HighlightsApiEndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["highlights"],
                          [{"q": "we observe a strong flare", "n": ""},
-                          {"q": "the spectrum hardens", "n": ""}])
+                          {"q": "the   spectrum hardens", "n": ""}])
 
         # Re-saving without highlights must not wipe them.
         self._save("2501.00010")
         lib = {p["arxiv_id"]: p for p in self._get("/api/chat/library")["papers"]}
         self.assertEqual(lib["2501.00010"]["highlights"],
                          [{"q": "we observe a strong flare", "n": ""},
-                          {"q": "the spectrum hardens", "n": ""}])
+                          {"q": "the   spectrum hardens", "n": ""}])
 
     def test_update_highlights_unknown_paper_is_404(self):
         status, body = self._post("/api/update_highlights", {

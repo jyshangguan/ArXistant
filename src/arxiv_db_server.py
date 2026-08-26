@@ -1309,10 +1309,13 @@ def normalize_highlights(value):
         else:
             raw_q = item
             raw_n = ""
-        quote = " ".join(str(raw_q).split())
-        if len(quote) < 3 or len(quote) > 2000:
+        # Keep the quote's internal whitespace verbatim (it is a contiguous
+        # slice of the page's text stream, used for exact re-matching); only
+        # trim the ends. Dedup on the collapsed form.
+        quote = str(raw_q).strip()
+        if len(quote) < 3 or len(quote) > 4000:
             continue
-        key = quote.lower()
+        key = " ".join(quote.split()).lower()
         if key in seen:
             continue
         seen.add(key)
@@ -4277,39 +4280,47 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       // boundaries that the raw text stream lacks (and vice versa), so match
       // token-by-token allowing arbitrary whitespace between tokens.
       const isWS = (ch) => ch.trim() === '';
-      const lowerTotal = total.toLowerCase();
-      const tokens = needle.toLowerCase().split(' ').filter(Boolean);
-      if (!tokens.length) return false;
-      const matchTokens = (count, pos) => {
-        for (let t = 0; t < count; t++) {
-          while (pos < total.length && isWS(total[pos])) pos++;
-          const tok = tokens[t];
-          if (lowerTotal.substr(pos, tok.length) !== tok) return -1;
-          pos += tok.length;
+      let start = -1, end = -1;
+      // Fast path: a stored *raw* selection is a contiguous slice of the raw
+      // node stream, so it matches exactly (this is what makes math-heavy
+      // paragraphs re-apply correctly after a reload).
+      const exactRaw = total.indexOf(quote);
+      if (exactRaw !== -1) { start = exactRaw; end = exactRaw + quote.length; }
+      else {
+        const lowerTotal = total.toLowerCase();
+        const tokens = needle.toLowerCase().split(' ').filter(Boolean);
+        if (!tokens.length) return false;
+        const matchTokens = (count, pos) => {
+          for (let t = 0; t < count; t++) {
+            while (pos < total.length && isWS(total[pos])) pos++;
+            const tok = tokens[t];
+            if (lowerTotal.substr(pos, tok.length) !== tok) return -1;
+            pos += tok.length;
+          }
+          return pos;
+        };
+        const findSeq = (count) => {
+          let from = 0;
+          for (let tries = 0; tries < 300; tries++) {
+            const i = lowerTotal.indexOf(tokens[0], from);
+            if (i === -1) return null;
+            const e2 = matchTokens(count, i);
+            if (e2 !== -1) return [i, e2];
+            from = i + 1;
+          }
+          return null;
+        };
+        let hit = findSeq(tokens.length);
+        if (!hit) {                                          // tolerant prefix
+          for (const C of [12, 10, 8, 6]) {
+            if (tokens.length <= C) continue;
+            hit = findSeq(C);
+            if (hit) break;
+          }
         }
-        return pos;
-      };
-      const findSeq = (count) => {
-        let from = 0;
-        for (let tries = 0; tries < 300; tries++) {
-          const i = lowerTotal.indexOf(tokens[0], from);
-          if (i === -1) return null;
-          const e2 = matchTokens(count, i);
-          if (e2 !== -1) return [i, e2];
-          from = i + 1;
-        }
-        return null;
-      };
-      let hit = findSeq(tokens.length);
-      if (!hit) {                                            // tolerant prefix
-        for (const C of [12, 10, 8, 6]) {
-          if (tokens.length <= C) continue;
-          hit = findSeq(C);
-          if (hit) break;
-        }
+        if (!hit) return false;
+        start = hit[0]; end = hit[1];
       }
-      if (!hit) return false;
-      const start = hit[0], end = hit[1];
       if (end <= start) return false;
 
       // Map raw offsets back to (node, offset) pairs.
@@ -4394,11 +4405,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     // Marks bind by quote (not object identity) so they stay valid across
     // persist round-trips that replace the entry objects.
     function openAnnotation(quote, mark) {
-      const entry = userHighlights.find(
-        h => hlQuote(h).toLowerCase() === String(quote).toLowerCase());
+      const cl = (s) => String(s).replace(/\\s+/g, ' ').trim().toLowerCase();
+      const entry = userHighlights.find(h => cl(hlQuote(h)) === cl(quote));
       if (!entry) return;
       activeAnnot = { entry, mark };
-      $('annotQuote').textContent = hlQuote(entry);
+      $('annotQuote').textContent = hlQuote(entry).replace(/\\s+/g, ' ').trim();
       $('annotNote').value = hlNote(entry);
       $('annotPop').classList.remove('hidden');
       $('annotNote').focus();
@@ -4473,15 +4484,18 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         alert('Highlights are stored with saved papers; the paper could not be saved.');
         return;
       }
-      let liveRange = null;
+      let liveRange = null, rawQuote = '';
       try {
         const sel = $('textFrame').contentWindow.getSelection();
-        if (sel && sel.rangeCount) liveRange = sel.getRangeAt(0).cloneRange();
+        if (sel && sel.rangeCount) { liveRange = sel.getRangeAt(0).cloneRange(); rawQuote = sel.toString(); }
       } catch (e) {}
       pendingSelection = '';
       try { $('textFrame').contentWindow.getSelection().removeAllRanges(); } catch (e) {}
-      if (userHighlights.some(h => hlQuote(h).toLowerCase() === quote.toLowerCase())) return;
-      const entry = { q: quote, n: '' };
+      const collapsed = (s) => String(s).replace(/\\s+/g, ' ').trim().toLowerCase();
+      if (userHighlights.some(h => collapsed(hlQuote(h)) === collapsed(quote))) return;
+      // Store the RAW selection (a contiguous slice of the node stream) so the
+      // highlight re-applies exactly after a reload, even across math.
+      const entry = { q: (rawQuote || quote), n: '' };
       userHighlights.push(entry);
       if (textLoadedFor === normalizeId(pinned.arxiv_id)) {
         let doc;
