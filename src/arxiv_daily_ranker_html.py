@@ -337,7 +337,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderChips(chips, working, onchange);
 
         const addFromInput = () => {
-            const tag = input.value.trim();
+            const tag = input.value.trim().toLowerCase();
             if (!tag) return;
             if (!working.some(t => t.toLowerCase() === tag.toLowerCase())) {
                 working.push(tag);
@@ -740,8 +740,7 @@ function clearBusy() {
     if (el) el.remove();
 }
 
-async function doRefresh(endpoint, confirmMsg, askConfirm) {
-    if (askConfirm && !confirm(confirmMsg)) return;
+async function doRefresh(endpoint) {
     showBusy();
     try {
         // 1. Sync first (pull the latest saved papers from Nutstore), best effort.
@@ -761,16 +760,15 @@ async function doRefresh(endpoint, confirmMsg, askConfirm) {
     }
 }
 
-async function refreshDaily(fromPull) {
-    await doRefresh('/api/refresh-daily', 'Sync your library and re-fetch papers from arXiv?', !fromPull);
+async function refreshDaily() {
+    await doRefresh('/api/refresh-daily');
 }
 
-async function refreshRecent(fromPull) {
-    await doRefresh('/api/refresh-recent', 'Sync your library and re-fetch recent papers from arXiv?', !fromPull);
+async function refreshRecent() {
+    await doRefresh('/api/refresh-recent');
 }
 
-// Pull down at the top of the page to refresh (any touch device); the
-// deliberate gesture skips the confirmation dialog.
+// Pull down at the top of the page to refresh (any touch device).
 let pullStartY = null;
 document.addEventListener('touchstart', function (e) {
     if (window.scrollY <= 0) pullStartY = e.touches[0].clientY;

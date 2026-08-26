@@ -58,6 +58,12 @@ class DailyRecentLayoutTests(unittest.TestCase):
         self.assertIn("refreshDaily(true)", html)
         self.assertIn("refreshRecent(true)", html)
 
+    def test_refresh_button_has_no_confirmation(self):
+        # Issue #7: clicking Refresh starts the sync+refresh immediately.
+        html = _render("new")
+        self.assertNotIn("askConfirm", html)
+        self.assertNotIn("confirm(confirmMsg)", html)
+
     def test_save_script_reads_date_from_data_attribute(self):
         html = _render("new")
         self.assertIn("h1.getAttribute('data-date')", html)

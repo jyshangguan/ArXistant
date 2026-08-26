@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -29,7 +30,7 @@ class NormalizeTagsTests(unittest.TestCase):
 
     def test_trims_drops_empty_and_dedupes_case_insensitively(self):
         self.assertEqual(server.normalize_tags(" JWST , ,jwst, Black Holes "),
-                         "JWST,Black Holes")
+                         "jwst,black holes")
 
     def test_none_and_garbage(self):
         self.assertEqual(server.normalize_tags(None), "")
@@ -148,7 +149,7 @@ class TagApiEndToEndTests(unittest.TestCase):
             "arxiv_id": "2501.00002", "tags": "SNe, JWST",
         })
         self.assertEqual(status, 200)
-        self.assertEqual(body["tags"], ["SNe", "JWST"])
+        self.assertEqual(body["tags"], ["sne", "jwst"])
 
         # Re-saving without a tags field must not wipe the stored tags.
         self._post("/api/save", {
@@ -157,7 +158,7 @@ class TagApiEndToEndTests(unittest.TestCase):
         })
         papers = self._get("/api/papers")["papers"]
         paper = next(p for p in papers if p["arxiv_id"] == "2501.00002")
-        self.assertEqual(paper["tags"], "SNe,JWST")
+        self.assertEqual(paper["tags"], "sne,jwst")
 
     def test_update_tags_unknown_paper_is_404(self):
         status, body = self._post("/api/update_tags", {
@@ -178,6 +179,40 @@ class TagApiEndToEndTests(unittest.TestCase):
         status, body = self._get_status("/api/paper?arxiv_id=2501.40404")
         self.assertEqual(status, 404)
         self.assertFalse(body["success"])
+
+
+class TagLowercaseMigrationTests(unittest.TestCase):
+    def test_init_db_lowercases_preexisting_tags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "arxiv_papers.db")
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "CREATE TABLE saved_papers (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " arxiv_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, authors TEXT,"
+                " abstract TEXT, relevance_score INTEGER DEFAULT 0, date_fetched TEXT,"
+                " date_saved TEXT DEFAULT CURRENT_TIMESTAMP, notes TEXT DEFAULT '',"
+                " tags TEXT DEFAULT '', highlights TEXT DEFAULT '', updated_at TEXT)")
+            conn.execute(
+                "INSERT INTO saved_papers (arxiv_id, title, tags)"
+                " VALUES ('1', 'T', 'JWST,Black Holes')")
+            conn.execute(
+                "CREATE TABLE my_publications (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " bibcode TEXT NOT NULL UNIQUE, title TEXT NOT NULL, authors TEXT,"
+                " abstract TEXT, keywords TEXT, year TEXT,"
+                " date_added TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT)")
+            conn.commit()
+            conn.close()
+
+            with mock.patch.object(server, "DB_PATH", db), \
+                 mock.patch.object(server, "PUBLICATIONS_JSON",
+                                   os.path.join(tmp, "nope.json")):
+                server.init_db()
+
+            conn = sqlite3.connect(db)
+            row = conn.execute(
+                "SELECT tags FROM saved_papers WHERE arxiv_id='1'").fetchone()
+            conn.close()
+            self.assertEqual(row[0], "jwst,black holes")
 
 
 if __name__ == "__main__":

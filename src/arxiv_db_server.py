@@ -1243,7 +1243,7 @@ def normalize_tags(value):
         if key in seen:
             continue
         seen.add(key)
-        out.append(tag[:60])
+        out.append(key[:60])
     return ",".join(out[:50])
 
 
@@ -1334,9 +1334,16 @@ def init_db():
     
     arxistant_sync.migrate_db(conn)
 
+    # Lower-case any pre-existing tags (issue #8). Tags are stored as a
+    # comma-joined string, so lower() on the whole value lower-cases each tag.
+    # The WHERE clause makes this a no-op after the first run.
+    c.execute(
+        "UPDATE saved_papers SET tags = lower(tags) "
+        "WHERE tags IS NOT NULL AND tags != '' AND tags != lower(tags)")
+
     conn.commit()
     conn.close()
-    
+
     # Populate publications from JSON if table is empty
     populate_publications()
 
@@ -3240,7 +3247,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderChips(chips, working, onchange);
 
         const addFromInput = () => {
-            const tag = input.value.trim();
+            const tag = input.value.trim().toLowerCase();
             if (!tag) return;
             if (!working.some(t => t.toLowerCase() === tag.toLowerCase())) {
                 working.push(tag);
@@ -5004,7 +5011,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       renderTagChips(chips, working, onchange);
 
       const addFromInput = () => {
-        const tag = input.value.trim();
+        const tag = input.value.trim().toLowerCase();
         if (!tag) return;
         if (!working.some(t => tagKey(t) === tagKey(tag))) {
           working.push(tag);
