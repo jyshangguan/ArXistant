@@ -205,6 +205,13 @@ class LocalPdfReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not a valid PDF"):
             arxiv_db_server.ingest_local_pdf(b"not a pdf", "bad.pdf")
 
+    def test_extraction_falls_back_when_pymupdf_is_missing(self):
+        pdf_bytes = self._pdf_bytes()
+        with mock.patch.dict(sys.modules, {"fitz": None}):
+            pages, _title = arxiv_db_server._extract_pdf_pages(pdf_bytes)
+        self.assertEqual(len(pages), 3)
+        self.assertIn("Galaxy formation", pages[0])
+
 
 class _FakePdfResponse:
     def __init__(self, data):

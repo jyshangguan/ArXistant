@@ -9,10 +9,13 @@ Usage:
 """
 
 import json
+import io
 import os
 import re
 import hashlib
+import shutil
 import sqlite3
+import subprocess
 import threading
 import urllib.parse
 import urllib.request
@@ -1216,46 +1219,100 @@ def _chunk_pdf_pages(pages, target=3500, overlap=400):
     return [c for c in chunks if c["text"]]
 
 
+def _extract_pdf_pages(pdf_bytes):
+    """Extract page text with the best PDF engine available at runtime."""
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+    if fitz is not None:
+        try:
+            pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+            if pdf.page_count < 1:
+                pdf.close()
+                raise ValueError("The PDF has no pages")
+            metadata = pdf.metadata or {}
+            title = (metadata.get("title") or "").strip()
+            pages = []
+            for page in pdf:
+                blocks = page.get_text("blocks", sort=True)
+                texts = [str(block[4]).strip() for block in blocks
+                         if len(block) > 4 and str(block[4]).strip()]
+                pages.append("\n\n".join(texts))
+            pdf.close()
+            return pages, title
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("The PDF could not be opened: " + str(exc)) from exc
+
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        PdfReader = None
+    if PdfReader is not None:
+        try:
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            if reader.is_encrypted and not reader.decrypt(""):
+                raise ValueError("Password-protected PDFs are not supported")
+            if not reader.pages:
+                raise ValueError("The PDF has no pages")
+            pages = [(page.extract_text() or "").strip() for page in reader.pages]
+            metadata = reader.metadata
+            title = str(getattr(metadata, "title", "") or "").strip()
+            return pages, title
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("The PDF could not be opened: " + str(exc)) from exc
+
+    pdftotext = shutil.which("pdftotext")
+    if pdftotext:
+        try:
+            result = subprocess.run(
+                [pdftotext, "-layout", "-", "-"], input=pdf_bytes,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=120, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("The PDF could not be opened: " + str(exc)) from exc
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError("The PDF could not be opened" +
+                             (": " + detail if detail else ""))
+        pages = result.stdout.decode("utf-8", errors="replace").split("\f")
+        while pages and not pages[-1].strip():
+            pages.pop()
+        if not pages:
+            raise ValueError("The PDF has no pages")
+        return [page.strip() for page in pages], ""
+
+    raise ValueError(
+        "PDF text extraction is unavailable. Install PyMuPDF or pypdf, then restart ArXistant.")
+
+
 def ingest_local_pdf(pdf_bytes, filename):
     """Extract an uploaded PDF and persist its local reader representation."""
     if not pdf_bytes.startswith(b"%PDF"):
         raise ValueError("The dropped file is not a valid PDF")
     if len(pdf_bytes) > LOCAL_PDF_MAX_BYTES:
         raise ValueError("The PDF is larger than 80 MB")
-    try:
-        import fitz
-    except ImportError as exc:
-        raise ValueError("PDF text extraction requires PyMuPDF") from exc
-
     digest = hashlib.sha256(pdf_bytes).hexdigest()
     document_id = "local-" + digest[:24]
     pdf_path, text_path = _local_document_paths(document_id)
     safe_filename = os.path.basename(str(filename or "uploaded-paper.pdf"))[:240]
-    try:
-        pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
-    except Exception as exc:
-        raise ValueError("The PDF could not be opened: " + str(exc)) from exc
-    if pdf.page_count < 1:
-        pdf.close()
-        raise ValueError("The PDF has no pages")
-    metadata = pdf.metadata or {}
-    title = (metadata.get("title") or os.path.splitext(safe_filename)[0] or
+    pages, metadata_title = _extract_pdf_pages(pdf_bytes)
+    title = (metadata_title or os.path.splitext(safe_filename)[0] or
              "Uploaded PDF").strip()[:1000]
-    pages = []
     page_html = []
-    for index, page in enumerate(pdf, 1):
-        blocks = page.get_text("blocks", sort=True)
-        texts = [str(block[4]).strip() for block in blocks
-                 if len(block) > 4 and str(block[4]).strip()]
-        page_text = "\n\n".join(texts)
-        pages.append(page_text)
+    for index, page_text in enumerate(pages, 1):
+        texts = [part.strip() for part in re.split(r"\n\s*\n", page_text)
+                 if part.strip()]
         rendered = "".join("<p>" + html_escape(part).replace("\n", "<br>") + "</p>"
                            for part in texts)
         page_html.append('<section class="pdf-page" data-page="' + str(index) + '">'
                          '<div class="pdf-page-label">Page ' + str(index) + '</div>' +
                          (rendered or '<p class="empty-page">No selectable text on this page.</p>') +
                          '</section>')
-    pdf.close()
     full_text = "\n\n".join(pages).strip()
     if len(full_text) < 100:
         raise ValueError("No selectable text was found. This PDF may require OCR.")
