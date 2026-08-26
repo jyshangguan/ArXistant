@@ -34,6 +34,13 @@ class NormalizeHighlightsTests(unittest.TestCase):
                          json.dumps([{"q": "some quote", "n": "my note", "c": "#ffe08a"},
                                      {"q": "bare quote", "n": "", "c": "#9be7ff"}], ensure_ascii=False))
 
+    def test_preserves_pdf_page_anchor(self):
+        value = [{"q": "a positioned quote", "p": 7,
+                  "r": [0.1, 0.2, 0.3, 0.04]}]
+        self.assertEqual(json.loads(server.normalize_highlights(value)), [{
+            "q": "a positioned quote", "n": "", "c": "#9be7ff",
+            "p": 7, "r": [0.1, 0.2, 0.3, 0.04]}])
+
     def test_accepts_json_string_and_rejects_garbage(self):
         self.assertEqual(server.normalize_highlights('["one two three"]'),
                          json.dumps([{"q": "one two three", "n": "", "c": "#9be7ff"}], ensure_ascii=False))

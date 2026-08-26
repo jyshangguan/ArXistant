@@ -45,6 +45,7 @@ SCIX_CONFIG_PATH = data_path("scix_config.json")
 ML_RANKER_DIR = data_path("ml_ranker")
 RETRAIN_STATE_PATH = os.path.join(ML_RANKER_DIR, "retrain_state.json")
 LOCAL_DOCUMENT_DIR = data_path("local_documents")
+PDFJS_DIR = os.path.join(os.path.dirname(__file__), "vendor", "pdfjs")
 LOCAL_PDF_MAX_BYTES = 80 * 1024 * 1024
 DEFAULT_RETRAIN_AFTER_CHANGES = 5
 SERVER_API_VERSION = 2
@@ -1290,6 +1291,57 @@ def _extract_pdf_pages(pdf_bytes):
         "PDF text extraction is unavailable. Install PyMuPDF or pypdf, then restart ArXistant.")
 
 
+def local_pdf_reader_html(document_id, title):
+    """Build a same-origin PDF.js reader with a selectable text layer."""
+    pdf_url = "/api/chat/local-pdf?document_id=" + urllib.parse.quote(document_id)
+    return '''<!doctype html><html><head><meta charset="utf-8"><title>''' + \
+        html_escape(title) + '''</title><style>
+html,body{margin:0;min-height:100%;background:#d9d9d9;color:#222}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:18px 0 36px}
+#status{position:fixed;z-index:20;top:12px;left:50%;transform:translateX(-50%);background:#fff;
+ padding:8px 14px;border-radius:18px;box-shadow:0 2px 9px #0003;color:#555}
+#pages{display:flex;flex-direction:column;align-items:center;gap:18px}
+.pdf-page{position:relative;background:#fff;box-shadow:0 2px 10px #0004;overflow:hidden}
+.pdf-page canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.page-number{position:absolute;right:8px;bottom:5px;z-index:3;color:#777;background:#fff9;
+ padding:1px 6px;border-radius:8px;font:11px sans-serif;pointer-events:none}
+.textLayer{position:absolute;text-align:initial;inset:0;overflow:clip;opacity:1;line-height:1;
+ -webkit-text-size-adjust:none;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;
+ caret-color:CanvasText;z-index:2}
+.textLayer :is(span,br){color:transparent;position:absolute;white-space:pre;cursor:text;
+ transform-origin:0% 0%}.textLayer> :not(.markedContent),.textLayer .markedContent span:not(.markedContent){z-index:1}
+.textLayer span.markedContent{top:0;height:0}.textLayer span[role="img"]{user-select:none;cursor:default}
+.textLayer ::selection{background:rgb(0 100 255 / .28)}
+.textLayer .endOfContent{display:block;position:absolute;inset:100% 0 0;z-index:0;cursor:default;user-select:none}
+.textLayer.selecting .endOfContent{top:0}
+@media(max-width:700px){body{padding-top:8px}#pages{gap:10px}}
+</style></head><body><div id="status">Rendering PDF…</div><main id="pages"></main>
+<script type="module">
+import {getDocument,GlobalWorkerOptions,TextLayer} from "/assets/pdfjs/pdf.min.mjs";
+GlobalWorkerOptions.workerSrc="/assets/pdfjs/pdf.worker.min.mjs";
+const pages=document.getElementById("pages"),status=document.getElementById("status");
+try{
+ const pdf=await getDocument({url:''' + json.dumps(pdf_url) + '''}).promise;
+ for(let number=1;number<=pdf.numPages;number++){
+  const page=await pdf.getPage(number),base=page.getViewport({scale:1});
+  const available=Math.max(320,document.documentElement.clientWidth-28);
+  const scale=Math.min(2.2,Math.max(.6,available/base.width));
+  const viewport=page.getViewport({scale}),ratio=Math.min(window.devicePixelRatio||1,2);
+  const shell=document.createElement("section");shell.className="pdf-page";
+  shell.dataset.page=String(number);shell.style.width=viewport.width+"px";shell.style.height=viewport.height+"px";
+  const canvas=document.createElement("canvas");canvas.width=Math.floor(viewport.width*ratio);
+  canvas.height=Math.floor(viewport.height*ratio);shell.appendChild(canvas);
+  const layer=document.createElement("div");layer.className="textLayer";shell.appendChild(layer);
+  const label=document.createElement("div");label.className="page-number";label.textContent=number;shell.appendChild(label);
+  pages.appendChild(shell);
+  await page.render({canvasContext:canvas.getContext("2d"),viewport,transform:ratio===1?null:[ratio,0,0,ratio,0,0]}).promise;
+  await new TextLayer({textContentSource:page.streamTextContent(),container:layer,viewport}).render();
+ }
+ status.remove();document.body.dataset.pdfReady="true";
+}catch(error){status.textContent="Could not render PDF: "+(error.message||error);status.style.color="#a00";}
+</script></body></html>'''
+
+
 def ingest_local_pdf(pdf_bytes, filename):
     """Extract an uploaded PDF and persist its local reader representation."""
     if not pdf_bytes.startswith(b"%PDF"):
@@ -1303,28 +1355,10 @@ def ingest_local_pdf(pdf_bytes, filename):
     pages, metadata_title = _extract_pdf_pages(pdf_bytes)
     title = (metadata_title or os.path.splitext(safe_filename)[0] or
              "Uploaded PDF").strip()[:1000]
-    page_html = []
-    for index, page_text in enumerate(pages, 1):
-        texts = [part.strip() for part in re.split(r"\n\s*\n", page_text)
-                 if part.strip()]
-        rendered = "".join("<p>" + html_escape(part).replace("\n", "<br>") + "</p>"
-                           for part in texts)
-        page_html.append('<section class="pdf-page" data-page="' + str(index) + '">'
-                         '<div class="pdf-page-label">Page ' + str(index) + '</div>' +
-                         (rendered or '<p class="empty-page">No selectable text on this page.</p>') +
-                         '</section>')
     full_text = "\n\n".join(pages).strip()
     if len(full_text) < 100:
-        raise ValueError("No selectable text was found. This PDF may require OCR.")
-    html = ("<!doctype html><html><head><meta charset=\"utf-8\"><title>" +
-            html_escape(title) + "</title><style>"
-            "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
-            "max-width:900px;margin:0 auto;padding:28px 42px;line-height:1.55;color:#222}"
-            "h1{font-size:1.55em}.pdf-page{padding:18px 0;border-top:1px solid #ddd}"
-            ".pdf-page-label{position:sticky;top:0;float:right;background:#eee;color:#666;"
-            "padding:2px 8px;border-radius:10px;font-size:.72em}.empty-page{color:#999}"
-            "p{white-space:normal;margin:.7em 0}</style></head><body><h1>" +
-            html_escape(title) + "</h1>" + "".join(page_html) + "</body></html>")
+        raise ValueError("This appears to be a scanned PDF without selectable text")
+    html = local_pdf_reader_html(document_id, title)
     temp_pdf, temp_html = pdf_path + ".tmp", text_path + ".tmp"
     with open(temp_pdf, "wb") as f:
         f.write(pdf_bytes)
@@ -1540,10 +1574,14 @@ def normalize_highlights(value):
             raw_q = item.get("q") or item.get("quote") or ""
             raw_n = item.get("n") or item.get("note") or ""
             raw_c = item.get("c") or item.get("color") or ""
+            raw_p = item.get("p") or item.get("page") or 0
+            raw_r = item.get("r") or item.get("rect") or []
         else:
             raw_q = item
             raw_n = ""
             raw_c = ""
+            raw_p = 0
+            raw_r = []
         # Keep the quote's internal whitespace verbatim (it is a contiguous
         # slice of the page's text stream, used for exact re-matching); only
         # trim the ends. Dedup on the collapsed form.
@@ -1558,7 +1596,21 @@ def normalize_highlights(value):
         color = str(raw_c).lower()
         if color not in {"#9be7ff", "#ffe08a", "#b9f6ca", "#ffccbc", "#e1bee7", "#d7ccc8"}:
             color = "#9be7ff"
-        out.append({"q": quote, "n": note, "c": color})
+        entry = {"q": quote, "n": note, "c": color}
+        try:
+            page = int(raw_p)
+            if 0 < page < 100000:
+                entry["p"] = page
+        except (TypeError, ValueError):
+            pass
+        if isinstance(raw_r, (list, tuple)) and len(raw_r) == 4:
+            try:
+                rect = [round(float(v), 6) for v in raw_r]
+                if all(0 <= v <= 1 for v in rect):
+                    entry["r"] = rect
+            except (TypeError, ValueError):
+                pass
+        out.append(entry)
         if len(out) >= 200:
             break
     return json.dumps(out, ensure_ascii=False) if out else ""
@@ -1852,7 +1904,22 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        if path == "/api/health":
+        if path in ("/assets/pdfjs/pdf.min.mjs", "/assets/pdfjs/pdf.worker.min.mjs"):
+            filename = os.path.basename(path)
+            try:
+                with open(os.path.join(PDFJS_DIR, filename), "rb") as f:
+                    payload = f.read()
+            except OSError:
+                self._send_json({"success": False, "error": "PDF.js asset not found"}, 404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        elif path == "/api/health":
             self._send_json({
                 "success": True,
                 "api_version": SERVER_API_VERSION,
@@ -2160,7 +2227,7 @@ class Handler(BaseHTTPRequestHandler):
             document_id = query.get("document_id", [""])[0]
             conn = sqlite3.connect(DB_PATH)
             try:
-                row = conn.execute("SELECT pdf_path,text_path FROM local_documents WHERE document_id = ?",
+                row = conn.execute("SELECT pdf_path,text_path,title FROM local_documents WHERE document_id = ?",
                                    (document_id,)).fetchone()
             finally:
                 conn.close()
@@ -2170,8 +2237,13 @@ class Handler(BaseHTTPRequestHandler):
             file_path = row[0] if path.endswith("local-pdf") else row[1]
             mode = "rb" if path.endswith("local-pdf") else "r"
             try:
-                with open(file_path, mode, **({} if mode == "rb" else {"encoding": "utf-8"})) as f:
-                    content = f.read()
+                if mode == "rb":
+                    with open(file_path, "rb") as f:
+                        content = f.read()
+                else:
+                    # Generate this dynamically so documents imported by an
+                    # older version immediately gain the PDF.js reader.
+                    content = local_pdf_reader_html(document_id, row[2])
             except OSError as exc:
                 self._send_json({"success": False, "error": str(exc)}, 404)
                 return
@@ -4601,6 +4673,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         let doc = null;
         try { doc = frame.contentDocument; } catch (e) {}
         if (!doc || !doc.body || doc.readyState === 'loading') return;
+        if ((p.source === 'local' || p.local) && doc.body.dataset.pdfReady !== 'true') return;
         if ((doc.body.innerText || '').length < 200) return;
         clearInterval(poll);
         textLoadingFor = null;
@@ -4737,7 +4810,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       // Only walk *rendered* text. MathML <annotation> (TeX source) and
       // style/script text nodes are in the DOM but not in a user's visible
       // selection, so including them would desynchronize the search stream.
-      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+      const pageRoot = user && entry && entry.p
+        ? (doc.querySelector('.pdf-page[data-page="' + Number(entry.p) + '"]') || doc.body)
+        : doc.body;
+      const walker = doc.createTreeWalker(pageRoot, NodeFilter.SHOW_TEXT, {
         acceptNode: (nd) => {
           const p = nd.parentElement;
           if (p && p.closest('annotation, style, script')) return NodeFilter.FILTER_REJECT;
@@ -5236,6 +5312,23 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       // Store the RAW selection (a contiguous slice of the node stream) so the
       // highlight re-applies exactly after a reload, even across math.
       const entry = { q: (rawQuote || quote), n: '', c: HIGHLIGHT_COLORS[0] };
+      if (liveRange) {
+        try {
+          const node = liveRange.startContainer.nodeType === Node.ELEMENT_NODE
+            ? liveRange.startContainer : liveRange.startContainer.parentElement;
+          const page = node && node.closest('.pdf-page[data-page]');
+          if (page) {
+            entry.p = Number(page.dataset.page);
+            const rr = liveRange.getBoundingClientRect(), pr = page.getBoundingClientRect();
+            entry.r = [
+              Math.max(0, Math.min(1, (rr.left - pr.left) / pr.width)),
+              Math.max(0, Math.min(1, (rr.top - pr.top) / pr.height)),
+              Math.max(0, Math.min(1, rr.width / pr.width)),
+              Math.max(0, Math.min(1, rr.height / pr.height))
+            ];
+          }
+        } catch (e) {}
+      }
       userHighlights.push(entry);
       if (textLoadedFor === normalizeId(pinned.arxiv_id)) {
         let doc;

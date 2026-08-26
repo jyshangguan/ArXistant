@@ -191,8 +191,9 @@ class LocalPdfReaderTests(unittest.TestCase):
                 self.assertTrue(os.path.exists(html_path))
                 with open(html_path, encoding="utf-8") as f:
                     html = f.read()
-                self.assertIn('data-page="2"', html)
-                self.assertIn("Galaxy formation", html)
+                self.assertIn('pdf.min.mjs', html)
+                self.assertIn('shell.dataset.page=String(number)', html)
+                self.assertIn(item["document_id"], html)
                 library = arxiv_db_server.collect_chat_library()
                 local_item = next(p for p in library if p.get("source") == "local")
                 self.assertEqual(local_item["document_id"], item["document_id"])
@@ -204,6 +205,15 @@ class LocalPdfReaderTests(unittest.TestCase):
     def test_ingest_rejects_non_pdf(self):
         with self.assertRaisesRegex(ValueError, "not a valid PDF"):
             arxiv_db_server.ingest_local_pdf(b"not a pdf", "bad.pdf")
+
+    def test_ingest_rejects_scanned_pdf(self):
+        import fitz
+        doc = fitz.open()
+        doc.new_page()
+        data = doc.tobytes()
+        doc.close()
+        with self.assertRaisesRegex(ValueError, "scanned PDF"):
+            arxiv_db_server.ingest_local_pdf(data, "scan.pdf")
 
     def test_extraction_falls_back_when_pymupdf_is_missing(self):
         pdf_bytes = self._pdf_bytes()

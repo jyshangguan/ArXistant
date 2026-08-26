@@ -92,7 +92,10 @@ picker.
 
 When no paper is open, you can drag a PDF directly into the **Conversation**
 box. ArXistant stores it locally, extracts selectable text page by page, splits
-the text into searchable chunks, and opens it in the same PDF/Text reader.
+the text into searchable chunks, and opens it in the same PDF/Text reader. Its
+Text view uses a bundled PDF.js renderer, so the printed layout—including
+headings, columns, equations, tables, and figures—is retained while a selectable
+text layer remains available for highlights and annotations.
 Local PDFs support highlights, colors, annotation notes, and question-aware
 chunk retrieval. Scanned PDFs are not OCRed and report a clear error when no
 selectable text is available. The PDF files remain local and are not included
