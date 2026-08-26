@@ -4253,51 +4253,96 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     function highlightOne(doc, quote, user, entry) {
       const needle = quote.replace(/\\s+/g, ' ').trim();
       if (needle.length < 8) return false;
-      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, null);
+      // Only walk *rendered* text. MathML <annotation> (TeX source) and
+      // style/script text nodes are in the DOM but not in a user's visible
+      // selection, so including them would desynchronize the search stream.
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+        acceptNode: (nd) => {
+          const p = nd.parentElement;
+          if (p && p.closest('annotation, style, script')) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
       const nodes = [];
       let n;
       while ((n = walker.nextNode())) nodes.push(n);
-      const cleaned = nodes.map(nd => nd.data.replace(/\\s+/g, ' '));
-      const total = cleaned.join('');
-      const lt = total.toLowerCase();
-      const ln = needle.toLowerCase();
-      let idx = total.indexOf(needle);
-      let matchLen = needle.length;
-      if (idx === -1) idx = lt.indexOf(ln);                 // case-insensitive
-      if (idx === -1) {                                     // tolerant prefix match
-        for (const L of [60, 40, 30, 24]) {
-          if (ln.length <= L) continue;
-          const i = lt.indexOf(ln.substring(0, L));
-          if (i !== -1) { idx = i; matchLen = L; break; }
+      if (!nodes.length) return false;
+      // Raw concatenation (no per-node collapsing): paragraphs that contain
+      // math / line breaks are split into many small text nodes, so the
+      // selection's text only lines up with the *raw* node stream.
+      const lens = nodes.map(nd => nd.data.length);
+      const total = nodes.map(nd => nd.data).join('');
+
+      // The visible selection inserts whitespace at math / inline-block
+      // boundaries that the raw text stream lacks (and vice versa), so match
+      // token-by-token allowing arbitrary whitespace between tokens.
+      const isWS = (ch) => ch.trim() === '';
+      const lowerTotal = total.toLowerCase();
+      const tokens = needle.toLowerCase().split(' ').filter(Boolean);
+      if (!tokens.length) return false;
+      const matchTokens = (count, pos) => {
+        for (let t = 0; t < count; t++) {
+          while (pos < total.length && isWS(total[pos])) pos++;
+          const tok = tokens[t];
+          if (lowerTotal.substr(pos, tok.length) !== tok) return -1;
+          pos += tok.length;
+        }
+        return pos;
+      };
+      const findSeq = (count) => {
+        let from = 0;
+        for (let tries = 0; tries < 300; tries++) {
+          const i = lowerTotal.indexOf(tokens[0], from);
+          if (i === -1) return null;
+          const e2 = matchTokens(count, i);
+          if (e2 !== -1) return [i, e2];
+          from = i + 1;
+        }
+        return null;
+      };
+      let hit = findSeq(tokens.length);
+      if (!hit) {                                            // tolerant prefix
+        for (const C of [12, 10, 8, 6]) {
+          if (tokens.length <= C) continue;
+          hit = findSeq(C);
+          if (hit) break;
         }
       }
-      if (idx === -1) return false;
-      const end = idx + matchLen;
-      let pos = 0, sNode = null, sOff = 0, eNode = null, eOff = 0;
-      for (let i = 0; i < nodes.length; i++) {
-        const len = cleaned[i].length;
-        if (sNode === null && idx < pos + len) { sNode = nodes[i]; sOff = idx - pos; }
-        if (end <= pos + len) { eNode = nodes[i]; eOff = end - pos; break; }
-        pos += len;
-      }
-      if (!sNode || !eNode) return false;
+      if (!hit) return false;
+      const start = hit[0], end = hit[1];
+      if (end <= start) return false;
+
+      // Map raw offsets back to (node, offset) pairs.
+      const locate = (pos) => {
+        let acc = 0;
+        for (let i = 0; i < nodes.length; i++) {
+          if (pos <= acc + lens[i]) return [nodes[i], pos - acc];
+          acc += lens[i];
+        }
+        return [nodes[nodes.length - 1], lens[nodes.length - 1]];
+      };
+      const [sNode, sOff] = locate(start);
+      const [eNode, eOff] = locate(end);
       try {
         const range = doc.createRange();
-        range.setStart(sNode, cleanToRaw(sNode.data, sOff));
-        range.setEnd(eNode, cleanToRaw(eNode.data, eOff));
+        range.setStart(sNode, sOff);
+        range.setEnd(eNode, eOff);
+        if (range.collapsed) return false;
         const mark = doc.createElement('mark');
         if (user) {
           mark.className = 'user-hl' + ((entry && hlNote(entry)) ? ' has-note' : '');
           mark.title = 'Click to annotate this highlight';
-          const e = entry;
-          mark.onclick = () => openAnnotation(e, mark);
+          mark.onclick = () => openAnnotation(quote, mark);
         } else {
           mark.style.background = '#ffe08a';
         }
-        range.surroundContents(mark);
+        // extract/insert tolerates boundaries inside math / inline elements,
+        // where surroundContents would throw and drop the highlight.
+        mark.appendChild(range.extractContents());
+        range.insertNode(mark);
         return mark;
       } catch (e) {
-        return null;   // range crossed a boundary; skip
+        return null;
       }
     }
 
@@ -4306,6 +4351,23 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     // Highlights are {q, n} objects (legacy bare strings are upgraded on parse).
     function hlQuote(h) { return typeof h === 'string' ? h : (h.q || ''); }
     function hlNote(h) { return typeof h === 'string' ? '' : (h.n || ''); }
+
+    // Wrap the user's *live* selection range exactly. Re-matching math-heavy
+    // text is lossy, so for the immediate highlight we trust the range.
+    function wrapRange(doc, range, quote, entry) {
+      if (!range || range.collapsed) return null;
+      try {
+        const mark = doc.createElement('mark');
+        mark.className = 'user-hl' + ((entry && hlNote(entry)) ? ' has-note' : '');
+        mark.title = 'Click to annotate this highlight';
+        mark.onclick = () => openAnnotation(quote, mark);
+        mark.appendChild(range.extractContents());
+        range.insertNode(mark);
+        return mark;
+      } catch (e) {
+        return null;
+      }
+    }
 
     function applyUserHighlights() {
       let doc;
@@ -4329,7 +4391,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     }
 
     let activeAnnot = null;  // { entry, mark }
-    function openAnnotation(entry, mark) {
+    // Marks bind by quote (not object identity) so they stay valid across
+    // persist round-trips that replace the entry objects.
+    function openAnnotation(quote, mark) {
+      const entry = userHighlights.find(
+        h => hlQuote(h).toLowerCase() === String(quote).toLowerCase());
+      if (!entry) return;
       activeAnnot = { entry, mark };
       $('annotQuote').textContent = hlQuote(entry);
       $('annotNote').value = hlNote(entry);
@@ -4386,9 +4453,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         });
         const data = await resp.json();
         if (data.success) {
+          // Marks bind by quote, so the exact (possibly math-spanning) live
+          // wraps stay as-is; no re-match/re-render needed here.
           userHighlights = data.highlights || [];
           pinned.highlights = userHighlights;
-          rerenderUserHighlights();
         } else {
           addSystemMessage('Could not save highlights: ' + (data.error || 'unknown error'));
         }
@@ -4405,6 +4473,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         alert('Highlights are stored with saved papers; the paper could not be saved.');
         return;
       }
+      let liveRange = null;
+      try {
+        const sel = $('textFrame').contentWindow.getSelection();
+        if (sel && sel.rangeCount) liveRange = sel.getRangeAt(0).cloneRange();
+      } catch (e) {}
       pendingSelection = '';
       try { $('textFrame').contentWindow.getSelection().removeAllRanges(); } catch (e) {}
       if (userHighlights.some(h => hlQuote(h).toLowerCase() === quote.toLowerCase())) return;
@@ -4413,7 +4486,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (textLoadedFor === normalizeId(pinned.arxiv_id)) {
         let doc;
         try { doc = $('textFrame').contentDocument; } catch (e) { doc = null; }
-        if (doc) highlightOne(doc, quote, true, entry);
+        if (doc) {
+          const wrapped = liveRange ? wrapRange(doc, liveRange, quote, entry) : null;
+          if (!wrapped) highlightOne(doc, quote, true, entry);
+        }
       }
       await persistHighlights();
     }
