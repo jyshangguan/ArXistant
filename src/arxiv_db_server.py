@@ -1320,6 +1320,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:
 import {getDocument,GlobalWorkerOptions,TextLayer} from "/assets/pdfjs/pdf.min.mjs";
 GlobalWorkerOptions.workerSrc="/assets/pdfjs/pdf.worker.min.mjs";
 const pages=document.getElementById("pages"),status=document.getElementById("status");
+function orderTextForColumns(content,pageWidth){
+ const ordered=[],segment=[];
+ const flush=()=>{
+  if(!segment.length)return;
+  const mid=pageWidth/2;
+  const left=segment.filter(item=>(item.transform[4]+item.width/2)<mid);
+  const right=segment.filter(item=>(item.transform[4]+item.width/2)>=mid);
+  // Require substantial text on both sides. This leaves ordinary one-column
+  // pages, equations, and small marginal labels in their original order.
+  if(left.length>=5&&right.length>=5){
+   const spatial=(a,b)=>Math.abs(a.transform[5]-b.transform[5])>2
+    ? b.transform[5]-a.transform[5] : a.transform[4]-b.transform[4];
+   left.sort(spatial);right.sort(spatial);ordered.push(...left,...right);
+  }else ordered.push(...segment);
+  segment.length=0;
+ };
+ for(const item of content.items){
+  // Full-width headings and rules are natural boundaries between regions.
+  if(item.width>pageWidth*.62){flush();ordered.push(item);}else segment.push(item);
+ }
+ flush();content.items=ordered;return content;
+}
 try{
  const pdf=await getDocument({url:''' + json.dumps(pdf_url) + '''}).promise;
  for(let number=1;number<=pdf.numPages;number++){
@@ -1335,7 +1357,8 @@ try{
   const label=document.createElement("div");label.className="page-number";label.textContent=number;shell.appendChild(label);
   pages.appendChild(shell);
   await page.render({canvasContext:canvas.getContext("2d"),viewport,transform:ratio===1?null:[ratio,0,0,ratio,0,0]}).promise;
-  await new TextLayer({textContentSource:page.streamTextContent(),container:layer,viewport}).render();
+  const text=orderTextForColumns(await page.getTextContent(),base.width);
+  await new TextLayer({textContentSource:text,container:layer,viewport}).render();
  }
  status.remove();document.body.dataset.pdfReady="true";
 }catch(error){status.textContent="Could not render PDF: "+(error.message||error);status.style.color="#a00";}

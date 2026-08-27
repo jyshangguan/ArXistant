@@ -193,6 +193,7 @@ class LocalPdfReaderTests(unittest.TestCase):
                     html = f.read()
                 self.assertIn('pdf.min.mjs', html)
                 self.assertIn('shell.dataset.page=String(number)', html)
+                self.assertIn('orderTextForColumns', html)
                 self.assertIn(item["document_id"], html)
                 library = arxiv_db_server.collect_chat_library()
                 local_item = next(p for p in library if p.get("source") == "local")
