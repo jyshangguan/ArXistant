@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paths shared through FileProvider: the update APK lives in the app's
+     cache directory under update/. -->
+<paths>
+    <cache-path name="update-apk" path="update/" />
+</paths>

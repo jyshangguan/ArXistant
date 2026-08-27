@@ -16,9 +16,12 @@ server or a desktop Mac.
 
 Prebuilt, signed APKs are attached to each
 [GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
-For v0.2.0 the direct download is:
+For v0.3.0 the direct download is:
 
-<https://github.com/jyshangguan/ArXistant/releases/download/v0.2.0/arxistant-release.v0.2.0.apk>
+<https://github.com/jyshangguan/ArXistant/releases/download/v0.3.0/arxistant-release.v0.3.0.apk>
+
+Once an APK is installed, the app can update itself: **⋯ → Check for
+Updates** downloads the newest release APK and opens the installer.
 
 Copy the APK to the phone and open it to install. If a debug build is already
 installed, uninstall it first (the debug and release builds use different
@@ -65,6 +68,21 @@ WebView. It adds:
 - **Sync-then-refresh**: a refresh first pulls the latest saved papers from
   Nutstore, then regenerates the ranked list, so the phone always reflects
   changes made on other devices.
+- **Train-before-refresh**: a refresh checks whether the ML model needs
+  updating and trains it first when no model exists yet (fresh install) or a
+  retrain is due, so the phone shows the same relevance scores as the
+  desktop. With no saved papers there is nothing to learn from, so training
+  is skipped.
+- **Back navigation**: the system back button/gesture returns to the previous
+  page instead of leaving the app, and the same works as an edge swipe inside
+  the page (swipe right from the left edge, or swipe left from the right
+  edge).
+- **Check for Updates** (⬆️ in the ⋯ menu): the app compares its version with
+  the latest GitHub release, offers to download the release APK, and hands it
+  to the package installer. Android asks once for the "install unknown apps"
+  permission; after allowing it, the installer opens automatically. A silent
+  check also runs once at startup and only speaks up when a newer release
+  exists.
 
 The app icon is the ArXistant logo, and `MainActivity` shows a loading page and
 polls the embedded server until it is ready, so the daily list appears as soon
@@ -106,7 +124,7 @@ cd android
 
 # Release APK (signed; see "Release build" below):
 ./gradlew :app:assembleRelease
-#   -> app/build/outputs/apk/release/arxistant-release.v0.2.0.apk
+#   -> app/build/outputs/apk/release/arxistant-release.v0.3.0.apk
 ```
 
 The first build downloads Chaquopy, NumPy, and scikit-learn wheels for the
@@ -145,13 +163,15 @@ keyPassword=<key-password>
 
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
-cannot push an update over an existing install. The current Android release is
-**v0.2.0** (`versionName "0.2.0"`, `versionCode 4` in `app/build.gradle`), matching the desktop release.
+cannot push an update over an existing install. The current Android version is
+**v0.3.0** (`versionName "0.3.0"`, `versionCode 5` in `app/build.gradle`);
+bump both whenever you publish a new release so the in-app update check can
+detect it.
 
 ## Install and run
 
 - **Phone:** install the release APK
-  (`app/build/outputs/apk/release/arxistant-release.v0.2.0.apk`) or the debug APK
+  (`app/build/outputs/apk/release/arxistant-release.v0.3.0.apk`) or the debug APK
   (`app/build/outputs/apk/debug/app-debug.apk`) and launch it. The daily page
   appears in the WebView after the server starts.
 - **Emulator:** use an arm64 system image on Apple Silicon. The

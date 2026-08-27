@@ -44,6 +44,8 @@ ADS_TOKEN_PATH = data_path("ads_token.txt")
 SCIX_CONFIG_PATH = data_path("scix_config.json")
 ML_RANKER_DIR = data_path("ml_ranker")
 RETRAIN_STATE_PATH = os.path.join(ML_RANKER_DIR, "retrain_state.json")
+MODEL_FILE_PATH = os.path.join(ML_RANKER_DIR, "model.pkl")
+VECTORIZER_FILE_PATH = os.path.join(ML_RANKER_DIR, "vectorizer.pkl")
 LOCAL_DOCUMENT_DIR = data_path("local_documents")
 PDFJS_DIR = os.path.join(os.path.dirname(__file__), "vendor", "pdfjs")
 LOCAL_PDF_MAX_BYTES = 80 * 1024 * 1024
@@ -101,7 +103,8 @@ def get_retrain_state():
         return dict(RETRAIN_STATE)
 
 
-def _run_training(included_changes):
+def _train_sync(included_changes):
+    """Train in the calling thread and fold the result into the retrain state."""
     training_succeeded, error = arxistant_tasks.train_and_generate_features()
 
     with RETRAIN_STATE_LOCK:
@@ -112,6 +115,65 @@ def _run_training(included_changes):
         RETRAIN_STATE["training"] = False
         RETRAIN_STATE["last_error"] = error
         _save_retrain_state_locked()
+    return training_succeeded, error
+
+
+def _run_training(included_changes):
+    _train_sync(included_changes)
+
+
+def _saved_paper_count():
+    """Number of saved papers available as positive training data."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM saved_papers").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+
+
+def ensure_model_for_refresh():
+    """Make sure the ML model is current before regenerating a ranked page.
+
+    A refresh trains the model first when it is missing entirely (fresh
+    install) or a retrain is due, so the new page is ranked with an
+    up-to-date model.  Training runs synchronously in the request thread.
+    With no saved papers there is nothing to learn from, so training is
+    skipped.  Returns a short human-readable note (also printed to the log).
+    """
+    if _saved_paper_count() == 0:
+        note = "No saved papers; skipping ML training before refresh."
+        print(note)
+        return note
+
+    model_missing = not (os.path.exists(MODEL_FILE_PATH) and
+                         os.path.exists(VECTORIZER_FILE_PATH))
+    with RETRAIN_STATE_LOCK:
+        retrain_due = (RETRAIN_STATE["changes_since_training"] >=
+                       RETRAIN_STATE["retrain_after_changes"])
+        if not model_missing and not retrain_due:
+            return "ML model is up to date."
+        if RETRAIN_STATE["training"]:
+            return ("ML training already in progress; "
+                    "refreshing with the existing model.")
+        included_changes = RETRAIN_STATE["changes_since_training"]
+        RETRAIN_STATE["training"] = True
+        RETRAIN_STATE["last_training_started_at"] = \
+            datetime.now().astimezone().isoformat()
+        RETRAIN_STATE["last_error"] = None
+        _save_retrain_state_locked()
+
+    reason = "no trained model found" if model_missing else \
+        "retrain threshold reached"
+    print(f"Training ML model before refresh ({reason})...")
+    training_succeeded, error = _train_sync(included_changes)
+    if training_succeeded:
+        return "ML model trained before refresh."
+    return (f"ML training before refresh failed ({error}); "
+            "refreshing with the existing model.")
 
 
 def start_training(manual=False):
@@ -2773,6 +2835,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "started": started, **state})
 
         elif path == "/api/refresh-daily":
+            # Train (or retrain) the ML model first when needed, so the new
+            # page is ranked with an up-to-date model.
+            ensure_model_for_refresh()
             ok, error = arxistant_tasks.refresh_daily(DAILY_HTML)
             if ok:
                 self._send_json({"success": True})
@@ -2780,6 +2845,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"success": False, "error": error}, 500)
 
         elif path == "/api/refresh-recent":
+            ensure_model_for_refresh()
             ok, error = arxistant_tasks.refresh_recent(RECENT_HTML)
             if ok:
                 self._send_json({"success": True})
@@ -3170,6 +3236,13 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
         { icon: '☁️', label: 'Cloud Sync', href: '/cloud-sync.html', desc: 'Sync your library across devices via Nutstore' }
     ];
 
+    // APK self-update only exists inside the Android app, which exposes the
+    // ArxistantAndroid JavaScript bridge; desktop browsers never see it.
+    if (window.ArxistantAndroid) {
+        ITEMS.push({ icon: '⬆️', label: 'Check for Updates', action: 'update',
+                     desc: 'Check for a newer ArXistant version and install it' });
+    }
+
     var btn = document.createElement('div');
     btn.className = 'arx-menu-btn';
     btn.innerHTML = '<span></span><span></span><span></span>';
@@ -3196,7 +3269,14 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
             div.addEventListener('touchend', function () { clearTimeout(timer); hideTooltip(); });
             div.addEventListener('click', function (e) {
                 e.stopPropagation();
-                if (!longPress) window.location.href = item.href;
+                if (!longPress) {
+                    if (item.action === 'update') {
+                        panel.classList.remove('open');
+                        window.ArxistantAndroid.checkForUpdate();
+                    } else {
+                        window.location.href = item.href;
+                    }
+                }
                 longPress = false;
             });
             panel.appendChild(div);
