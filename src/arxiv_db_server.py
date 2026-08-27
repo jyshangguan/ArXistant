@@ -1027,6 +1027,15 @@ def expand_query_with_llm(query):
         return []
 
 
+def _llm_http_error(code):
+    """Human-readable LLM HTTP failure, with auth guidance on 401/403."""
+    msg = f"LLM API returned HTTP {code}"
+    if code in (401, 403):
+        msg += (" (authentication failed — check that the API key saved in "
+                "Chat → LLM Settings belongs to this provider)")
+    return msg
+
+
 def _chat_completion(base_url, model, messages, temperature, api_key, tools=None):
     """One non-streaming OpenAI-compatible chat completion; returns parsed JSON."""
     url = base_url.strip().rstrip("/")
@@ -1099,7 +1108,7 @@ def run_chat_agent(base_url, model, messages, temperature, api_key, max_iters=4)
             body = e.read().decode("utf-8", "replace")[:500]
         except Exception:
             pass
-        return {"unsupported": False, "error": f"LLM API returned HTTP {e.code}", "details": body}
+        return {"unsupported": False, "error": _llm_http_error(e.code), "details": body}
 
     for _ in range(max_iters):
         try:
@@ -2476,7 +2485,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._stream_one(base_url, model, msgs, temperature, api_key, use_tools=False)
                     self._sse_write(b"data: [DONE]\n\n")
                     return
-                self._sse_write({"error": f"LLM API returned HTTP {e.code}"})
+                self._sse_write({"error": _llm_http_error(e.code)})
                 self._sse_write(b"data: [DONE]\n\n")
                 return
             except Exception as e:
@@ -2928,6 +2937,38 @@ class Handler(BaseHTTPRequestHandler):
                 "key_storage": chat_key_storage(),
             })
 
+        elif path == "/api/chat/config/test":
+            # Validate the saved base URL + model + API key with a tiny
+            # request, so a stale/missing key is caught here instead of
+            # surfacing later as a cryptic provider 401 mid-chat.
+            config = load_chat_config()
+            base_url = config.get("base_url", "").strip()
+            model = config.get("model", "").strip()
+            if not base_url or not model:
+                self._send_json({
+                    "success": False,
+                    "error": "Save a base URL and model first."}, 400)
+                return
+            api_key = get_chat_api_key()
+            if not api_key:
+                self._send_json({
+                    "success": False,
+                    "error": ("No API key is configured — paste the key for "
+                              "this provider and save again.")}, 400)
+                return
+            try:
+                _chat_completion(
+                    base_url, model,
+                    [{"role": "user",
+                      "content": "Reply with the single word: ok"}],
+                    0.0, api_key, tools=None)
+                self._send_json({"success": True, "model": model})
+            except urllib.error.HTTPError as e:
+                self._send_json(
+                    {"success": False, "error": _llm_http_error(e.code)}, 502)
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)}, 502)
+
         elif path == "/api/chat":
             messages = data.get("messages") or []
             if not isinstance(messages, list) or not messages:
@@ -2945,6 +2986,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             temperature = data.get("temperature", config.get("temperature", 0.7))
             api_key = get_chat_api_key()
+            if not api_key:
+                # Fail fast with a clear message instead of letting the
+                # provider answer an unauthenticated request with HTTP 401.
+                self._send_json({
+                    "success": False,
+                    "error": ("No LLM API key is configured. Open Chat → "
+                              "LLM Settings and save the API key for your "
+                              "provider."),
+                }, 400)
+                return
             self._start_sse()
             try:
                 self._run_streaming_agent(
@@ -4206,6 +4257,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           <input type="text" id="modelName" placeholder="Model (e.g. gpt-4o-mini, deepseek-chat)">
           <input type="password" id="apiKey" placeholder="API key">
           <button onclick="saveConfig()">Save Settings</button>
+          <button onclick="testConnection()">Test Connection</button>
           <p class="hint" id="configStatus">Loading…</p>
           <p class="hint">The API key is stored in the OS keychain when available, otherwise in a private local file; base URL and model stay in ArXistant's local data directory. Questions are sent to the provider you configure.</p>
         </div>
@@ -4454,7 +4506,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (!cfg.has_api_key) missing.push('API key');
       if (missing.length === 0) {
         el.textContent = '✅ Ready — ' + cfg.model +
-          (cfg.key_storage === 'file' ? ' · key in local file' : '');
+          (cfg.key_storage === 'file' ? ' · key in local file'
+            : cfg.key_storage === 'keychain' ? ' · key from OS keychain' : '') +
+          ' (use Test Connection to verify)';
         el.className = 'hint ok';
       } else {
         el.textContent = '⚠️ Missing: ' + missing.join(', ');
@@ -4494,8 +4548,35 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         if (!data.success) throw new Error(data.error || 'Failed to save');
         $('apiKey').value = '';
         await loadConfig();
+        // Verify the saved credentials right away so a missing or stale key
+        // is caught here, not later as a provider 401 mid-chat.
+        await testConnection();
       } catch (e) {
         status.textContent = '⚠️ ' + e.message;
+        status.className = 'hint warn';
+      }
+    }
+
+    async function testConnection() {
+      const status = $('configStatus');
+      status.textContent = '⏳ Testing connection…';
+      status.className = 'hint';
+      try {
+        const resp = await fetch('/api/chat/config/test', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: '{}'
+        });
+        const data = await resp.json();
+        if (data.success) {
+          status.textContent = '✅ Connection OK — the provider answered a ' +
+            'test request' + (data.model ? ' (' + data.model + ')' : '') + '.';
+          status.className = 'hint ok';
+        } else {
+          status.textContent = '⚠️ ' + (data.error || 'Connection test failed');
+          status.className = 'hint warn';
+        }
+      } catch (e) {
+        status.textContent = '⚠️ Connection test failed: ' + e.message;
         status.className = 'hint warn';
       }
     }
