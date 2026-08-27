@@ -182,6 +182,7 @@ class ChatPageHtmlTests(unittest.TestCase):
         self.assertIn("CSS.highlights", html)
         self.assertIn("new win.Highlight", html)
         self.assertIn("handleTextDocumentClick", html)
+        self.assertIn("rgba(255,208,48,.32)", html)
 
 
 if __name__ == "__main__":

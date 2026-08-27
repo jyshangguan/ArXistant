@@ -4977,7 +4977,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             mark.style.backgroundColor = hlColor(entry);
             mark.title = 'Click to annotate this highlight';
             mark.onclick = event => handleHighlightClick(event, quote, mark);
-          } else mark.style.background = '#ffe08a';
+          } else mark.style.background = 'rgba(255, 208, 48, 0.32)';
           r.surroundContents(mark);
           marks.push(mark);
         } catch (e) {}
@@ -5040,7 +5040,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       const style = doc.createElement('style');
       style.id = 'arxistant-highlight-styles';
       style.textContent =
-        '::highlight(arxistant-citation){background:#ffe08a}' +
+        '::highlight(arxistant-citation){background:rgba(255,208,48,.32)}' +
         HIGHLIGHT_COLORS.map((color, i) =>
           '::highlight(arxistant-user-' + i + '){background:' + color + '}' +
           '::highlight(arxistant-user-note-' + i + '){background:' + color + ';text-decoration:underline 2px #00796b}'
