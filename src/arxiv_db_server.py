@@ -5996,6 +5996,9 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     h2 { font-size: 1.1em; margin-top: 0; }
     h2 a { color: #b31b1b; text-decoration: none; }
     h2 a:hover { text-decoration: underline; }
+    .arxiv-id { color: #666; font-size: 0.85em; font-weight: normal; }
+    .arxiv-id a { color: #666; text-decoration: none; }
+    .arxiv-id a:hover { text-decoration: underline; }
     .authors { color: #555; font-size: 0.95em; margin: 8px 0; }
     .meta { font-size: 0.85em; color: #888; margin: 4px 0; }
     .score { display: inline-block; background: #b31b1b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
@@ -6157,14 +6160,14 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
         return;
       }
 
-      container.innerHTML = papers.map(p => {
+      container.innerHTML = papers.map((p, idx) => {
         const tags = paperTags(p);
         const tagsHtml = tags.map(t => `<span class="paper-tag">${escapeHtml(t)}</span>`).join('');
         return `
         <div class="paper" id="${cardId(p.arxiv_id)}">
           <button class="delete-btn" onclick="deletePaper('${p.arxiv_id}')">🗑 Delete</button>
           <a class="chat-btn" href="/chat.html?paper=${p.arxiv_id}">💬 Chat</a>
-          <h2><a href="https://arxiv.org/abs/${p.arxiv_id}" target="_blank">${escapeHtml(p.title)}</a></h2>
+          <h2>${idx + 1}. <span class="arxiv-id"><a href="https://arxiv.org/abs/${p.arxiv_id}" target="_blank">arXiv:${p.arxiv_id}</a></span> — <a href="https://alphaxiv.org/abs/${p.arxiv_id}" target="_blank">${escapeHtml(p.title)}</a></h2>
           <span class="score">Relevance: ${p.relevance_score}</span>
           <p class="authors"><strong>Authors:</strong> ${escapeHtml(p.authors)}</p>
           <p class="meta">Saved: ${p.date_saved} | Fetched: ${p.date_fetched || 'N/A'}</p>
