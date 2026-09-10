@@ -161,7 +161,10 @@ class PdfCacheTests(unittest.TestCase):
 
 class LocalPdfReaderTests(unittest.TestCase):
     def _pdf_bytes(self):
-        import fitz
+        try:
+            import fitz
+        except ImportError:
+            self.skipTest("PyMuPDF (fitz) is not installed")
         doc = fitz.open()
         for page_no in range(1, 4):
             page = doc.new_page()
@@ -208,7 +211,10 @@ class LocalPdfReaderTests(unittest.TestCase):
             arxiv_db_server.ingest_local_pdf(b"not a pdf", "bad.pdf")
 
     def test_ingest_rejects_scanned_pdf(self):
-        import fitz
+        try:
+            import fitz
+        except ImportError:
+            self.skipTest("PyMuPDF (fitz) is not installed")
         doc = fitz.open()
         doc.new_page()
         data = doc.tobytes()

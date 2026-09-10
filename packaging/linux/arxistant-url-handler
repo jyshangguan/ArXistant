@@ -9,7 +9,7 @@ set -eu
 
 SERVER_URL="http://localhost:8765"
 HEALTH_URL="$SERVER_URL/api/health"
-API_VERSION="1"
+API_VERSION="2"
 SERVICE_UNIT="/usr/lib/systemd/user/arxistant.service"
 WRAPPER="/usr/bin/arxistant-server"
 

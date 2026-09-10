@@ -4,7 +4,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-VERSION=${1:-0.2.0}
+VERSION=${1:-0.3.1}
 
 case "$VERSION" in
     *[!0-9A-Za-z.+~-]*|'')
@@ -29,6 +29,16 @@ install -d \
 for source_file in "$PROJECT_ROOT"/src/*.py; do
     install -m 0644 "$source_file" "$PACKAGE_ROOT/usr/lib/arxistant/src/"
 done
+
+# Vendored assets the server serves at runtime (e.g. the PDF.js reader).
+# (No `install -D`: it is GNU-only and this script also builds on macOS.)
+if [ -d "$PROJECT_ROOT/src/vendor" ]; then
+    (cd "$PROJECT_ROOT/src" && find vendor -type f) | while read -r asset; do
+        install -d "$PACKAGE_ROOT/usr/lib/arxistant/src/$(dirname "$asset")"
+        install -m 0644 "$PROJECT_ROOT/src/$asset" \
+            "$PACKAGE_ROOT/usr/lib/arxistant/src/$asset"
+    done
+fi
 
 for extension_file in background.js manifest.json options.html options.js popup.css popup.html popup.js; do
     install -m 0644 \

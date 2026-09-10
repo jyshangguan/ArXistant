@@ -77,11 +77,13 @@ def _load_retrain_state():
     try:
         with open(RETRAIN_STATE_PATH, "r", encoding="utf-8") as f:
             state.update(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-    state["changes_since_training"] = max(0, int(state.get("changes_since_training", 0)))
-    state["retrain_after_changes"] = min(100, max(1, int(
-        state.get("retrain_after_changes", DEFAULT_RETRAIN_AFTER_CHANGES))))
+        state["changes_since_training"] = max(0, int(state.get("changes_since_training", 0)))
+        state["retrain_after_changes"] = min(100, max(1, int(
+            state.get("retrain_after_changes", DEFAULT_RETRAIN_AFTER_CHANGES))))
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        # A corrupt state file must not prevent the server from starting
+        # (this runs at module import time).
+        state = _default_retrain_state()
     # A persisted true value can only belong to a server process that stopped.
     state["training"] = False
     return state
@@ -220,6 +222,15 @@ def set_retrain_threshold(value):
     return state
 
 
+def _write_json_atomic(path, obj):
+    """Write JSON via a temporary file + rename so a crash or a concurrent
+    reader never sees a torn file."""
+    temp_path = path + ".tmp"
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, indent=2)
+    os.replace(temp_path, path)
+
+
 def load_scix_config():
     if not os.path.exists(SCIX_CONFIG_PATH):
         return {"scix_link": ""}
@@ -228,15 +239,7 @@ def load_scix_config():
 
 
 def save_scix_config(config):
-    with open(SCIX_CONFIG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2)
-
-
-def load_ads_token():
-    if not os.path.exists(ADS_TOKEN_PATH):
-        return ""
-    with open(ADS_TOKEN_PATH, 'r', encoding='utf-8') as f:
-        return f.read().strip()
+    _write_json_atomic(SCIX_CONFIG_PATH, config)
 
 
 SCIXPLORER_LIBRARY_RE = re.compile(r'scixplorer\.org/user/libraries/([a-zA-Z0-9_-]+)')
@@ -335,13 +338,11 @@ def load_custom_negative():
 
 
 def save_custom_positive(keywords):
-    with open(CUSTOM_POSITIVE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(keywords, f, indent=2)
+    _write_json_atomic(CUSTOM_POSITIVE_PATH, keywords)
 
 
 def save_custom_negative(keywords):
-    with open(CUSTOM_NEGATIVE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(keywords, f, indent=2)
+    _write_json_atomic(CUSTOM_NEGATIVE_PATH, keywords)
 
 
 def add_custom_positive(keyword):
@@ -413,8 +414,8 @@ def search_arxiv_api(query, max_results=20):
         f"&sortBy=relevance&sortOrder=descending"
     )
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    resp = urllib.request.urlopen(req, timeout=30)
-    data = resp.read().decode('utf-8')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = resp.read().decode('utf-8')
 
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
     root = ET.fromstring(data)
@@ -470,8 +471,8 @@ def search_ads_api(query, token, max_results=20):
             'Authorization': f'Bearer {token}'
         }
     )
-    resp = urllib.request.urlopen(req, timeout=30)
-    data = json.loads(resp.read().decode('utf-8'))
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
 
     papers = []
     for doc in data.get('response', {}).get('docs', []):
@@ -658,7 +659,7 @@ def build_chat_request(base_url, model, messages, temperature, api_key):
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
-        "User-Agent": "ArXistant/0.1",
+        "User-Agent": "ArXistant/0.3.1",
     }
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -868,7 +869,7 @@ def s2_search(query, limit=10):
     """Semantic Scholar keyword search with citation counts + TLDR (keyless)."""
     url = ("https://api.semanticscholar.org/graph/v1/paper/search?query="
            + urllib.parse.quote(query) + f"&limit={limit}&fields=" + S2_FIELDS)
-    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.3.1"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return [_s2_to_item(p) for p in (data.get("data") or [])]
@@ -879,7 +880,7 @@ def s2_related(arxiv_id, limit=10):
     url = f"https://api.semanticscholar.org/recommendations/v1/papers/?limit={limit}&fields={S2_FIELDS}"
     req = urllib.request.Request(
         url, data=json.dumps({"positivePaperIds": ["arXiv:" + arxiv_id]}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.1"},
+        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.3.1"},
         method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -1046,7 +1047,7 @@ def _chat_completion(base_url, model, messages, temperature, api_key, tools=None
         payload["temperature"] = temperature
     if tools:
         payload["tools"] = tools
-    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.1"}
+    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.3.1"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -1204,7 +1205,7 @@ def fetch_paper_pdf(arxiv_id):
         return path
     url = ARXIV_PDF_URL.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
     req = urllib.request.Request(
-        url, headers={"User-Agent": "ArXistant/0.1 (local research assistant)"})
+        url, headers={"User-Agent": "ArXistant/0.3.1 (local research assistant)"})
     temp_path = f"{path}.{threading.get_ident()}.tmp"
     try:
         # Stream straight to disk in chunks so large PDFs never sit in memory.
@@ -1263,6 +1264,18 @@ def _local_document_paths(document_id):
     os.makedirs(LOCAL_DOCUMENT_DIR, exist_ok=True)
     return (os.path.join(LOCAL_DOCUMENT_DIR, document_id + ".pdf"),
             os.path.join(LOCAL_DOCUMENT_DIR, document_id + ".html"))
+
+
+def _resolve_stored_path(path):
+    """Resolve a document path stored in the database.
+
+    New rows store paths relative to the data directory so the database
+    survives ARXISTANT_DATA_DIR changes; rows written by older versions hold
+    absolute paths and are used as-is.
+    """
+    if not path:
+        return path
+    return path if os.path.isabs(path) else data_path(path)
 
 
 def _chunk_pdf_pages(pages, target=3500, overlap=400):
@@ -1453,7 +1466,11 @@ def ingest_local_pdf(pdf_bytes, filename):
     if len(full_text) < 100:
         raise ValueError("This appears to be a scanned PDF without selectable text")
     html = local_pdf_reader_html(document_id, title)
-    temp_pdf, temp_html = pdf_path + ".tmp", text_path + ".tmp"
+    # Key temp files by thread as well as content digest: two simultaneous
+    # uploads of the same PDF would otherwise share one .tmp path and the
+    # second os.replace would fail with FileNotFoundError.
+    temp_pdf = f"{pdf_path}.{threading.get_ident()}.tmp"
+    temp_html = f"{text_path}.{threading.get_ident()}.tmp"
     with open(temp_pdf, "wb") as f:
         f.write(pdf_bytes)
     with open(temp_html, "w", encoding="utf-8") as f:
@@ -1469,10 +1486,15 @@ def ingest_local_pdf(pdf_bytes, filename):
         existing = c.fetchone()
         highlights = existing[0] if existing else ""
         date_added = existing[1] if existing else arxistant_sync.now_iso()
+        # Store paths relative to the data directory so the database keeps
+        # working when ARXISTANT_DATA_DIR changes (e.g. switching between a
+        # source checkout and the packaged install).
         c.execute('''INSERT OR REPLACE INTO local_documents
                      (document_id,title,filename,pdf_path,text_path,highlights,date_added,updated_at)
                      VALUES (?,?,?,?,?,?,?,?)''',
-                  (document_id, title, safe_filename, pdf_path, text_path, highlights,
+                  (document_id, title, safe_filename,
+                   os.path.relpath(pdf_path, DATA_DIR),
+                   os.path.relpath(text_path, DATA_DIR), highlights,
                    date_added, arxistant_sync.now_iso()))
         c.execute("DELETE FROM local_document_chunks WHERE document_id = ?", (document_id,))
         c.executemany('''INSERT INTO local_document_chunks
@@ -1577,7 +1599,7 @@ def fetch_paper_fulltext(arxiv_id):
     for tmpl in ARXIV_HTML_URLS:
         url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
         req = urllib.request.Request(
-            url, headers={"User-Agent": "ArXistant/0.1 (local research assistant)"})
+            url, headers={"User-Agent": "ArXistant/0.3.1 (local research assistant)"})
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
@@ -1597,7 +1619,7 @@ def fetch_paper_fulltext(arxiv_id):
                           html, count=1, flags=re.I)
         else:
             html = '<base href="' + base_href + '">' + html
-        temp_path = path + ".tmp"
+        temp_path = f"{path}.{threading.get_ident()}.tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(html)
         os.replace(temp_path, path)
@@ -1739,6 +1761,13 @@ def parse_highlights(value):
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
+    # WAL persists in the database file: readers (the ML-ranker subprocess,
+    # sync threads, concurrent HTTP handlers) then never block the writer,
+    # avoiding SQLITE_BUSY under the threading server. busy_timeout covers
+    # the remaining writer-vs-writer cases on this and future connections
+    # made by this process.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     c = conn.cursor()
     
     # Saved arXiv papers table
@@ -1897,13 +1926,24 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Suppress console spam
 
+    def _write_body(self, payload):
+        """Write a response body, tolerating clients that disconnect early.
+
+        Closing a tab mid-request otherwise surfaces as a BrokenPipeError
+        traceback per event in the log, with no useful information.
+        """
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _send_json(self, data, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        self._write_body(json.dumps(data).encode())
 
     def _send_html(self, html, status=200):
         if '<!-- arxistant-mobile-menu -->' not in html:
@@ -1913,14 +1953,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(html.encode())
+        self._write_body(html.encode())
 
     def _send_text(self, text, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(text.encode())
+        self._write_body(text.encode())
 
     def _not_found_page(self, title, message, api_endpoint, button_label):
         """Return an HTML page with a message and an optional button."""
@@ -2328,7 +2368,8 @@ class Handler(BaseHTTPRequestHandler):
             if not row:
                 self._send_json({"success": False, "error": "Local document not found"}, 404)
                 return
-            file_path = row[0] if path.endswith("local-pdf") else row[1]
+            file_path = _resolve_stored_path(
+                row[0] if path.endswith("local-pdf") else row[1])
             mode = "rb" if path.endswith("local-pdf") else "r"
             try:
                 if mode == "rb":
@@ -2405,7 +2446,7 @@ class Handler(BaseHTTPRequestHandler):
         if use_tools:
             payload["tools"] = CHAT_TOOLS
         headers = {"Content-Type": "application/json",
-                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.1"}
+                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.3.1"}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -2544,7 +2585,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        content_length = int(self.headers.get('Content-Length', 0))
+        try:
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+        except (TypeError, ValueError):
+            self._send_json({"success": False, "error": "Invalid Content-Length"}, 400)
+            return
+        # A negative length would make rfile.read() block until the client
+        # closes; treat it as an empty body.
+        content_length = max(0, content_length)
         if path == "/api/chat/upload-pdf" and content_length > LOCAL_PDF_MAX_BYTES:
             self._send_json({"success": False, "error": "The PDF is larger than 80 MB"}, 413)
             return
@@ -2726,7 +2774,7 @@ class Handler(BaseHTTPRequestHandler):
             if row:
                 for file_path in row:
                     try:
-                        os.remove(file_path)
+                        os.remove(_resolve_stored_path(file_path))
                     except OSError:
                         pass
             self._send_json({"success": True, "removed": removed})
@@ -5122,7 +5170,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     // intact, so native selection remains continuous across paragraphs.
     function highlightKey(quote) {
       let h = 2166136261;
-      const s = String(quote).replace(/\s+/g, ' ').trim().toLowerCase();
+      const s = String(quote).replace(/\\s+/g, ' ').trim().toLowerCase();
       for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
       return (h >>> 0).toString(36);
     }
@@ -6624,9 +6672,30 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
 """
 
 
+def _sweep_stale_temps():
+    """Remove orphaned temp files from the cache directories.
+
+    A process killed mid-write (e.g. SIGKILL, power loss) leaves behind
+    ``*.tmp`` files that would otherwise accumulate forever.
+    """
+    for directory in (PDF_CACHE_DIR, FULLTEXT_CACHE_DIR, LOCAL_DOCUMENT_DIR):
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".tmp"):
+                continue
+            try:
+                os.remove(os.path.join(directory, name))
+            except OSError:
+                pass
+
+
 def run_server(port=8765):
     ensure_data_dirs()
     init_db()
+    _sweep_stale_temps()
     arxistant_sync.maybe_auto_sync_on_start()
     arxistant_sync.start_periodic_sync()
     # Bind to a specific loopback address when requested (e.g. 127.0.0.1 on
@@ -6636,6 +6705,22 @@ def run_server(port=8765):
     # block the rest of the app. SQLite connections are opened per request,
     # and the shared retrain state is guarded by a lock, so this is safe.
     server = ThreadingHTTPServer((bind_host, port), Handler)
+
+    # systemd (and other service managers) stop the server with SIGTERM.
+    # Without a handler the process dies mid-write, leaving stale temp files;
+    # shut down gracefully instead.  signal.signal only works in the main
+    # thread, which is where run_server() is called from.
+    import signal
+
+    def _handle_sigterm(signum, frame):
+        threading.Thread(target=server.shutdown, daemon=True,
+                         name="arxistant-sigterm").start()
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except ValueError:
+        pass  # not in the main thread (e.g. embedded)
+
     print(f"Server running at http://{bind_host}:{port}")
     print(f"  Daily papers:     http://{bind_host}:{port}/")
     print(f"  Recent papers:    http://{bind_host}:{port}/recent.html")
@@ -6649,6 +6734,8 @@ def run_server(port=8765):
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nServer stopped")
+    finally:
+        server.server_close()
 
 
 if __name__ == '__main__':

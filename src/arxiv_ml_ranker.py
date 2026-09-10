@@ -22,6 +22,7 @@ import os
 import pickle
 import re
 import sqlite3
+import sys
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -195,26 +196,36 @@ def adjusted_model_probabilities(clf, X, texts):
 # DATA FETCHING
 # =============================================================================
 
-def get_saved_papers():
-    """Load all saved papers from the DB as positive examples."""
+def _query_db(query):
+    """Run a read query against the paper DB, tolerating a fresh install.
+
+    The database file and its tables are created by the HTTP server at
+    startup; standalone CLI use (or a data directory the server has not
+    written yet) must yield an empty result instead of a traceback.
+    """
+    if not os.path.exists(DB_PATH):
+        return []
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT arxiv_id, title, authors, abstract FROM saved_papers")
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    try:
+        c = conn.cursor()
+        c.execute(query)
+        return [dict(r) for r in c.fetchall()]
+    except sqlite3.OperationalError:
+        # Fresh install: the tables have not been created yet.
+        return []
+    finally:
+        conn.close()
+
+
+def get_saved_papers():
+    """Load all saved papers from the DB as positive examples."""
+    return _query_db("SELECT arxiv_id, title, authors, abstract FROM saved_papers")
 
 
 def get_my_publications():
     """Load user's own publications from the DB as additional positive signal."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT title, authors, abstract FROM my_publications")
-    rows = [dict(r) for r in c.fetchall()]
-    conn.close()
-    return rows
+    return _query_db("SELECT title, authors, abstract FROM my_publications")
 
 
 def fetch_random_astroph_papers(max_results=100, days_back=30):
@@ -345,7 +356,10 @@ def build_training_data():
         print("Local recent-paper cache unavailable; fetching negative examples from arXiv...")
         try:
             negatives = fetch_random_astroph_papers(max_results=150, days_back=30)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                OSError, ET.ParseError) as exc:
+            # OSError covers socket.timeout on Python < 3.10; ParseError
+            # covers arXiv answering with a non-XML error page.
             raise RuntimeError(
                 f"Could not fetch negative examples from arXiv ({exc}), and no local recent-paper cache is available"
             ) from exc
@@ -1378,8 +1392,8 @@ if __name__ == '__main__':
         if not args.input_file:
             print("ERROR: input_file required for score command")
             parser.print_help()
-            exit(1)
-        with open(args.input_file, 'r') as f:
+            sys.exit(1)
+        with open(args.input_file, 'r', encoding='utf-8') as f:
             papers = json.load(f)
         scored = score_papers(papers)
         for prob, paper in scored[:20]:

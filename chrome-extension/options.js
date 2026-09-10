@@ -31,8 +31,20 @@ const webdavUrlInput = document.getElementById('webdav-url');
 const webdavUsernameInput = document.getElementById('webdav-username');
 const webdavPasswordInput = document.getElementById('webdav-password');
 
+let currentPlatform = 'unknown';
+
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
+  try {
+    currentPlatform = (await chrome.runtime.getPlatformInfo()).os;
+  } catch (e) {
+    currentPlatform = 'unknown';
+  }
+  // The notification troubleshooting box is macOS-specific; only show it there.
+  if (currentPlatform === 'mac') {
+    const macHelp = document.getElementById('macos-notify-help');
+    if (macHelp) macHelp.style.display = 'block';
+  }
   await loadSettings();
   await loadCloudStatus();
 });
@@ -156,7 +168,9 @@ async function testNotification() {
     const response = await chrome.runtime.sendMessage({ action: 'testNotification' });
     if (!response.success) throw new Error(response.error || 'Unknown error');
     if (response.acceptedByChrome) {
-      testStatus.textContent = 'Chrome accepted and retained the notification. If no banner appeared, check macOS banner style and Focus mode below.';
+      testStatus.textContent = currentPlatform === 'mac'
+        ? 'Chrome accepted and retained the notification. If no banner appeared, check macOS banner style and Focus mode below.'
+        : 'Chrome accepted and retained the notification. If no banner appeared, check your desktop notification settings (and Do Not Disturb).';
       testStatus.style.color = '#e65100';
     } else {
       testStatus.textContent = 'Chrome accepted the request but did not retain the notification. Reload the extension and inspect its service worker console.';
@@ -227,7 +241,7 @@ async function loadCloudStatus() {
     webdavUsernameInput.value = cfg.webdav_username || '';
     webdavPasswordInput.value = '';
     webdavPasswordInput.placeholder = cfg.webdav_password_set
-      ? 'Saved in Keychain (leave blank to keep)'
+      ? 'Saved in system keychain (leave blank to keep)'
       : 'App password';
     cloudEnabledInput.checked = state.enabled !== false;
     updateCloudProviderFields();

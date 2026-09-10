@@ -691,23 +691,40 @@ def regenerate_interests(db_path, interests_file):
     Uses weighted scoring: source_weight × frequency × specificity.
     Keeps top 50 keywords with weights scaled to 1-10.
     """
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    
+    # Make sure the output directory exists (fresh install).
+    interests_dir = os.path.dirname(os.path.abspath(interests_file))
+    os.makedirs(interests_dir, exist_ok=True)
+
+    # On a fresh install the database file (or its tables) may not exist
+    # yet — the HTTP server creates them at startup.  Treat that as an
+    # empty library instead of crashing.
+    conn = None
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+        except sqlite3.OperationalError:
+            conn = None
+
+    def _fetchall(query):
+        if conn is None:
+            return []
+        try:
+            return conn.execute(query).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
     # Collect all candidates with their source weights
     # Format: (phrase, source_weight)
     candidates = []
-    
+
     # --- Source 1: my_publications keywords column (highest trust) ---
-    c.execute("SELECT keywords FROM my_publications")
-    for row in c.fetchall():
+    for row in _fetchall("SELECT keywords FROM my_publications"):
         keywords = row[0] or ''
         for kw in extract_keywords_from_column(keywords):
             candidates.append((kw, 5.0))
     
     # --- Source 2: my_publications titles (high trust) ---
-    c.execute("SELECT title FROM my_publications")
-    for row in c.fetchall():
+    for row in _fetchall("SELECT title FROM my_publications"):
         title = row[0] or ''
         for phrase in extract_noun_phrases(title):
             candidates.append((phrase, 3.0))
@@ -715,8 +732,7 @@ def regenerate_interests(db_path, interests_file):
             candidates.append((acr, 2.0))
     
     # --- Source 3: my_publications abstracts (medium trust) ---
-    c.execute("SELECT abstract FROM my_publications")
-    for row in c.fetchall():
+    for row in _fetchall("SELECT abstract FROM my_publications"):
         abstract = row[0] or ''
         for phrase in extract_noun_phrases(abstract):
             candidates.append((phrase, 1.0))
@@ -724,8 +740,7 @@ def regenerate_interests(db_path, interests_file):
             candidates.append((acr, 2.0))
     
     # --- Source 4: saved_papers titles (medium trust) ---
-    c.execute("SELECT title FROM saved_papers")
-    for row in c.fetchall():
+    for row in _fetchall("SELECT title FROM saved_papers"):
         title = row[0] or ''
         for phrase in extract_noun_phrases(title):
             candidates.append((phrase, 2.0))
@@ -733,15 +748,15 @@ def regenerate_interests(db_path, interests_file):
             candidates.append((acr, 2.0))
     
     # --- Source 5: saved_papers abstracts (lower trust) ---
-    c.execute("SELECT abstract FROM saved_papers")
-    for row in c.fetchall():
+    for row in _fetchall("SELECT abstract FROM saved_papers"):
         abstract = row[0] or ''
         for phrase in extract_noun_phrases(abstract):
             candidates.append((phrase, 1.0))
         for acr in extract_acronyms(abstract):
             candidates.append((acr, 2.0))
-    
-    conn.close()
+
+    if conn is not None:
+        conn.close()
     
     # --- Pre-compute raw counts before filtering ---
     raw_counts = Counter()
@@ -848,7 +863,7 @@ def regenerate_interests(db_path, interests_file):
     
     # --- Write to file ---
     # Write auto-generated entries to *_auto.txt so manual edits in *_manual.txt are never overwritten.
-    auto_file = interests_file.replace('.txt', '_auto.txt')
+    auto_file = os.path.splitext(interests_file)[0] + '_auto.txt'
     header = f"""# Research Interests — Auto-generated from saved papers + my publications
 # Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 #
@@ -878,8 +893,8 @@ def merge_interests(interests_file):
     Manual entries in *_manual.txt are preserved and override auto-generated entries
     with the same keyword.  This prevents the user's hand-curated edits from being lost.
     """
-    auto_file = interests_file.replace('.txt', '_auto.txt')
-    manual_file = interests_file.replace('.txt', '_manual.txt')
+    auto_file = os.path.splitext(interests_file)[0] + '_auto.txt'
+    manual_file = os.path.splitext(interests_file)[0] + '_manual.txt'
     
     merged = {}
     

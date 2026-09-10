@@ -67,6 +67,15 @@ class WebDavProvider(CloudProvider):
             f"WebDAV {operation} failed (HTTP {exc.code}) for {url}: {exc.reason}"
         ) from exc
 
+    @staticmethod
+    def _raise_network(exc, operation, url):
+        """Convert connection-level failures (DNS, TLS, refused) to a clean
+        ValueError instead of leaking a raw URLError traceback."""
+        reason = getattr(exc, "reason", exc)
+        raise ValueError(
+            f"WebDAV {operation} could not reach {url}: {reason}"
+        ) from exc
+
     def _ensure_dir(self):
         url = self._dir_url()
         req = urllib.request.Request(
@@ -79,6 +88,8 @@ class WebDavProvider(CloudProvider):
             if exc.code == 405:  # 405 Method Not Allowed = folder already exists
                 return
             self._raise_http(exc, "create folder (MKCOL)", url)
+        except (urllib.error.URLError, OSError) as exc:
+            self._raise_network(exc, "create folder (MKCOL)", url)
 
     def upload(self, payload):
         self._ensure_dir()
@@ -92,6 +103,8 @@ class WebDavProvider(CloudProvider):
                 resp.read()
         except urllib.error.HTTPError as exc:
             self._raise_http(exc, "upload (PUT)", url)
+        except (urllib.error.URLError, OSError) as exc:
+            self._raise_network(exc, "upload (PUT)", url)
         return {"url": url}
 
     def download(self):
@@ -106,6 +119,8 @@ class WebDavProvider(CloudProvider):
             if exc.code in (404, 409):
                 return None
             self._raise_http(exc, "download (GET)", url)
+        except (urllib.error.URLError, OSError) as exc:
+            self._raise_network(exc, "download (GET)", url)
         return data, {"url": url}
 
     def status(self):

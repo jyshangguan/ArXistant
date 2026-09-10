@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -17,7 +18,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import html as html_module
 
-from arxistant_paths import data_path
+from arxistant_paths import data_path, ensure_data_dirs
 
 
 def _fetch_url(url, timeout=45, attempts=3):
@@ -26,7 +27,7 @@ def _fetch_url(url, timeout=45, attempts=3):
     for attempt in range(1, attempts + 1):
         try:
             request = urllib.request.Request(
-                url, headers={'User-Agent': 'ArXistant/0.2.0 (personal arXiv reader)'}
+                url, headers={'User-Agent': 'ArXistant/0.3.1 (personal arXiv reader)'}
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = response.read()
@@ -38,7 +39,8 @@ def _fetch_url(url, timeout=45, attempts=3):
         except urllib.error.HTTPError as error:
             detail = error.read(200).decode('utf-8', errors='replace').strip()
             last_error = f"HTTP {error.code}: {detail or error.reason}"
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+        except (urllib.error.URLError, TimeoutError, OSError,
+                http.client.HTTPException) as error:
             last_error = str(getattr(error, 'reason', error))
         if attempt < attempts:
             time.sleep(3 * attempt)
@@ -498,9 +500,14 @@ def fetch_arxiv_papers_by_date(date_str):
     )
     
     data = _fetch_url(url)
-    
+
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
-    root = ET.fromstring(data)
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise RuntimeError(
+            "arXiv returned a non-XML response (service may be down): "
+            f"{exc}") from exc
     entries = root.findall('atom:entry', ns)
     
     papers = []
@@ -867,8 +874,15 @@ def generate_ranked_html(recent=False, output_path=None, date=None, json_output=
 
     page_type = 'recent' if recent else 'new'
     html = format_paper_list_html(scored_papers, date, page_type=page_type)
+    # Make sure the output directories exist; on a fresh install the data
+    # directory may not have been created yet (ML imports are optional, so
+    # their side effect of creating it cannot be relied upon).
+    ensure_data_dirs()
     if output_path is None:
         output_path = data_path('arxiv_ranked.html')
+    for path in (output_path, json_output):
+        if path:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
     print(f"Saved ranked list to {output_path}")
@@ -886,7 +900,7 @@ def main():
     parser.add_argument('--recent', action='store_true', help='Fetch from arXiv recent page (last ~5 days) instead of new page')
     parser.add_argument('--interests-file', default=data_path('interests.txt'), help='DEPRECATED: no longer used')
     parser.add_argument('--output', default=data_path('arxiv_ranked.html'), help='Output HTML file')
-    parser.add_argument('--date', help='Date to fetch (YYYYMMDD), default yesterday')
+    parser.add_argument('--date', help='Date to fetch (YYYYMMDD); without it the arXiv new/recent listing page is used')
     parser.add_argument('--json-output', help='Optional JSON output path')
     parser.add_argument('--ml', action='store_true', help='DEPRECATED: ML is always used')
     args = parser.parse_args()

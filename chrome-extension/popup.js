@@ -37,11 +37,27 @@ async function checkServerAndUpdateUI() {
   setPowerButton(serverOnline);
 }
 
+// The configured server URL points at a page (default
+// 'http://localhost:8765/daily.html'); reduce it to the origin for API calls.
+async function getServerBaseUrl() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getSettings' });
+    const configured = response?.settings?.serverUrl;
+    if (configured) {
+      return new URL(configured).origin;
+    }
+  } catch (e) {
+    // Fall through to the default.
+  }
+  return DEFAULT_SERVER_URL;
+}
+
 async function isServerOnline() {
   try {
+    const baseUrl = await getServerBaseUrl();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
-    const response = await fetch(DEFAULT_SERVER_URL + '/api/health', {
+    const response = await fetch(baseUrl + '/api/health', {
       method: 'GET',
       signal: controller.signal
     });
@@ -118,9 +134,10 @@ async function stopServer() {
   if (!confirm('Stop the ArXistant server?')) return;
   setPowerButton(true, '⏻ Stopping…');
   try {
+    const baseUrl = await getServerBaseUrl();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
-    await fetch(DEFAULT_SERVER_URL + '/api/shutdown', {
+    await fetch(baseUrl + '/api/shutdown', {
       method: 'POST',
       signal: controller.signal
     });

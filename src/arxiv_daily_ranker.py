@@ -17,6 +17,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
+from arxistant_paths import data_path
+
 
 def fetch_arxiv_papers(date_str=None):
     """Fetch astro-ph papers submitted on the given date (YYYYMMDD)."""
@@ -29,17 +31,22 @@ def fetch_arxiv_papers(date_str=None):
     start = f"{date_str}0000"
     end = f"{date_str}2359"
     url = (
-        f"http://export.arxiv.org/api/query?"
+        f"https://export.arxiv.org/api/query?"
         f"search_query=cat:astro-ph*+AND+submittedDate:[{start}+TO+{end}]"
         f"&start=0&max_results=200&sortBy=submittedDate&sortOrder=descending"
     )
-    
+
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    resp = urllib.request.urlopen(req)
+    resp = urllib.request.urlopen(req, timeout=60)
     data = resp.read().decode('utf-8')
-    
+
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
-    root = ET.fromstring(data)
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise RuntimeError(
+            "arXiv returned a non-XML response (service may be down): "
+            f"{exc}") from exc
     entries = root.findall('atom:entry', ns)
     
     papers = []
@@ -168,8 +175,8 @@ def format_paper_list(scored_papers, date_str=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch and rank arXiv astro-ph papers')
-    parser.add_argument('--interests-file', default='local/interests.txt', help='Path to interests file')
-    parser.add_argument('--output', default='local/arxiv_ranked.md', help='Output markdown file')
+    parser.add_argument('--interests-file', default=data_path('interests.txt'), help='Path to interests file')
+    parser.add_argument('--output', default=data_path('arxiv_ranked.md'), help='Output markdown file')
     parser.add_argument('--date', help='Date to fetch (YYYYMMDD), default yesterday')
     parser.add_argument('--json-output', help='Optional JSON output path')
     args = parser.parse_args()
@@ -184,10 +191,14 @@ def main():
     scored_papers = rank_papers(papers, interests)
     
     md = format_paper_list(scored_papers, args.date)
+    for path in [args.output, args.json_output]:
+        if path:
+            parent = os.path.dirname(os.path.abspath(path))
+            os.makedirs(parent, exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
         f.write(md)
     print(f"Saved ranked list to {args.output}")
-    
+
     if args.json_output:
         with open(args.json_output, 'w', encoding='utf-8') as f:
             json.dump([{'score': s, **p} for s, p in scored_papers], f, indent=2)

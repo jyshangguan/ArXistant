@@ -36,7 +36,22 @@ def set_backend(backend):
 
 
 def is_available():
-    return _backend is not None or keyring is not None
+    """Report whether a real secret backend is usable.
+
+    On Linux the keyring package can be installed while no Secret Service
+    provider (gnome-keyring/KWallet over D-Bus) exists; keyring then falls
+    back to a fail/chained backend that raises on every call.  Probe the
+    active backend so the UI does not advertise an unusable keychain.
+    """
+    if _backend is not None:
+        return True
+    if keyring is None:
+        return False
+    try:
+        from keyring.backends.fail import Keyring as _FailKeyring
+        return not isinstance(keyring.get_keyring(), _FailKeyring)
+    except Exception:
+        return False
 
 
 def get_secret(key):

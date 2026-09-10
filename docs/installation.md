@@ -95,7 +95,7 @@ From a repository checkout:
 
 ```bash
 ./packaging/linux/build-deb.sh
-sudo apt install ./dist/arxistant_0.2.0_all.deb
+sudo apt install ./dist/arxistant_0.3.1_all.deb
 ```
 
 The dependency installation is relatively large because Debian's scientific
@@ -132,9 +132,10 @@ and select:
 ```
 
 The Linux popup's footer power button (shown as **Start Server** when offline)
-starts the server via Chrome Native Messaging (`com.arxistant.server`). If that
-host is unavailable (for example on a manual installation), the popup displays
-the corresponding `systemctl --user start` command instead.
+starts the server via Chrome Native Messaging (`com.arxistant.server`). The
+popup also shows the equivalent `systemctl --user restart arxistant.service`
+command, which is the fallback when the native messaging host is not installed
+(for example on a manual installation).
 
 The same button reads **Stop Server** when online. It stops the running server
 process; because the systemd user unit is enabled, the service will start again
@@ -199,7 +200,7 @@ The Android app is self-contained: it runs the server, ML ranking, paper
 database, and cloud sync on the phone, so it needs no desktop install and no
 Chrome extension.
 
-1. Download `arxistant-release.v0.2.0.apk` from the
+1. Download `arxistant-release.v0.3.1.apk` from the
    [latest GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
 2. Copy the APK to the phone and open it. Android asks you to allow "install
    unknown apps" for the file manager or browser you used.

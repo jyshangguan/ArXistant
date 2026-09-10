@@ -1,8 +1,8 @@
 [Unit]
 Description=ArXistant local paper server
 Documentation=https://github.com/jyshangguan/ArXistant
-After=network-online.target
-Wants=network-online.target
+# Note: network-online.target does not exist in the user manager, so no
+# network ordering is declared here; outbound fetches retry on failure.
 
 [Service]
 Type=simple

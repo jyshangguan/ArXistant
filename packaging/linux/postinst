@@ -6,36 +6,43 @@ if command -v systemctl >/dev/null 2>&1; then
     systemctl --global enable arxistant.service >/dev/null 2>&1 || true
 fi
 
-# Register the arxistant:// URL scheme handler.
-if command -v xdg-mime >/dev/null 2>&1; then
-    xdg-mime default arxistant-handler.desktop x-scheme-handler/arxistant \
-        >/dev/null 2>&1 || true
-fi
+# Refresh the desktop MIME cache for the arxistant:// handler.  The
+# per-user default for the scheme cannot be registered here: xdg-mime run
+# as root would only write /root/.config/mimeapps.list.  Users (or their
+# desktop environment, on first use) register it per-user.
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
 fi
 
 # Register the Chrome Native Messaging host so the extension can start the
-# server with a button click.  The extension ID is stable because it is derived
-# from the installed path /usr/share/arxistant/chrome-extension.
-EXT_ID=higcgidgkgajhkiahhhhkhgikjhlgigl
-NATIVE_HOST_DIR=/etc/opt/chrome/native-messaging-hosts
-NATIVE_MANIFEST="$NATIVE_HOST_DIR/com.arxistant.server.json"
+# server with a button click.  For an unpacked extension without a "key"
+# field, Chrome derives the ID from the install path
+# (/usr/share/arxistant/chrome-extension -> hmkcgmdkokanhoiahlhhohgiojhpkmgp).
+# The legacy ID below is kept for installations that already carry it.
+EXT_ID=hmkcgmdkokanhoiahlhhohgiojhpkmgp
+EXT_ID_LEGACY=higcgidgkgajhkiahhhhkhgikjhlgigl
 
-if [ -d "$NATIVE_HOST_DIR" ] || mkdir -p "$NATIVE_HOST_DIR" 2>/dev/null; then
-    cat > "$NATIVE_MANIFEST" << NATIVEEOF
+# Google Chrome reads /etc/opt/chrome, Chromium reads /etc/chromium.
+for NATIVE_HOST_DIR in \
+    /etc/opt/chrome/native-messaging-hosts \
+    /etc/chromium/native-messaging-hosts; do
+    NATIVE_MANIFEST="$NATIVE_HOST_DIR/com.arxistant.server.json"
+    if [ -d "$NATIVE_HOST_DIR" ] || mkdir -p "$NATIVE_HOST_DIR" 2>/dev/null; then
+        cat > "$NATIVE_MANIFEST" << NATIVEEOF
 {
   "name": "com.arxistant.server",
   "description": "ArXistant server launcher",
   "path": "/usr/lib/arxistant/arxistant-native-host",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://$EXT_ID/"
+    "chrome-extension://$EXT_ID/",
+    "chrome-extension://$EXT_ID_LEGACY/"
   ]
 }
 NATIVEEOF
-    chmod 0644 "$NATIVE_MANIFEST"
-fi
+        chmod 0644 "$NATIVE_MANIFEST"
+    fi
+done
 
 cat <<'EOF'
 ArXistant installed.

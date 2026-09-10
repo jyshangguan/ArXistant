@@ -106,8 +106,15 @@ def load_config(db_path=None):
         # Persist on first access so device_id and defaults are stable.
         save_config(defaults, db_path)
         return defaults
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("config root is not an object")
+    except (OSError, json.JSONDecodeError, ValueError):
+        # A corrupt config file must not crash request handlers; fall back to
+        # defaults (the device_id changes, which only affects sync naming).
+        data = dict(defaults)
     for key in defaults:
         data.setdefault(key, defaults[key])
     for nested in ("local_folder", "webdav"):
@@ -136,10 +143,20 @@ def save_config(config, db_path=None):
 # ---------------------------------------------------------------------------
 
 def migrate_db(conn):
-    """Add sync columns/table to an existing database. Idempotent."""
+    """Add sync columns/table to an existing database. Idempotent.
+
+    Tolerates a database whose tables have not been created yet (the HTTP
+    server's init_db creates them; standalone export/import on a fresh data
+    directory may not have them).
+    """
     cur = conn.cursor()
 
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in cur.fetchall()}
+
     for table in ("saved_papers", "my_publications"):
+        if table not in existing_tables:
+            continue
         cur.execute(f"PRAGMA table_info({table})")
         columns = {row[1] for row in cur.fetchall()}
         if "updated_at" not in columns:
@@ -147,14 +164,15 @@ def migrate_db(conn):
 
     # Tags and highlights on saved papers (issues #3 and #6). Older databases
     # get the columns lazily; pre-existing rows default to empty values.
-    cur.execute("PRAGMA table_info(saved_papers)")
-    saved_columns = {row[1] for row in cur.fetchall()}
-    if "tags" not in saved_columns:
-        cur.execute("ALTER TABLE saved_papers ADD COLUMN tags TEXT DEFAULT ''")
-    if "highlights" not in saved_columns:
-        cur.execute("ALTER TABLE saved_papers ADD COLUMN highlights TEXT DEFAULT ''")
-    cur.execute("UPDATE saved_papers SET tags = '' WHERE tags IS NULL")
-    cur.execute("UPDATE saved_papers SET highlights = '' WHERE highlights IS NULL")
+    if "saved_papers" in existing_tables:
+        cur.execute("PRAGMA table_info(saved_papers)")
+        saved_columns = {row[1] for row in cur.fetchall()}
+        if "tags" not in saved_columns:
+            cur.execute("ALTER TABLE saved_papers ADD COLUMN tags TEXT DEFAULT ''")
+        if "highlights" not in saved_columns:
+            cur.execute("ALTER TABLE saved_papers ADD COLUMN highlights TEXT DEFAULT ''")
+        cur.execute("UPDATE saved_papers SET tags = '' WHERE tags IS NULL")
+        cur.execute("UPDATE saved_papers SET highlights = '' WHERE highlights IS NULL")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sync_tombstones (
@@ -168,14 +186,16 @@ def migrate_db(conn):
 
     # Rows created before sync existed get the epoch, so any real edit on any
     # device wins over them.
-    cur.execute(
-        "UPDATE saved_papers SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''",
-        (EPOCH,),
-    )
-    cur.execute(
-        "UPDATE my_publications SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''",
-        (EPOCH,),
-    )
+    if "saved_papers" in existing_tables:
+        cur.execute(
+            "UPDATE saved_papers SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''",
+            (EPOCH,),
+        )
+    if "my_publications" in existing_tables:
+        cur.execute(
+            "UPDATE my_publications SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''",
+            (EPOCH,),
+        )
     conn.commit()
 
 
