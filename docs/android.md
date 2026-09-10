@@ -168,6 +168,26 @@ cannot push an update over an existing install. The current Android version is
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 
+### CI builds (GitHub Actions)
+
+The `Build release assets` workflow builds the signed APK automatically when a
+release is published — no local Android SDK needed. It requires four
+repository secrets (**Settings → Secrets and variables → Actions**), created
+from the local keystore:
+
+| Secret | Value |
+|---|---|
+| `ARXISTANT_KEYSTORE_BASE64` | `base64 -i android/keystore/release.keystore` (macOS) |
+| `ARXISTANT_KEYSTORE_PASSWORD` | the store password from `keystore.properties` |
+| `ARXISTANT_KEY_ALIAS` | the key alias (`arxistant` if generated as above) |
+| `ARXISTANT_KEY_PASSWORD` | the key password from `keystore.properties` |
+
+If the secrets are missing, the workflow still builds the Debian package and
+the Chrome extension zip and simply skips the APK (an unsigned APK cannot be
+installed, so none is uploaded). To add the APK to an already-published
+release after configuring the secrets, run the workflow manually with the
+existing tag.
+
 ## Install and run
 
 - **Phone:** install the release APK

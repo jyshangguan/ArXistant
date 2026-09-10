@@ -22,9 +22,11 @@ android {
 
         python {
             // Chaquopy 15.0.1's bundled pip is incompatible with Python 3.13
-            // (removed stdlib module 'cgi'). Use the system Python 3.9 for the
-            // build/target, matching the desktop server's interpreter.
-            buildPython "/usr/bin/python3"
+            // (removed stdlib module 'cgi'), and its Android wheel repository
+            // has no Python 3.12+ packages. Use the system Python 3.9 for the
+            // build/target, matching the desktop server's interpreter. CI sets
+            // ARXISTANT_BUILD_PYTHON to a setup-python 3.9 interpreter.
+            buildPython System.getenv('ARXISTANT_BUILD_PYTHON') ?: "/usr/bin/python3"
             pip {
                 install "numpy"
                 install "scikit-learn"

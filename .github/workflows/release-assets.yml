@@ -1,6 +1,11 @@
 name: Build release assets
 
+# Runs automatically when a release is published.  Can also be run manually
+# (Actions -> Build release assets -> Run workflow) for an existing tag, e.g.
+# after adding the Android signing secrets for an already-published release.
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -12,26 +17,112 @@ permissions:
   contents: write
 
 jobs:
-  build-and-upload:
+  desktop-assets:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve release tag
+        run: echo "TAG=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_ENV"
+
       - name: Check out release tag
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.TAG }}
 
       - name: Build Debian package
         run: ./packaging/linux/build-deb.sh "${TAG#v}"
-        env:
-          TAG: ${{ inputs.tag }}
 
       - name: Build Chrome extension archive
         run: zip -q -r "dist/arxistant-chrome-extension-${TAG#v}.zip" chrome-extension -x '*.DS_Store' '*/__MACOSX/*'
-        env:
-          TAG: ${{ inputs.tag }}
 
-      - name: Upload release assets
+      - name: Upload desktop assets
         run: gh release upload "$TAG" "dist/arxistant_${TAG#v}_all.deb" "dist/arxistant-chrome-extension-${TAG#v}.zip" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+
+  android-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        run: echo "TAG=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_ENV"
+
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }}
+
+      # The release keystore is private and not committed.  It is provided
+      # through repository secrets (see docs/android.md, "Release build"):
+      #   ARXISTANT_KEYSTORE_BASE64     base64 of android/keystore/release.keystore
+      #   ARXISTANT_KEYSTORE_PASSWORD   store password
+      #   ARXISTANT_KEY_ALIAS           key alias (e.g. arxistant)
+      #   ARXISTANT_KEY_PASSWORD        key password
+      # Without them a signed APK cannot be produced, and an unsigned APK
+      # cannot be installed or update an existing install, so the Android
+      # build is skipped entirely.
+      - name: Check for Android signing secrets
+        id: signing
+        env:
+          KS_B64: ${{ secrets.ARXISTANT_KEYSTORE_BASE64 }}
+          KS_PASSWORD: ${{ secrets.ARXISTANT_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ARXISTANT_KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.ARXISTANT_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASSWORD" ] && [ -n "$KS_ALIAS" ] && [ -n "$KS_KEY_PASSWORD" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Android signing secrets are not configured; skipping the APK build. See docs/android.md ('Release build')."
+          fi
+
+      - name: Set up JDK 17
+        if: steps.signing.outputs.available == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Chaquopy 15.0.1 supports Python 3.9-3.11 build/target interpreters;
+      # pin 3.9 to match the known-good local build (ubuntu-latest's system
+      # python3 is newer).  app/build.gradle reads ARXISTANT_BUILD_PYTHON.
+      - name: Set up Python 3.9 for Chaquopy
+        id: setup-python
+        if: steps.signing.outputs.available == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Restore signing material
+        if: steps.signing.outputs.available == 'true'
+        env:
+          KS_B64: ${{ secrets.ARXISTANT_KEYSTORE_BASE64 }}
+          KS_PASSWORD: ${{ secrets.ARXISTANT_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ARXISTANT_KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.ARXISTANT_KEY_PASSWORD }}
+        run: |
+          mkdir -p android/keystore
+          printf '%s' "$KS_B64" | base64 -d > android/keystore/release.keystore
+          {
+            echo "storeFile=keystore/release.keystore"
+            echo "storePassword=$KS_PASSWORD"
+            echo "keyAlias=$KS_ALIAS"
+            echo "keyPassword=$KS_KEY_PASSWORD"
+          } > android/keystore.properties
+          chmod 600 android/keystore/release.keystore android/keystore.properties
+
+      # The app's Python sources are gitignored copies of src/*.py.
+      - name: Copy Python sources into the app
+        if: steps.signing.outputs.available == 'true'
+        run: android/copy_python.sh
+
+      - name: Build signed release APK
+        if: steps.signing.outputs.available == 'true'
+        working-directory: android
+        env:
+          ARXISTANT_BUILD_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+        run: ./gradlew :app:assembleRelease
+
+      - name: Upload APK to the release
+        if: steps.signing.outputs.available == 'true'
+        run: gh release upload "$TAG" "android/app/build/outputs/apk/release/arxistant-release.v${TAG#v}.apk" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
