@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -404,6 +405,38 @@ def load_ads_token():
         return f.read().strip()
 
 
+def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote server"):
+    """GET a URL with bounded retries and backoff.
+
+    arXiv (and occasionally ADS) answer bursts with HTTP 429; those get a
+    longer backoff and a clearer final error message than "Unknown Error".
+    """
+    last_error = "unknown network error"
+    for attempt in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.2.0 (personal arXiv reader)'})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode('utf-8')
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                retry_after = e.headers.get('Retry-After') if e.headers else None
+                wait = int(retry_after) if retry_after and str(retry_after).isdigit() else 10 * attempt
+                last_error = f"rate limit (HTTP 429)"
+                if attempt < attempts:
+                    time.sleep(wait)
+                    continue
+                raise RuntimeError(
+                    f"{label} rate limit (HTTP 429): too many requests. "
+                    "Please wait a minute and search again."
+                )
+            last_error = f"HTTP {e.code}: {e.reason}"
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_error = str(getattr(e, 'reason', e))
+        if attempt < attempts:
+            time.sleep(3 * attempt)
+    raise RuntimeError(f"{label} did not respond after {attempts} attempts ({last_error}).")
+
+
 def search_arxiv_api(query, max_results=20):
     """Search arXiv API and return list of paper dicts."""
     import xml.etree.ElementTree as ET
@@ -413,9 +446,7 @@ def search_arxiv_api(query, max_results=20):
         f"search_query=all:{encoded_q}&max_results={max_results}"
         f"&sortBy=relevance&sortOrder=descending"
     )
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = resp.read().decode('utf-8')
+    data = _fetch_with_retries(url, headers={'User-Agent': 'Mozilla/5.0'}, label="arXiv")
 
     ns = {'atom': 'http://www.w3.org/2005/Atom'}
     root = ET.fromstring(data)
@@ -430,7 +461,7 @@ def search_arxiv_api(query, max_results=20):
 
         arxiv_id = id_elem.text if id_elem is not None else ''
         short_id = arxiv_id.split('/')[-1].replace('abs/', '') if arxiv_id else ''
-        short_id = __import__('re').sub(r'v\d+$', '', short_id)
+        short_id = re.sub(r'v\d+$', '', short_id)
 
         title = title_elem.text.strip() if title_elem is not None else ''
         abstract = summary_elem.text.strip() if summary_elem is not None else ''
@@ -464,15 +495,11 @@ def search_ads_api(query, token, max_results=20):
         'sort': 'score desc'
     }
     query_str = urllib.parse.urlencode(params)
-    req = urllib.request.Request(
+    data = json.loads(_fetch_with_retries(
         f"{url}?{query_str}",
-        headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Authorization': f'Bearer {token}'
-        }
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode('utf-8'))
+        headers={'User-Agent': 'Mozilla/5.0', 'Authorization': f'Bearer {token}'},
+        label="ADS",
+    ))
 
     papers = []
     for doc in data.get('response', {}).get('docs', []):
@@ -507,11 +534,13 @@ def search_ads_api(query, token, max_results=20):
 
 # --- Chat (paper reading helper) -------------------------------------------
 #
-# The Chat page asks questions about one paper at a time. Non-secret settings
-# (base URL, model, temperature) live in chat_config.json inside the data
-# directory; the API key is stored in the OS keychain via arxistant_secrets.
-# The server proxies requests to any OpenAI-compatible endpoint, streaming the
-# answer back to the browser as server-sent events.
+# The Chat page opens one or more papers as tabs and answers questions about
+# them, grounded in their metadata plus the active paper's full text.
+# Non-secret settings (base URL, model, temperature) live in chat_config.json
+# inside the data directory; the API key is kept in that chmod-600 file (with
+# a best-effort OS keychain copy via arxistant_secrets). The server proxies
+# requests to any OpenAI-compatible endpoint, streaming the answer back to
+# the browser as server-sent events.
 
 DEFAULT_CHAT_CONFIG = {
     "base_url": "",
@@ -746,6 +775,20 @@ CHAT_TOOLS = [
                     "kind": {"type": "string", "enum": ["citedby", "references"]},
                 },
                 "required": ["arxiv_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_library",
+            "description": ("Search the user's own saved paper library for papers matching a "
+                            "topic/keywords. Use when the user asks about 'my saved papers', "
+                            "'my library', or papers they have saved."),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "The topic/keywords to search."}},
+                "required": ["query"],
             },
         },
     },
@@ -1033,7 +1076,7 @@ def _llm_http_error(code):
     msg = f"LLM API returned HTTP {code}"
     if code in (401, 403):
         msg += (" (authentication failed — check that the API key saved in "
-                "Chat → LLM Settings belongs to this provider)")
+                "the extension's LLM Settings belongs to this provider)")
     return msg
 
 
@@ -1068,6 +1111,39 @@ def papers_to_text(papers):
     return "\n".join(lines)
 
 
+def search_library(query, limit=12):
+    """Semantic search over your saved papers (offline TF-IDF over title/abstract/notes)."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT arxiv_id, title, authors, abstract, notes FROM saved_papers")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        return []
+    docs = [(r[0], r[1] or "", r[2] or "", (r[3] or "") + " " + (r[4] or "")) for r in rows]
+    corpus = [d[1] + " " + d[3] for d in docs]
+    vec = TfidfVectorizer(stop_words="english", max_features=20000)
+    try:
+        m = vec.fit_transform(corpus)
+        q = vec.transform([query])
+    except ValueError:
+        return []
+    sims = cosine_similarity(q, m)[0]
+    order = sorted(range(len(docs)), key=lambda i: -sims[i])
+    out = []
+    for i in order:
+        if sims[i] <= 0:
+            break
+        out.append({"arxiv_id": docs[i][0], "title": docs[i][1], "authors": docs[i][2],
+                    "abstract": docs[i][3], "year": "", "citations": 0, "tldr": "",
+                    "source": "saved"})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def run_tool(name, args):
     """Dispatch a chat tool. Returns (kind, value): kind 'text' or 'papers'."""
     try:
@@ -1075,6 +1151,8 @@ def run_tool(name, args):
             return "text", web_search(args.get("query") or "")
         if name == "search_papers":
             return "papers", s2_search(args.get("query") or "")
+        if name == "search_library":
+            return "papers", search_library(args.get("query") or "")
         if name == "find_related":
             aid = args.get("arxiv_id") or ""
             try:
@@ -2129,7 +2207,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(CHAT_PAGE_HTML)
 
         elif path == "/search-arxiv.html":
-            self._send_html(SEARCH_ARXIV_HTML)
+            html = SEARCH_ARXIV_HTML
+            if '<!-- save-button-embedded -->' not in html:
+                html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
+            if '<!-- chat-link-embedded -->' not in html:
+                html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
+            self._send_html(html)
 
         elif path == "/api/arxiv/search":
             q = query.get("q", [""])[0]
@@ -3028,8 +3111,10 @@ class Handler(BaseHTTPRequestHandler):
             if not base_url or not model:
                 self._send_json({
                     "success": False,
-                    "error": ("The LLM is not configured yet. Open Chat → "
-                              "LLM Settings and save a base URL, model, and API key."),
+                    "error": ("The LLM is not configured yet. Open the "
+                              "extension's Settings page, expand the LLM "
+                              "(Chat) section, and save a base URL, model, "
+                              "and API key."),
                 }, 400)
                 return
             temperature = data.get("temperature", config.get("temperature", 0.7))
@@ -3039,9 +3124,10 @@ class Handler(BaseHTTPRequestHandler):
                 # provider answer an unauthenticated request with HTTP 401.
                 self._send_json({
                     "success": False,
-                    "error": ("No LLM API key is configured. Open Chat → "
-                              "LLM Settings and save the API key for your "
-                              "provider."),
+                    "error": ("No LLM API key is configured. Open the "
+                              "extension's Settings page, expand the LLM "
+                              "(Chat) section, and save the API key for "
+                              "your provider."),
                 }, 400)
                 return
             self._start_sse()
@@ -3420,59 +3506,50 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Search arXiv / ADS</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
     h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
-    .search-box { width: 100%; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; margin-bottom: 12px; box-sizing: border-box; }
+    h2 { font-size: 1.1em; margin-top: 0; }
+    h2 a { color: #b31b1b; text-decoration: none; }
+    h2 a:hover { text-decoration: underline; }
+    .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
+    .paper:hover { background: #f5f5f5; }
+    .score-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+    .paper-actions { display: inline-flex; align-items: center; gap: 6px; }
+    .authors { color: #555; font-size: 0.95em; margin: 8px 0; }
+    .et-al { color: #888; }
+    .abstract-btn { cursor: pointer; color: #b31b1b; font-size: 0.9em; font-weight: bold; background: none; border: none; padding: 0; margin-top: 8px; }
+    .abstract-btn:hover { text-decoration: underline; }
+    .abstract-full { display: none; color: #333; font-size: 0.95em; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc; }
+    .arxiv-id { color: #666; font-size: 0.85em; font-weight: normal; }
+    .arxiv-id a { color: #666; text-decoration: none; }
+    .arxiv-id a:hover { text-decoration: underline; }
+    .save-btn { padding: 3px 10px; color: white; border: none; border-radius: 12px; cursor: pointer; font-size: 0.95em; white-space: nowrap; line-height: 1.4; display: inline-flex; align-items: center; transition: background 0.2s; }
+    .save-btn:hover { opacity: 0.9; }
+    .search-box { flex: 1; min-width: 200px; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; box-sizing: border-box; }
     .search-box:focus { outline: none; border-color: #b31b1b; }
-    .search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; flex-wrap: wrap; }
-    .source-toggle { display: flex; gap: 16px; align-items: center; }
+    .search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .source-toggle { display: flex; gap: 16px; align-items: center; margin-bottom: 20px; }
     .source-toggle label { cursor: pointer; font-size: 0.95em; }
     .source-toggle input { margin-right: 4px; cursor: pointer; }
     .search-btn { padding: 8px 20px; background: #b31b1b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95em; font-weight: bold; }
     .search-btn:hover { background: #8a1515; }
     .search-btn:disabled { background: #ccc; cursor: not-allowed; }
     .stats { color: #666; margin-bottom: 20px; }
-    .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
-    .paper:hover { background: #f5f5f5; }
-    h2 { font-size: 1.1em; margin-top: 0; }
-    h2 a { color: #b31b1b; text-decoration: none; }
-    h2 a:hover { text-decoration: underline; }
-    .authors { color: #555; font-size: 0.95em; margin: 8px 0; }
-    .meta { font-size: 0.85em; color: #888; margin: 4px 0; }
-    .year { display: inline-block; background: #b31b1b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-right: 6px; }
-    .bibcode { font-family: monospace; font-size: 0.85em; color: #666; }
-    .arxiv-id { font-family: monospace; font-size: 0.85em; color: #666; }
-    .citations { display: inline-block; background: #1976d2; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-right: 6px; }
-    .source-badge { display: inline-block; background: #555; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; margin-right: 6px; }
-    details { margin-top: 8px; }
-    summary { cursor: pointer; color: #666; font-size: 0.9em; list-style: none; }
-    summary::-webkit-details-marker { display: none; }
-    summary::before { content: "▸ "; color: #b31b1b; }
-    details[open] summary::before { content: "▾ "; }
-    .abstract-full { color: #333; font-size: 0.95em; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc; }
-    .nav { margin-bottom: 20px; display: flex; gap: 16px; flex-wrap: wrap; }
-    .nav a { color: #b31b1b; text-decoration: none; font-weight: bold; }
-    .nav a:hover { text-decoration: underline; }
-    .empty { color: #888; font-style: italic; text-align: center; padding: 40px; }
-    .save-btn { margin-top: 8px; padding: 4px 12px; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; transition: background 0.2s; }
-    .save-btn:hover { opacity: 0.9; }
+    .year { display: inline-block; background: #b31b1b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+    .citations { display: inline-block; background: #1976d2; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+    .source-badge { display: inline-block; background: #555; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: bold; }
+    .meta-links { font-size: 0.85em; }
+    .meta-links a { color: #666; text-decoration: none; }
+    .meta-links a:hover { text-decoration: underline; }
     .no-arxiv { color: #888; font-size: 0.85em; font-style: italic; }
+    .empty { color: #888; font-style: italic; text-align: center; padding: 40px; }
     .error { color: #c62828; background: #ffebee; padding: 12px; border-radius: 6px; margin-bottom: 16px; }
+    .loading { color: #666; font-style: italic; }
     .scroll-top { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; background: #b31b1b; color: white; text-decoration: none; border-radius: 50%; font-size: 1.1em; font-weight: bold; cursor: pointer; border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 1000; transition: background 0.2s; }
     .scroll-top:hover { background: #8a1515; }
-    .loading { color: #666; font-style: italic; }
   </style>
 </head>
 <body>
-  <div class="nav">
-    <a href="/daily.html">← Daily Papers</a>
-    <a href="/recent.html">📅 Recent Papers</a>
-    <a href="/chat.html">💬 Chat</a>
-    <a href="/database.html">📂 Saved Papers</a>
-    <a href="/publications.html">📚 My Publications</a>
-    <a href="/ml-features.html">🧠 ML Features</a>
-    <a href="/cloud-sync.html">☁️ Cloud Sync</a>
-  </div>
   <h1>🔍 Search arXiv / ADS</h1>
 
   <div class="search-row">
@@ -3490,18 +3567,10 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
   <button class="scroll-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="To the top">▲</button>
 
   <script>
-    let savedIds = new Set();
-    let currentPapers = [];
-
-    async function loadSavedIds() {
-      try {
-        const resp = await fetch('/api/papers');
-        const data = await resp.json();
-        savedIds = new Set(data.papers.map(p => p.arxiv_id));
-      } catch (e) {
-        console.warn('Could not fetch saved papers:', e);
-      }
-    }
+    // The save/tag actions record date_fetched from the h1 data-date
+    // attribute (on the daily page that is the list date); search results
+    // use the search date.
+    document.querySelector('h1').setAttribute('data-date', new Date().toISOString().slice(0, 10));
 
     async function doSearch() {
       const q = document.getElementById('searchInput').value.trim();
@@ -3526,9 +3595,8 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
           return;
         }
 
-        currentPapers = data.papers || [];
         stats.textContent = data.count + ' result' + (data.count !== 1 ? 's' : '') + ' from ' + source.toUpperCase();
-        renderResults(data.papers, source);
+        await renderResults(data.papers, source);
       } catch (e) {
         stats.textContent = 'Search failed.';
         results.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
@@ -3536,114 +3604,77 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
       btn.disabled = false;
     }
 
-    function renderResults(papers, source) {
+    async function renderResults(papers, source) {
       const container = document.getElementById('results');
       if (!papers || papers.length === 0) {
         container.innerHTML = '<p class="empty">No papers found. Try a different query.</p>';
         return;
       }
 
-      const dateFetched = new Date().toISOString().split('T')[0];
-
       container.innerHTML = papers.map((p, i) => {
         const arxivId = p.id || '';
         const hasArxiv = arxivId && arxivId.includes('.');
         const title = escapeHtml(p.title || '');
         const abstract = escapeHtml(p.abstract || '');
-        const authors = Array.isArray(p.authors) ? p.authors : (p.authors || '').split(',').map(a => a.trim());
-        const authorStr = authors.length <= 5 ? authors.join(', ') : authors.slice(0,5).join(', ') + ', et al.';
-        const authorStrEscaped = escapeHtml(authorStr);
+        const authors = Array.isArray(p.authors) ? p.authors : (p.authors || '').split(',').map(a => a.trim()).filter(Boolean);
+        const authorStr = authors.length <= 5
+          ? escapeHtml(authors.join(', '))
+          : escapeHtml(authors.slice(0, 5).join(', ')) + '<span class="et-al">, et al. (' + authors.length + ' authors)</span>';
         const year = p.year || '';
         const bibcode = p.bibcode || '';
         const citationCount = p.citation_count || 0;
         const doi = p.doi || '';
 
-        let links = '';
+        // Title row matches the daily page: "N. arXiv:ID — Title (→ alphaxiv)".
+        // Papers without an arXiv ID get no .arxiv-id anchor, so the shared
+        // save/chat/tag buttons skip them.
+        let idHtml = '';
+        let titleHref = '#';
         if (hasArxiv) {
-          links = `<a href="https://arxiv.org/abs/${arxivId}" target="_blank">arXiv:${arxivId}</a>`;
-          if (doi) links += ` | <a href="https://doi.org/${escapeHtml(doi)}" target="_blank">DOI</a>`;
-          links += ` | <a href="https://alphaxiv.org/abs/${arxivId}" target="_blank">AlphaXiv</a>`;
+          idHtml = `<span class="arxiv-id"><a href="https://arxiv.org/abs/${arxivId}" target="_blank">arXiv:${arxivId}</a></span> — `;
+          titleHref = `https://alphaxiv.org/abs/${arxivId}`;
         } else if (bibcode) {
-          links = `<span class="bibcode">${escapeHtml(bibcode)}</span>`;
-          if (doi) links += ` | <a href="https://doi.org/${escapeHtml(doi)}" target="_blank">DOI</a>`;
-          links += ` | <a href="https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract" target="_blank">ADS</a>`;
+          idHtml = `<span class="arxiv-id">${escapeHtml(bibcode)}</span> — `;
+          titleHref = `https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract`;
         } else if (doi) {
-          links = `<a href="https://doi.org/${escapeHtml(doi)}" target="_blank">DOI</a>`;
+          titleHref = `https://doi.org/${escapeHtml(doi)}`;
         }
 
         let badges = `<span class="source-badge">${source.toUpperCase()}</span>`;
-        if (year) badges += `<span class="year">${escapeHtml(year)}</span>`;
+        if (year) badges += `<span class="year">${escapeHtml(String(year))}</span>`;
         if (citationCount) badges += `<span class="citations">${citationCount} citations</span>`;
 
-        let saveBtn = '';
-        if (hasArxiv) {
-          const isSaved = savedIds.has(arxivId);
-          const btnText = isSaved ? '✓ Saved' : '💾 Save to DB';
-          const btnBg = isSaved ? '#2e7d32' : '#b31b1b';
-          const btnData = isSaved ? 'true' : 'false';
-          // Store paper data as JSON in data-paper attribute to avoid onclick quoting issues
-          const paperData = JSON.stringify({id: arxivId, title: p.title || '', authors: authorStr, abstract: p.abstract || '', dateFetched: dateFetched}).replace(/"/g, '&quot;');
-          saveBtn = `<button class="save-btn" style="background:${btnBg};" data-saved="${btnData}" data-paper="${paperData}">${btnText}</button>`;
-        } else {
-          saveBtn = '<span class="no-arxiv">No arXiv ID — cannot save to DB</span>';
-        }
+        // Identifier links that have no equivalent on the daily page (DOI/ADS).
+        const extraLinks = [];
+        if (doi) extraLinks.push(`<a href="https://doi.org/${escapeHtml(doi)}" target="_blank">DOI</a>`);
+        if (bibcode) extraLinks.push(`<a href="https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract" target="_blank">ADS</a>`);
+        const extraHtml = extraLinks.length ? `<span class="meta-links">${extraLinks.join(' · ')}</span>` : '';
 
+        const noArxiv = hasArxiv ? '' : '<span class="no-arxiv">No arXiv ID — cannot save to DB</span>';
+
+        const absId = 'abs-search-' + i;
         return `
-          <div class="paper" data-idx="${i}">
-            <h2>${i+1}. ${badges} <a href="${hasArxiv ? 'https://arxiv.org/abs/' + arxivId : (bibcode ? 'https://ui.adsabs.harvard.edu/abs/' + bibcode + '/abstract' : '#')}" target="_blank">${title}</a></h2>
-            <p class="meta">${links}</p>
-            <p class="authors"><strong>Authors:</strong> ${authorStrEscaped}</p>
-            <details>
-              <summary><strong style="color:#b31b1b;">View abstract</strong></summary>
-              <p class="abstract-full">${abstract || 'Abstract not available.'}</p>
-            </details>
-            ${saveBtn}
+          <div class="paper">
+            <h2>${i + 1}. ${idHtml}<a href="${titleHref}" target="_blank">${title}</a></h2>
+            <p class="authors"><strong>Authors:</strong> ${authorStr}</p>
+            <div class="score-row">
+              ${badges}
+              ${extraHtml}
+              ${noArxiv}
+              <span class="paper-actions"></span>
+            </div>
+            <button class="abstract-btn" onclick="var el = document.getElementById('${absId}'); el.style.display = (el.style.display === 'block' ? 'none' : 'block'); this.textContent = (el.style.display === 'block' ? '▾ Hide abstract' : '▸ Show abstract');">▸ Show abstract</button>
+            <p class="abstract-full" id="${absId}">${abstract || 'Abstract not available.'}</p>
           </div>
         `;
       }).join('');
 
-      // Attach click handlers via event delegation
-      container.addEventListener('click', handleResultClick);
-    }
-
-    async function handleResultClick(e) {
-      const btn = e.target.closest('.save-btn');
-      if (!btn) return;
-      e.preventDefault();
-
-      const paperData = JSON.parse(btn.dataset.paper.replace(/&quot;/g, '"'));
-      const arxivId = paperData.id;
-      const isSaved = btn.dataset.saved === 'true';
-
-      if (isSaved) {
-        if (!confirm('Remove this paper from your database?')) return;
-        try {
-          const resp = await fetch('/api/delete', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ arxiv_id: arxivId })
-          });
-          const data = await resp.json();
-          if (data.success) {
-            btn.textContent = '💾'; btn.style.background = '#b31b1b'; btn.dataset.saved = 'false';
-            savedIds.delete(arxivId);
-          } else { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
-        } catch (e) { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
-      } else {
-        try {
-          const resp = await fetch('/api/save', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              arxiv_id: arxivId, title: paperData.title, authors: paperData.authors,
-              abstract: paperData.abstract, relevance_score: 0, date_fetched: paperData.dateFetched
-            })
-          });
-          const data = await resp.json();
-          if (data.success) {
-            btn.textContent = '✓'; btn.style.background = '#2e7d32'; btn.dataset.saved = 'true';
-            savedIds.add(arxivId);
-          } else { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
-        } catch (e) { btn.textContent = '✗ Error'; btn.style.background = '#c62828'; }
-      }
+      // Attach the same action buttons used on the daily page (save 💾,
+      // chat 💬, tags 🏷️); the server injects their scripts at the end of
+      // the page.
+      if (window.arxistantAttachSaveButtons) await window.arxistantAttachSaveButtons();
+      if (window.arxistantAttachChatLinks) window.arxistantAttachChatLinks();
+      if (window.arxistantAttachTagButtons) window.arxistantAttachTagButtons();
     }
 
     function escapeHtml(text) {
@@ -3652,8 +3683,6 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
       div.textContent = text;
       return div.innerHTML;
     }
-
-    loadSavedIds();
   </script>
 </body>
 </html>
@@ -3720,7 +3749,10 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
     }
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
+// Re-runnable so pages that render papers dynamically (e.g. search results)
+// can attach buttons after each render. Idempotent: skips papers that have no
+// arXiv ID or already have a save button.
+window.arxistantAttachSaveButtons = async function () {
     let savedIds = new Set();
     try {
         const resp = await fetch('/api/papers');
@@ -3737,6 +3769,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const arxivLink = paper.querySelector('.arxiv-id a');
         const titleLink = paper.querySelector('h2 > a');
         const arxivId = arxivLink ? arxivLink.href.split('/abs/')[1] : '';
+        if (!arxivId) return;
+        if (document.getElementById('save-btn-' + arxivId)) return;
         const title = titleLink ? titleLink.textContent : '';
         const authorsEl = paper.querySelector('.authors');
         const authors = authorsEl ? authorsEl.textContent.replace('Authors:', '').trim() : '';
@@ -3764,7 +3798,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const actions = paper.querySelector('.paper-actions');
         if (actions) actions.appendChild(btn); else paper.appendChild(btn);
     });
-});
+};
+
+document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons);
 </script>
 <script>
 // ── Tag editor (issue #3): create/assign/remove tags on saved papers ──
@@ -4015,18 +4051,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         closeEditor();
     });
 
-    document.addEventListener('DOMContentLoaded', async () => {
-        try {
-            const resp = await fetch(ARX + '/api/papers');
-            const data = await resp.json();
-            (data.papers || []).forEach(p => { savedTags[p.arxiv_id] = parseTags(p.tags); });
-        } catch (e) {
-            console.warn('Could not fetch saved-paper tags:', e);
+    // Re-runnable for pages that render papers dynamically (search results);
+    // the saved-tags snapshot is loaded once, then reused across renders.
+    let tagListLoaded = false;
+    window.arxistantAttachTagButtons = async function () {
+        if (!tagListLoaded) {
+            tagListLoaded = true;
+            try {
+                const resp = await fetch(ARX + '/api/papers');
+                const data = await resp.json();
+                (data.papers || []).forEach(p => { savedTags[p.arxiv_id] = parseTags(p.tags); });
+            } catch (e) {
+                console.warn('Could not fetch saved-paper tags:', e);
+            }
         }
 
         document.querySelectorAll('.paper').forEach((paper) => {
             const meta = paperMeta(paper);
             if (!meta.arxivId) return;
+            if (document.getElementById('tag-btn-' + meta.arxivId.replace(/\\./g, '_'))) return;
             const btn = document.createElement('button');
             btn.id = 'tag-btn-' + meta.arxivId.replace(/\\./g, '_');
             btn.className = 'tag-btn';
@@ -4068,14 +4111,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             };
             place(20);
         });
-    });
+    };
+    document.addEventListener('DOMContentLoaded', window.arxistantAttachTagButtons);
 })();
 </script>
 """
 
 CHAT_LINK_SCRIPT = """<!-- chat-link-embedded -->
 <script>
-document.addEventListener('DOMContentLoaded', () => {
+// Re-runnable for pages that render papers dynamically (search results);
+// skips papers that already have a chat button or have no arXiv ID.
+window.arxistantAttachChatLinks = function () {
     document.querySelectorAll('.paper').forEach((paper) => {
         if (paper.querySelector('.chat-link-btn')) return;
         const arxivLink = paper.querySelector('.arxiv-id a');
@@ -4104,7 +4150,8 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         place(20);
     });
-});
+};
+document.addEventListener('DOMContentLoaded', window.arxistantAttachChatLinks);
 </script>
 """
 
@@ -4123,12 +4170,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     .layout { display: flex; align-items: stretch; position: relative; height: calc(100vh - 175px); min-height: 540px; --chat-w: 400px; }
     .pane { transition: width 0.25s ease, margin 0.25s ease, opacity 0.2s ease; overflow: hidden; }
-    .pane-left { width: 300px; flex-shrink: 0; margin-right: 16px; }
-    .pane-left-inner { width: 300px; height: 100%; overflow-y: auto; box-sizing: border-box; }
     .pane-center { flex: 1; min-width: 0; display: flex; flex-direction: column; }
     .pane-right { width: var(--chat-w); flex-shrink: 0; }
     .pane-right-inner { width: 100%; height: 100%; display: flex; flex-direction: column; box-sizing: border-box; }
-    .layout.left-hidden .pane-left { width: 0; margin-right: 0; opacity: 0; pointer-events: none; }
     .layout.right-hidden .pane-right { width: 0; margin-left: 0; opacity: 0; pointer-events: none; }
 
     .picker-view { max-width: 760px; width: 100%; margin: 0 auto; }
@@ -4137,13 +4181,17 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .reader-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
     .reader-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }
     .view-btn { border: 1px solid #ddd; background: #f5f5f5; color: #555; border-radius: 6px; padding: 3px 14px; font-size: 0.8em; font-weight: bold; cursor: pointer; }
+    .tab-bar { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; min-width: 0; }
+    .tab { display: flex; align-items: center; gap: 6px; max-width: 170px; padding: 4px 8px; border: 1px solid #ddd; border-bottom: none; border-radius: 6px 6px 0 0; background: #efefef; font-size: 0.78em; cursor: pointer; color: #555; }
+    .tab.active { background: #fff; border-color: #b31b1b; color: #b31b1b; font-weight: bold; }
+    .tab .tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tab .tab-x { color: #c62828; font-weight: bold; cursor: pointer; padding: 0 2px; }
+    .tab .tab-x:hover { color: #7a1010; }
     .view-btn.active { background: #b31b1b; border-color: #b31b1b; color: #fff; }
     .view-hint { font-size: 0.75em; color: #888; margin-left: 6px; }
 
     .edge-handle { position: absolute; top: 50%; transform: translateY(-50%); z-index: 30; background: #b31b1b; color: white; border: none; border-radius: 6px; padding: 16px 8px; cursor: pointer; font-size: 0.95em; line-height: 1; box-shadow: 0 2px 6px rgba(0,0,0,0.25); transition: left 0.25s ease, right 0.25s ease, background 0.15s ease; }
     .edge-handle:hover { background: #8a1515; }
-    .edge-handle.left { left: 2px; }
-    .layout:not(.left-hidden) .edge-handle.left { left: 300px; }
     .edge-handle.right { right: 2px; }
     .layout:not(.right-hidden) .edge-handle.right { right: calc(var(--chat-w) + 14px); }
     .resizer-right { flex-shrink: 0; width: 14px; cursor: col-resize; position: relative; }
@@ -4184,6 +4232,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .pdf-status a { color: #ffe082; }
     .text-wrap { background: #fff; }
     .text-wrap iframe { background: #fff; }
+    #zoomBar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.96); border: 1px solid #ddd; border-radius: 16px; padding: 4px 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); opacity: 0; pointer-events: none; transition: opacity 0.25s ease; }
+    #zoomHot { position: absolute; top: 0; left: 0; right: 0; height: 48px; z-index: 35; }
+    #zoomBar.show { opacity: 1; pointer-events: auto; }
+    #zoomBar .zoom-btn { border: none; background: #f0f0f0; color: #333; border-radius: 50%; width: 24px; height: 24px; line-height: 1; font-size: 0.95em; font-weight: bold; cursor: pointer; }
+    #zoomBar .zoom-btn:hover { background: #b31b1b; color: #fff; }
+    #zoomBar #zoomPct { font-size: 0.78em; color: #555; min-width: 36px; text-align: center; }
     .paper-results { margin: 0 0 12px; padding: 10px 12px; border: 1px solid #d8c9c9; border-radius: 8px; background: #fff; }
     .paper-results .pr-head { font-size: 0.78em; font-weight: bold; color: #7a1010; margin-bottom: 6px; }
     .paper-results .pr-item { padding: 6px 0; border-top: 1px solid #eee; font-size: 0.83em; }
@@ -4245,6 +4299,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .message.system { background: #fff8e1; border: 1px solid #f0e0a0; font-size: 0.85em; color: #6d5a00; margin: 0 auto 12px; max-width: 95%; white-space: pre-wrap; }
     .message .label { font-size: 0.75em; font-weight: bold; margin-bottom: 4px; opacity: 0.7; }
     .message pre { background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 0.85em; margin: 8px 0; }
+    .message .ev-quote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid #b31b1b; background: #faf6f6; border-radius: 4px; color: #4a3a3a; font-size: 0.92em; }
     .message code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
     .message p { margin: 0 0 8px; }
     .message p:last-child { margin-bottom: 0; }
@@ -4263,13 +4318,27 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .chat-input button:hover { background: #8a1515; }
     .chat-input button:disabled { background: #ccc; cursor: not-allowed; }
 
+    /* One-line LLM status under the chat input; hover it for setup guidance. */
+    .llm-status { flex-shrink: 0; margin-top: 6px; padding: 0 4px 2px; font-size: 0.72em; line-height: 1.4; color: #999; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: help; user-select: none; outline: none; }
+    .llm-status:hover, .llm-status:focus-visible { text-decoration: underline dotted; }
+    .llm-status .ok { color: #2e7d32; }
+    .llm-status .warn { color: #b26a00; }
+
+    .llm-tip { position: fixed; z-index: 90; display: none; width: min(340px, calc(100vw - 24px)); background: rgba(35,31,31,0.96); color: #f0f0f0; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 10px 12px; font-size: 0.78em; line-height: 1.55; box-shadow: 0 6px 24px rgba(0,0,0,0.32); }
+    .llm-tip.show { display: block; }
+    .llm-tip .llm-tip-title { font-weight: bold; color: #ff9d94; margin-bottom: 5px; }
+    .llm-tip p { margin: 0 0 6px; }
+    .llm-tip p:last-child { margin-bottom: 0; }
+    .llm-tip strong { color: #fff; }
+    .llm-tip code { background: rgba(255,255,255,0.14); padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+
     .empty-chat { text-align: center; color: #888; padding: 30px 16px; font-style: italic; }
 
     @media (max-width: 1000px) {
       .layout { flex-direction: column; height: auto; gap: 12px; }
       .pane { width: 100%; margin: 0; overflow: visible; }
-      .pane-left-inner, .pane-right-inner { width: 100%; height: auto; overflow: visible; }
-      .layout.left-hidden .pane-left, .layout.right-hidden .pane-right { width: 100%; opacity: 1; pointer-events: auto; }
+      .pane-right-inner { width: 100%; height: auto; overflow: visible; }
+      .layout.right-hidden .pane-right { width: 100%; opacity: 1; pointer-events: auto; }
       .reader-view { flex-direction: column; }
       .paper-info { width: 100%; }
       .picker-view { max-width: none; }
@@ -4294,24 +4363,6 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
   <h1>💬 Paper Reading Helper</h1>
 
   <div class="layout" id="layout">
-    <aside class="pane pane-left">
-      <div class="pane-left-inner">
-        <div class="panel">
-          <h3>🔧 LLM Settings</h3>
-          <select id="preset" onchange="applyPreset(this.value)">
-            <option value="custom">Custom / keep my values</option>
-          </select>
-          <input type="text" id="baseUrl" placeholder="Base URL (e.g. https://api.openai.com/v1)">
-          <input type="text" id="modelName" placeholder="Model (e.g. gpt-4o-mini, deepseek-chat)">
-          <input type="password" id="apiKey" placeholder="API key">
-          <button onclick="saveConfig()">Save Settings</button>
-          <button onclick="testConnection()">Test Connection</button>
-          <p class="hint" id="configStatus">Loading…</p>
-          <p class="hint">The API key is stored in the OS keychain when available, otherwise in a private local file; base URL and model stay in ArXistant's local data directory. Questions are sent to the provider you configure.</p>
-        </div>
-      </div>
-    </aside>
-
     <main class="pane pane-center">
       <div id="pickerView" class="picker-view">
         <div class="panel">
@@ -4333,16 +4384,23 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       <div id="readerView" class="reader-view hidden">
         <div class="reader-main">
           <div class="reader-tools">
-            <button id="viewPdfBtn" class="view-btn active" onclick="switchView('pdf')">PDF</button>
-            <button id="viewTextBtn" class="view-btn" onclick="switchView('text')">Text</button>
+            <div id="tabBar" class="tab-bar"></div>
+            <button id="addTabBtn" class="view-btn" onclick="openPickerForAdd()" title="Add another paper">+</button>
             <span class="view-hint" id="viewHint"></span>
           </div>
-          <div id="pdfWrap" class="pdf-wrap">
+          <div id="pdfWrap" class="pdf-wrap hidden">
             <div id="pdfStatus" class="pdf-status hidden"></div>
             <iframe id="pdfFrame" title="Paper PDF"></iframe>
           </div>
-          <div id="textWrap" class="pdf-wrap text-wrap hidden">
+          <div id="textWrap" class="pdf-wrap text-wrap">
             <iframe id="textFrame" title="Paper full text"></iframe>
+            <div id="zoomHot"></div>
+            <div id="zoomBar">
+              <button class="zoom-btn" onclick="zoomText(-0.1)" title="Zoom out">−</button>
+              <span id="zoomPct">100%</span>
+              <button class="zoom-btn" onclick="zoomText(0.1)" title="Zoom in">+</button>
+              <button class="zoom-btn" onclick="resetZoom()" title="Reset">⤾</button>
+            </div>
             <div id="selBubble" class="sel-bubble hidden">
               <button onclick="attachSelection()">💬 Ask about this</button>
               <button onclick="highlightSelection()">🖍 Highlight</button>
@@ -4366,7 +4424,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     <aside class="pane pane-right" id="paneRight">
       <div class="pane-right-inner">
         <div class="paper-info hidden" id="paperInfo">
-          <span class="unpin" onclick="unpinPaper()" title="Close this paper">×</span>
+          <span class="unpin" onclick="closeActiveTab()" title="Close this tab">×</span>
           <div class="info-line">
             <button id="saveToggle" class="save-toggle" onclick="toggleSavePinned()">💾 Save</button>
             <span class="pid" id="paperIdText"></span>
@@ -4393,29 +4451,39 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           <textarea id="chatInput" placeholder="Ask about this paper…" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
           <button id="sendBtn" onclick="sendMessage()">Send</button>
         </div>
+        <div class="llm-status" id="llmStatusLine" tabindex="0" role="status" aria-describedby="llmTip">
+          <span id="configStatus">Loading…</span>
+        </div>
       </div>
     </aside>
 
-    <button id="leftHandle" class="edge-handle left" data-tip="Settings" aria-label="Toggle settings panel" onclick="toggleLeft()">❯</button>
     <button id="rightHandle" class="edge-handle right" data-tip="Chat" aria-label="Toggle chat panel" onclick="toggleRight()">❮</button>
   </div>
 
+  <!-- Floating guidance shown when the cursor rests on the LLM status line. -->
+  <div id="llmTip" class="llm-tip" role="tooltip" aria-hidden="true">
+    <div class="llm-tip-title">🤖 LLM setup</div>
+    <p>LLM settings live on the extension's <strong>Settings</strong> page —
+      popup → <strong>Settings</strong>, or right-click the toolbar icon →
+      <strong>Options</strong> — in the <strong>LLM (Chat)</strong> section.</p>
+    <p>Any OpenAI-compatible provider works: pick a preset (OpenAI, DeepSeek,
+      OpenRouter, Moonshot, Zhipu) or fill your own base URL and model.
+      <strong>Save LLM Settings</strong> tests the connection right away.</p>
+    <p>The API key stays in a private local file (chmod&nbsp;600) with a
+      best-effort OS-keychain copy; base URL and model live in ArXistant's
+      data directory. A local endpoint such as Ollama keeps everything on
+      your machine.</p>
+  </div>
+
   <script>
-    const PRESETS = {
-      openai:     { label: 'OpenAI',           baseUrl: 'https://api.openai.com/v1',            model: 'gpt-4o-mini' },
-      deepseek:   { label: 'DeepSeek',         baseUrl: 'https://api.deepseek.com/v1',          model: 'deepseek-chat' },
-      openrouter: { label: 'OpenRouter',       baseUrl: 'https://openrouter.ai/api/v1',         model: 'openai/gpt-4o-mini' },
-      moonshot:   { label: 'Moonshot (Kimi)',  baseUrl: 'https://api.moonshot.cn/v1',           model: 'moonshot-v1-8k' },
-      zhipu:      { label: 'Zhipu (GLM)',      baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
-      ollama:     { label: 'Local Ollama',     baseUrl: 'http://localhost:11434/v1',            model: 'llama3.1' }
-    };
     const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv', local: '📄 Local PDF' };
     const HIGHLIGHT_COLORS = ['#9be7ff', '#ffe08a', '#b9f6ca', '#ffccbc', '#e1bee7', '#d7ccc8'];
 
     let library = [];
     let libraryById = {};
     let lastFiltered = [];
-    let pinned = null;
+    let pinned = null;          // the active paper (for selection/highlight/tools)
+    let openPapers = [];        // the set of papers open as tabs (multi-paper)
     let chatHistory = [];   // session-only, never persisted
     let streaming = false;
     let configured = false;
@@ -4446,16 +4514,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     // ---------- Pane layout ----------
 
     function paneState() {
-      const layout = $('layout');
-      return {
-        left: layout.classList.contains('left-hidden'),
-        right: layout.classList.contains('right-hidden')
-      };
+      return { right: $('layout').classList.contains('right-hidden') };
     }
 
     function updateToggleUI() {
       const s = paneState();
-      $('leftHandle').textContent = s.left ? '❯' : '❮';
       $('rightHandle').textContent = s.right ? '❮' : '❯';
     }
 
@@ -4467,12 +4530,6 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       } catch (e) {}
     }
 
-    function toggleLeft() {
-      $('layout').classList.toggle('left-hidden');
-      updateToggleUI();
-      savePaneState();
-    }
-
     function toggleRight() {
       $('layout').classList.toggle('right-hidden');
       updateToggleUI();
@@ -4480,15 +4537,14 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     }
 
     function initPanes() {
-      // Default: the settings panel starts hidden; the chat panel starts shown.
-      const state = { left: true, right: false };
+      // The chat panel starts shown; older saved states may still carry a
+      // "left" entry from the removed settings pane — it is ignored.
+      const state = { right: false };
       try {
         const saved = JSON.parse(localStorage.getItem('chatPaneStateV2') || '{}');
-        if (typeof saved.left === 'boolean') state.left = saved.left;
         if (typeof saved.right === 'boolean') state.right = saved.right;
         if (saved.chatW) $('layout').style.setProperty('--chat-w', saved.chatW + 'px');
       } catch (e) {}
-      $('layout').classList.toggle('left-hidden', state.left);
       $('layout').classList.toggle('right-hidden', state.right);
       updateToggleUI();
       initChatResize();
@@ -4526,24 +4582,13 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       });
     }
 
-    // ---------- LLM settings ----------
-
-    function buildPresetOptions() {
-      const sel = $('preset');
-      Object.keys(PRESETS).forEach(k => {
-        const opt = document.createElement('option');
-        opt.value = k;
-        opt.textContent = PRESETS[k].label;
-        sel.appendChild(opt);
-      });
-    }
-
-    function applyPreset(key) {
-      const p = PRESETS[key];
-      if (!p) return;
-      if (p.baseUrl) $('baseUrl').value = p.baseUrl;
-      if (p.model) $('modelName').value = p.model;
-    }
+    // ---------- LLM status ----------
+    // LLM credentials are configured on the extension's Settings page; the
+    // Chat page only reads the saved state so it can warn when the LLM is
+    // unusable (and celebrate when it is ready). The one-line status sits
+    // under the chat input; resting the cursor on it (or focusing/tabbing to
+    // it, or tapping it on touch) opens a floating box explaining how to set
+    // the LLM up.
 
     function updateConfigStatus(cfg) {
       const el = $('configStatus');
@@ -4553,80 +4598,76 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (!cfg.model) missing.push('model');
       if (!cfg.has_api_key) missing.push('API key');
       if (missing.length === 0) {
-        el.textContent = '✅ Ready — ' + cfg.model +
+        el.textContent = '🤖 LLM ready — ' + cfg.model +
           (cfg.key_storage === 'file' ? ' · key in local file'
-            : cfg.key_storage === 'keychain' ? ' · key from OS keychain' : '') +
-          ' (use Test Connection to verify)';
-        el.className = 'hint ok';
+            : cfg.key_storage === 'keychain' ? ' · key from OS keychain' : '');
+        el.className = 'ok';
       } else {
-        el.textContent = '⚠️ Missing: ' + missing.join(', ');
-        el.className = 'hint warn';
+        el.textContent = '🤖 LLM not configured — hover for setup guidance';
+        el.className = 'warn';
       }
     }
 
     async function loadConfig() {
       try {
         const resp = await fetch('/api/chat/config');
-        const cfg = await resp.json();
-        $('baseUrl').value = cfg.base_url || '';
-        $('modelName').value = cfg.model || '';
-        const keyInput = $('apiKey');
-        keyInput.value = '';
-        keyInput.placeholder = cfg.has_api_key ? 'API key saved — leave blank to keep' : 'API key';
-        updateConfigStatus(cfg);
+        updateConfigStatus(await resp.json());
       } catch (e) {
-        $('configStatus').textContent = '⚠️ Could not load config: ' + e.message;
+        const el = $('configStatus');
+        el.textContent = '🤖 LLM status unavailable';
+        el.className = 'warn';
       }
     }
 
-    async function saveConfig() {
-      const payload = {
-        base_url: $('baseUrl').value.trim(),
-        model: $('modelName').value.trim()
-      };
-      const key = $('apiKey').value.trim();
-      if (key) payload.api_key = key;
-      const status = $('configStatus');
-      try {
-        const resp = await fetch('/api/chat/config', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload)
-        });
-        const data = await resp.json();
-        if (!data.success) throw new Error(data.error || 'Failed to save');
-        $('apiKey').value = '';
-        await loadConfig();
-        // Verify the saved credentials right away so a missing or stale key
-        // is caught here, not later as a provider 401 mid-chat.
-        await testConnection();
-      } catch (e) {
-        status.textContent = '⚠️ ' + e.message;
-        status.className = 'hint warn';
-      }
+    // Hover guidance for the status line. The tip is position:fixed on the
+    // body (the panes clip their overflow, so it cannot live inside one).
+    function positionLlmTip() {
+      const tip = $('llmTip');
+      const line = $('llmStatusLine');
+      const r = line.getBoundingClientRect();
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      // Right-aligned with the chat pane, clamped to the viewport; prefer
+      // above the line, fall back below when there is no room.
+      let left = Math.max(8, Math.min(r.right - tw, window.innerWidth - tw - 8));
+      let top = r.top - th - 10;
+      if (top < 8) top = Math.min(r.bottom + 10, Math.max(8, window.innerHeight - th - 8));
+      tip.style.left = left + 'px';
+      tip.style.top = top + 'px';
     }
 
-    async function testConnection() {
-      const status = $('configStatus');
-      status.textContent = '⏳ Testing connection…';
-      status.className = 'hint';
-      try {
-        const resp = await fetch('/api/chat/config/test', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: '{}'
-        });
-        const data = await resp.json();
-        if (data.success) {
-          status.textContent = '✅ Connection OK — the provider answered a ' +
-            'test request' + (data.model ? ' (' + data.model + ')' : '') + '.';
-          status.className = 'hint ok';
-        } else {
-          status.textContent = '⚠️ ' + (data.error || 'Connection test failed');
-          status.className = 'hint warn';
-        }
-      } catch (e) {
-        status.textContent = '⚠️ Connection test failed: ' + e.message;
-        status.className = 'hint warn';
-      }
+    function showLlmTip() {
+      const tip = $('llmTip');
+      tip.classList.add('show');
+      tip.setAttribute('aria-hidden', 'false');
+      positionLlmTip();
+    }
+
+    function hideLlmTip() {
+      $('llmTip').classList.remove('show');
+      $('llmTip').setAttribute('aria-hidden', 'true');
+    }
+
+    function initLlmTip() {
+      const line = $('llmStatusLine');
+      const tip = $('llmTip');
+      if (!line || !tip) return;
+      line.addEventListener('mouseenter', showLlmTip);
+      line.addEventListener('focus', showLlmTip);
+      line.addEventListener('mouseleave', hideLlmTip);
+      line.addEventListener('blur', hideLlmTip);
+      // Moving onto the tip itself keeps it open; leaving hides it again.
+      tip.addEventListener('mouseenter', showLlmTip);
+      tip.addEventListener('mouseleave', hideLlmTip);
+      // Touch: a tap toggles; tapping anywhere else closes.
+      line.addEventListener('click', e => {
+        e.stopPropagation();
+        tip.classList.contains('show') ? hideLlmTip() : showLlmTip();
+      });
+      document.addEventListener('click', e => {
+        if (!line.contains(e.target) && !tip.contains(e.target)) hideLlmTip();
+      });
+      // A scrolled page would leave the fixed tip detached from its anchor.
+      window.addEventListener('scroll', hideLlmTip, true);
     }
 
     // ---------- Paper library ----------
@@ -4691,6 +4732,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (!p || !p.arxiv_id) return;
       flushAnnotationSave();
       pinned = p;
+      const _nid = normalizeId(p.arxiv_id);
+      if (!openPapers.some(x => normalizeId(x.arxiv_id) === _nid)) openPapers.push(p);
+      renderTabs();
       $('pickerView').classList.add('hidden');
       $('readerView').classList.remove('hidden');
       $('paperInfo').classList.remove('hidden');
@@ -4709,6 +4753,48 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       renderSaveToggle();
       resetReaderForNewPaper();
       renderPaperList();
+    }
+
+    // ---------- Multi-paper tabs ----------
+
+    function renderTabs() {
+      const bar = $('tabBar');
+      if (!bar) return;
+      bar.innerHTML = openPapers.map(p => {
+        const nid = normalizeId(p.arxiv_id);
+        const active = pinned && normalizeId(pinned.arxiv_id) === nid;
+        return '<span class="tab' + (active ? ' active' : '') + '" onclick="activatePaper(\\\'' + nid + '\\\')">' +
+          '<span class="tab-title">' + escapeHtml(p.title || p.arxiv_id) + '</span>' +
+          '<span class="tab-x" title="Close tab" onclick="event.stopPropagation();removePaper(\\\'' + nid + '\\\')">×</span>' +
+          '</span>';
+      }).join('');
+    }
+
+    function openPickerForAdd() {
+      $('readerView').classList.add('hidden');
+      $('pickerView').classList.remove('hidden');
+    }
+
+    function activatePaper(nid) {
+      const p = openPapers.find(x => normalizeId(x.arxiv_id) === nid);
+      if (!p) return;
+      if (pinned && normalizeId(pinned.arxiv_id) === nid) { renderTabs(); return; }
+      pinPaper(p);   // pinPaper sets active, renders tabs, loads text
+    }
+
+    function removePaper(nid) {
+      openPapers = openPapers.filter(x => normalizeId(x.arxiv_id) !== nid);
+      if (openPapers.length === 0) { unpinPaper(); return; }
+      if (pinned && normalizeId(pinned.arxiv_id) === nid) {
+        pinPaper(openPapers[0]);
+      } else {
+        renderTabs();
+      }
+    }
+
+    function closeActiveTab() {
+      if (pinned) removePaper(normalizeId(pinned.arxiv_id));
+      else unpinPaper();
     }
 
     function scixUrlFor(p) {
@@ -4849,6 +4935,8 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     function unpinPaper() {
       flushAnnotationSave();
       pinned = null;
+      openPapers = [];
+      renderTabs();
       if (pdfAbort) pdfAbort.abort();
       if (currentPdfUrl) { URL.revokeObjectURL(currentPdfUrl); currentPdfUrl = null; }
       pdfLoadedFor = null;
@@ -4882,13 +4970,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     }
 
     function switchView(v) {
-      currentView = v;
-      $('viewPdfBtn').classList.toggle('active', v === 'pdf');
-      $('viewTextBtn').classList.toggle('active', v === 'text');
-      $('pdfWrap').classList.toggle('hidden', v !== 'pdf');
-      $('textWrap').classList.toggle('hidden', v !== 'text');
-      if (v === 'text' && pinned) loadText(pinned);
-      if (v === 'pdf' && pinned) showPdf(pinned);
+      // The reader is text-only now; keep this for compatibility with callers.
+      currentView = 'text';
+      $('pdfWrap').classList.add('hidden');
+      $('textWrap').classList.remove('hidden');
+      if (pinned) loadText(pinned);
     }
 
     let textLoadingFor = null;  // guards against duplicate loads/polls
@@ -4935,7 +5021,38 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           if (nH) addSystemMessage('️ Highlighted ' + nH + ' passage' + (nH > 1 ? 's' : '') + ' in the paper.');
         }
         if (userHighlights.length) applyUserHighlights();
+        applyTextZoom();
       }, 300);
+    }
+
+    // ---------- Text zoom ----------
+    let textZoom = 1;
+    function applyTextZoom() {
+      try {
+        const f = $('textFrame');
+        if (f.contentDocument && f.contentDocument.body) {
+          f.contentDocument.body.style.zoom = String(textZoom);
+        }
+        $('zoomPct').textContent = Math.round(textZoom * 100) + '%';
+      } catch (e) {}
+    }
+    function zoomText(d) {
+      textZoom = Math.max(0.6, Math.min(2.0, Math.round((textZoom + d) * 10) / 10));
+      applyTextZoom();
+    }
+    function resetZoom() { textZoom = 1; applyTextZoom(); }
+
+    let zoomHideTimer = null;
+    function initZoomBar() {
+      const bar = $('zoomBar');
+      const hot = $('zoomHot');
+      const show = () => { bar.classList.add('show'); if (zoomHideTimer) { clearTimeout(zoomHideTimer); zoomHideTimer = null; } };
+      const scheduleHide = () => { if (zoomHideTimer) clearTimeout(zoomHideTimer); zoomHideTimer = setTimeout(() => bar.classList.remove('show'), 1200); };
+      hot.addEventListener('mouseenter', show);
+      hot.addEventListener('mousemove', show);
+      hot.addEventListener('mouseleave', scheduleHide);
+      bar.addEventListener('mouseenter', show);
+      bar.addEventListener('mouseleave', scheduleHide);
     }
 
     let parentMouseUpBound = false;
@@ -5682,6 +5799,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
 
     function buildSystemPrompt(contextOverride) {
       const toolsNote = 'You have tools: search_papers(query) to find papers on a topic, ' +
+        'search_library(query) to search the user\\'s saved papers, ' +
         'find_related(arxiv_id) for similar papers, citation_graph(arxiv_id, kind) for ' +
         'cited-by/references, and web_search(query) for general web info.';
       const methodNote = 'Method: for a complex request, first decompose it into 2-5 concrete ' +
@@ -5689,8 +5807,10 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         'synthesize ONE coherent answer. ' + toolsNote;
       const formatNote = 'Answer format (Markdown, concise): ' +
         '"## Answer" (the direct answer); ' +
-        '"## Evidence" (up to 3 exact verbatim quotes from the paper, each on its own line ' +
-        'prefixed "QUOTE: " — these are highlighted for the reader; omit if none); ' +
+        '"## Evidence" (1-3 EXACT verbatim quotes copied character-for-character from the paper ' +
+        'text above, each on its own line prefixed "QUOTE: " — these are highlighted for the ' +
+        'reader; include at least one whenever you relied on the paper, omit only if you did not ' +
+        'use the paper); ' +
         '"## Related papers" (most relevant papers you found, title + arXiv id; omit if none); ' +
         '"## Sources & caveats" (web URLs relied on and any uncertainty; omit if none). ' +
         'Do not invent results, numbers, or author statements.';
@@ -5702,22 +5822,27 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       }
       const hasOverride = contextOverride && contextOverride.length > 200;
       const hasFull = fullText && fullText.length > 200;
-      const body = hasOverride ? contextOverride :
-        (hasFull ? fullText.substring(0, 24000) : (pinned.abstract || '(no abstract available)'));
-      const local = pinned.source === 'local' || pinned.local;
+      const activeBody = hasOverride ? contextOverride :
+        (hasFull ? fullText.substring(0, 20000) : (pinned.abstract || '(no abstract available)'));
+      const list = openPapers.map((p, i) =>
+        '[' + (i + 1) + '] ' + (p.title || '') + ' — ' + (p.authors || '') + ' (' +
+        ((p.source === 'local' || p.local) ? 'local:' : 'arXiv:') + p.arxiv_id + ')' +
+        (normalizeId(p.arxiv_id) === normalizeId(pinned.arxiv_id) ? '  (ACTIVE)' : '') +
+        '\\n    Abstract: ' + (p.abstract || '(none)')
+      ).join('\\n');
       return [
-        'You are ArXistant, a paper reading helper. The user is reading ONE ' +
-          (local ? 'locally uploaded PDF' : 'arXiv paper') + ' right now.',
+        'You are ArXistant, a paper reading helper. The user has ' + openPapers.length +
+          ' paper(s) open as tabs; the ACTIVE one is provided in full below.',
         '',
-        'Title: ' + pinned.title,
-        'Authors: ' + (pinned.authors || 'unknown'),
-        (local ? 'Local document ID: ' : 'arXiv ID: ') + pinned.arxiv_id,
+        'Open papers:',
+        list,
         '',
-        (hasOverride ? 'Query-relevant text chunks:' : (hasFull ? 'Full text (may be truncated):' : 'Abstract:')),
-        body,
+        (hasOverride ? 'Query-relevant text chunks (ACTIVE paper):' :
+          (hasFull ? 'ACTIVE paper full text (may be truncated):' : 'ACTIVE paper abstract:')),
+        activeBody,
         '',
         'Rules:',
-        '- Ground your answers in the provided paper content. If a question needs details not present, say so briefly, then answer what you can.',
+        '- Ground answers in the provided paper content; when comparing or referring across the open papers, cite them by their [n] number.',
         '- ' + methodNote,
         '- ' + formatNote
       ].join('\\n');
@@ -5781,7 +5906,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       const el = $('emptyChat');
       if (!el) return;
       if (!configured) {
-        el.textContent = 'Drag a PDF here to read it locally. Configure the LLM in Settings when you want to ask questions.';
+        el.textContent = 'Drag a PDF here to read it locally. Configure the LLM in the extension Settings page to ask questions.';
       } else if (pinned) {
         el.textContent = 'Reading: “' + pinned.title + '”. Ask anything about it below.';
       } else {
@@ -5803,7 +5928,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       if (role === 'assistant') contentEl.innerHTML = renderMarkdown(text);
       else contentEl.textContent = text;
       container.appendChild(div);
-      scrollChat();
+      scrollChat(role === 'user');   // always follow the user's own message
       return div;
     }
 
@@ -5828,9 +5953,13 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       statusBox = null;
     }
 
-    function scrollChat() {
+    function scrollChat(force) {
       const container = $('chatMessages');
-      container.scrollTop = container.scrollHeight;
+      // Follow the stream only while the reader is already at/near the bottom.
+      // If they scrolled up to re-read, keep their position instead of
+      // jumping to the end on every arriving chunk.
+      const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 40;
+      if (force || nearBottom) container.scrollTop = container.scrollHeight;
     }
 
     function newChat() {
@@ -5848,7 +5977,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       const message = input.value.trim();
       if (!message || streaming) return;
       if (!configured) {
-        addSystemMessage('⚠️ Configure the LLM first: open the Settings panel (red arrow on the left), pick a provider preset (or fill base URL, model and API key) and click Save Settings.');
+        addSystemMessage('⚠️ The LLM is not configured. Open the ArXistant extension Settings page (popup → Settings, or right-click the toolbar icon → Options), expand the LLM (Chat) section, fill base URL, model and API key, and click Save LLM Settings.');
         return;
       }
       input.value = '';
@@ -5939,13 +6068,11 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
           }
         }
         let display = acc;
-        let quotes = (acc.match(/^QUOTE:\\s*(.+)$/gm) || [])
-          .map(s => s.replace(/^QUOTE:\\s*/, '').trim()).filter(Boolean);
+        let quotes = (acc.match(/^\s*(?:[-*•]\s*)?QUOTE:\s*(.+)$/gm) || [])
+          .map(s => s.replace(/^\s*(?:[-*•]\s*)?QUOTE:\s*/, '').trim()).filter(Boolean);
         if (!holder) startResultBox();  // e.g. an empty response with no deltas
-        if (quotes.length) {
-          display = acc.replace(/^QUOTE:.*$/gm, '').trim();
-          contentEl.innerHTML = renderMarkdown(display);
-        }
+        // Keep the QUOTE lines visible under "## Evidence" (so it is never empty)
+        // and also highlight them in the paper.
         if (!display) contentEl.innerHTML = '<em>(empty response)</em>';
         if (quotes.length && pinned) {
           pendingHighlights = quotes;
@@ -5990,6 +6117,14 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         inlineCodes.push('<code>' + escapeHtml(code) + '</code>');
         return '___INLINECODE_' + id + '___';
       });
+      // Evidence quotes render as clean block quotes: verbatim text with no
+      // further Markdown mangling (protects LaTeX/asterisks inside them).
+      let quoteBlocks = [];
+      text = text.replace(/^[ \\t]*(?:[-*•][ \\t]*)?QUOTE:[ \\t]*(.+)$/gm, function(match, q) {
+        const id = quoteBlocks.length;
+        quoteBlocks.push('<blockquote class="ev-quote">' + escapeHtml(q.trim()) + '</blockquote>');
+        return '___QUOTE_' + id + '___';
+      });
       text = escapeHtml(text);
       text = text.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
       text = text.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
@@ -5998,6 +6133,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       text = text.replace(/\\n/g, '<br>');
       inlineCodes.forEach((code, i) => { text = text.replace('___INLINECODE_' + i + '___', code); });
       codeBlocks.forEach((code, i) => { text = text.replace('___CODEBLOCK_' + i + '___', code); });
+      quoteBlocks.forEach((qb, i) => { text = text.replace('___QUOTE_' + i + '___', qb); });
       return text;
     }
 
@@ -6011,8 +6147,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         }
       });
       setupPdfDrop();
-      buildPresetOptions();
       initPanes();
+      initZoomBar();
+      initLlmTip();
       updateEmptyHint();
       await loadConfig();
       await loadLibrary();

@@ -296,6 +296,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const settings = await getSettings();
         return { success: true, result: await fetchJson(serverApiUrl(settings.serverUrl, '/api/cloud/disconnect'), { method: 'POST' }) };
       }
+      case 'getChatConfig': {
+        const settings = await getSettings();
+        return { success: true, config: await fetchJson(serverApiUrl(settings.serverUrl, '/api/chat/config')) };
+      }
+      case 'saveChatConfig': {
+        const settings = await getSettings();
+        return {
+          success: true,
+          config: await fetchJson(serverApiUrl(settings.serverUrl, '/api/chat/config'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message.config || {})
+          })
+        };
+      }
+      case 'testChatConnection': {
+        const settings = await getSettings();
+        return {
+          success: true,
+          result: await fetchJson(serverApiUrl(settings.serverUrl, '/api/chat/config/test'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+          })
+        };
+      }
       default:
         return { success: false, error: 'Unknown action' };
     }

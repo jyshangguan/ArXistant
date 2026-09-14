@@ -29,7 +29,7 @@ permalink: /
   <a class="doc-card" href="{{ '/user-guide/' | relative_url }}">
     <span class="card-number">02</span>
     <h3>User guide</h3>
-    <p>Work through daily papers, reminders, saved items, ADS search, publication import, and model controls.</p>
+    <p>Work through daily papers, reminders, saved items and tags, the chat reading helper, search, publication import, and model controls.</p>
   </a>
   <a class="doc-card" href="{{ '/how-it-works/' | relative_url }}">
     <span class="card-number">03</span>
@@ -41,9 +41,10 @@ permalink: /
 ## What stays local
 
 ArXistant runs a small server on your computer. Your saved-paper database,
-ranking model, manual keywords, notes, and generated pages remain in its local
-data directory. Network requests go directly to arXiv and, when configured,
-NASA ADS.
+ranking model, manual keywords, notes, highlights, and generated pages remain
+in its local data directory. Network requests go directly to arXiv and, when
+configured, NASA ADS; if you use the Chat page, questions also go to the LLM
+provider you choose (a local Ollama keeps even that on your machine).
 
 ## Current platform support
 

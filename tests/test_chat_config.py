@@ -1,8 +1,9 @@
 """Tests for the LLM settings connection test endpoint.
 
-The settings panel must be able to tell the user, right after saving, whether
-the stored base URL + model + API key actually work — instead of letting a
-missing/stale key surface later as a provider 401 mid-chat.
+The LLM settings UI lives on the extension's Settings page; it must be able to
+tell the user, right after saving, whether the stored base URL + model + API
+key actually work — instead of letting a missing/stale key surface later as a
+provider 401 mid-chat.
 """
 
 import json
@@ -92,13 +93,50 @@ class ChatConfigTestEndpointTests(unittest.TestCase):
         self.assertEqual(data["model"], "test-model")
 
 
-class ChatPageOffersConnectionTest(unittest.TestCase):
-    def test_settings_panel_has_test_button_and_autotest_after_save(self):
-        html = server.CHAT_PAGE_HTML
-        self.assertIn('onclick="testConnection()"', html)
-        self.assertIn("/api/chat/config/test", html)
+class LlmSettingsUiTests(unittest.TestCase):
+    """The LLM settings UI moved from the Chat page to the extension options."""
+
+    OPTIONS_JS = (PROJECT_ROOT / "chrome-extension" / "options.js").read_text(
+        encoding="utf-8")
+    BACKGROUND_JS = (PROJECT_ROOT / "chrome-extension" / "background.js").read_text(
+        encoding="utf-8")
+
+    def test_options_page_tests_connection_after_save(self):
         # Saving settings verifies the credentials immediately afterwards.
-        self.assertIn("await testConnection();", html)
+        self.assertIn("await testLlmConnection();", self.OPTIONS_JS)
+
+    def test_background_relays_config_and_test_endpoints(self):
+        self.assertIn("'/api/chat/config'", self.BACKGROUND_JS)
+        self.assertIn("'/api/chat/config/test'", self.BACKGROUND_JS)
+
+    def test_chat_page_keeps_formless_status_only(self):
+        html = server.CHAT_PAGE_HTML
+        self.assertNotIn('id="baseUrl"', html)
+        self.assertNotIn('id="modelName"', html)
+        self.assertNotIn('id="apiKey"', html)
+        self.assertNotIn('id="preset"', html)
+        self.assertNotIn("saveConfig()", html)
+        self.assertNotIn("testConnection()", html)
+
+    def test_status_is_one_line_with_hover_guidance(self):
+        html = server.CHAT_PAGE_HTML
+        # The status line sits under the chat input…
+        self.assertIn('id="llmStatusLine"', html)
+        self.assertLess(html.find('id="chatInput"'), html.find('id="llmStatusLine"'))
+        # …and hovering it opens a floating box with setup guidance.
+        self.assertIn('id="llmTip"', html)
+        self.assertIn('role="tooltip"', html)
+        self.assertIn("initLlmTip", html)
+        self.assertIn("mouseenter", html)
+        self.assertIn("LLM (Chat)", html)
+        self.assertIn("Save LLM Settings", html)
+
+    def test_left_panel_removed(self):
+        html = server.CHAT_PAGE_HTML
+        self.assertNotIn("pane-left", html)
+        self.assertNotIn("leftHandle", html)
+        self.assertNotIn("toggleLeft", html)
+        self.assertNotIn("left-hidden", html)
 
     def test_status_shows_where_the_key_comes_from(self):
         html = server.CHAT_PAGE_HTML

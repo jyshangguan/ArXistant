@@ -234,6 +234,16 @@ For the Debian package, save it as:
 
 The file should contain only the token.
 
+## Chat LLM (optional)
+
+The Chat page needs an OpenAI-compatible LLM (OpenAI, DeepSeek, OpenRouter,
+Moonshot, Zhipu, or a local Ollama). Nothing else requires one. After the
+extension is loaded, open its **Settings** page, expand the **LLM (Chat)**
+section, and save a base URL, model, and API key — see
+[Configure an LLM](user-guide.html#configure-an-llm) in the user guide. The
+key is kept in ArXistant's data directory with owner-only file permissions
+(plus a best-effort keychain copy), never inside the repository.
+
 ## Cloud sync (optional)
 
 ArXistant can mirror your paper database to Nutstore so several devices share

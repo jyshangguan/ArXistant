@@ -22,17 +22,28 @@ personal preferences remain on your computer.
   a local TF-IDF and logistic-regression model.
 - **Learns from your library** — saved papers improve future recommendations;
   editable positive and negative keywords provide direct control.
-- **Focused reading interface** — browse ranked papers with collapsible
-  abstracts and save useful papers with one click.
-- **Paper reading helper** — chat with an LLM about one paper at a time,
-  grounded in its title and abstract, with streamed answers on the Chat page.
+- **Focused reading interface** — browse ranked papers (arXiv ID before each
+  title, titles linking to AlphaXiv) with collapsible abstracts and one-click
+  save, tag, and chat actions.
+- **Paper reading helper** — open one or more papers as tabs and chat with an
+  LLM grounded in their full text: streamed answers with highlighted evidence
+  quotes, your own highlights and notes, local PDF drag-and-drop, and an
+  assistant that can search your library, Semantic Scholar, the citation
+  graph, and the web.
+- **Tags for saved papers** — organize your library with tags, filter the
+  Saved Papers page by them, and tag papers straight from the Daily, Recent,
+  or Search pages.
 - **Local paper database** — search saved papers, maintain notes, and remove
   records through a browser interface.
-- **arXiv and ADS search** — find and save papers without leaving ArXistant.
+- **arXiv and ADS search** — find papers and save, tag, or open them in Chat
+  without leaving ArXistant, with automatic retries when a source is slow or
+  rate-limited.
 - **Publication management** — import your publications from a SciX/ADS library
   with duplicate detection.
 - **Chrome reminders** — choose multiple reminder times, skip weekends, and
-  automatically refresh the daily list once per day.
+  automatically refresh the daily list once per day; every setting lives on
+  one folded-sections settings page (server, reminders, retraining, cloud
+  sync, LLM, debug).
 - **Local-first operation** — a lightweight server runs on `localhost`; there is
   no hosted ArXistant account or remote personal database.
 - **Optional cloud sync** — mirror your paper database to Nutstore (坚果云) over
@@ -45,8 +56,8 @@ Browse the complete documentation at
 
 - [Installation](docs/installation.md) — macOS, Debian/Ubuntu, Windows/manual
   setup, Android, migration, updates, and removal.
-- [User guide](docs/user-guide.md) — daily workflow, reminders, saved papers,
-  search, publications, and ML controls.
+- [User guide](docs/user-guide.md) — daily workflow, reminders, saved papers
+  and tags, chat reading helper, search, publications, and ML controls.
 - [How ArXistant works](docs/how-it-works.md) — architecture, ranking pipeline,
   local data, background refresh, and project structure.
 - [Android app](docs/android.md) — run ArXistant standalone on a phone (arXiv

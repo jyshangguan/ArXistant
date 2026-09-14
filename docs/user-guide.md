@@ -12,7 +12,9 @@ nav_order: 2
 1. Make sure the local server is running.
 2. Click the red ArXistant icon in Chrome.
 3. Choose **Open Daily Papers**.
-4. Open **Settings** to choose reminder times and retraining behavior.
+4. Open **Settings** to choose reminder times, retraining behavior, cloud
+   sync, and the LLM for the Chat page. Sections start folded — click a
+   section title to show its content.
 
 The server health endpoint is
 [http://localhost:8765/api/health](http://localhost:8765/api/health).
@@ -24,18 +26,19 @@ The server health endpoint is
 | Daily Papers | `/daily.html` | Today's ranked submissions |
 | Recent Papers | `/recent.html` | Approximately five days of ranked papers |
 | Saved Papers | `/database.html` | Search, annotate, and remove saved papers |
-| Chat | `/chat.html` | Ask questions about one paper with an LLM |
+| Chat | `/chat.html` | Read papers (tabs, highlights) and ask an LLM about them |
 | My Publications | `/publications.html` | Import and manage your publication list |
-| Search arXiv/ADS | `/search-arxiv.html` | Find papers and save them locally |
+| Search arXiv/ADS | `/search-arxiv.html` | Find papers; save, tag, or open them in Chat |
 | ML Features | `/ml-features.html` | Inspect training state and ranking features |
 
 All addresses are served from `http://localhost:8765`.
 
 ## Daily reading workflow
 
-Click a paper title to open its arXiv record and use the disclosure control to
-read its abstract. The relevance score reflects the current local model and any
-matching custom keywords.
+Every paper row shows its arXiv ID before the title — the ID links to the
+arXiv abstract, the title links to AlphaXiv's discussion page — and the
+disclosure control expands the abstract. The relevance score reflects the
+current local model and any matching custom keywords.
 
 Page navigation lives in the **…** menu at the top right; the **🔄** pill next
 to it syncs your library and re-fetches the list (desktop asks for
@@ -43,8 +46,9 @@ confirmation first), and on touch devices pulling down at the top of the page
 refreshes as well. On pages other than Daily/Recent Papers the menu offers
 **Daily Papers**.
 
-Click **💾** to save a useful paper. Saved papers become positive examples for
-future model training. Removing a saved paper updates the local training state.
+Click **💾** to save a useful paper; the button turns into a green **✓** and
+clicking it again removes the paper. Saved papers become positive examples for
+future model training, and removing one updates the local training state.
 
 Click **🏷️** (next to the 💬 chat button) to organize a paper with tags. If the
 paper is not saved yet, ArXistant saves it first and then opens a small tag
@@ -55,47 +59,54 @@ your library.
 
 ## Chat: the paper reading helper
 
-The Chat page lets you read a paper with an LLM: pick one paper, then ask
-questions about it and get grounded, streamed answers.
+The Chat page lets you read papers with an LLM: open one or more papers as
+tabs, then ask questions about them (individually or together) and get
+grounded, streamed answers.
 
 ### Configure an LLM
 
-1. Open **💬 Chat**.
-2. In **LLM Settings**, pick a provider preset (OpenAI, DeepSeek, OpenRouter,
-   Moonshot, Zhipu, or a local Ollama) or fill in any OpenAI-compatible
-   **Base URL** and **Model** yourself.
-3. Enter your **API key** and click **Save Settings**.
+1. Open the extension's **Settings** page (popup → **Settings**, or
+   right-click the toolbar icon → **Options**).
+2. Expand the **LLM (Chat)** section and pick a provider preset (OpenAI,
+   DeepSeek, OpenRouter, Moonshot, Zhipu, or a local Ollama) or fill in any
+   OpenAI-compatible **Base URL** and **Model** yourself.
+3. Enter your **API key** and click **Save LLM Settings** — the connection is
+   tested immediately, so a missing or stale key is caught right away.
 
 The base URL and model are stored in `chat_config.json` inside ArXistant's
-data directory; the API key is stored in the operating-system keychain, never
-in a plain file. The status line under the settings tells you when the Chat
-page is ready.
+data directory. The API key is kept in that same file with owner-only
+permissions (chmod 600) — reliable even when the server runs as a background
+daemon — with a best-effort copy in the operating-system keychain. The status
+line in the section tells you when the Chat page is ready and where the key is
+being read from; the Chat page itself shows a one-line LLM status under its
+chat input (hover it for setup guidance).
 
 ### Read and ask
 
 Choose a paper using the picker in the middle of the page, which covers your
 saved library plus the current daily and recent ranked lists. You can also
-jump straight into a chat from the 💬 buttons on the Daily, Recent, and Saved
-Papers pages.
+jump straight into a chat from the 💬 buttons on the Daily, Recent, Saved
+Papers, and Search pages.
 
-Once a paper is selected, the picker is replaced by the reader. A one-line info
-bar (save button, arXiv number, and arXiv / SciX links) sits above the
-conversation on the right; the paper itself fills the middle. The selectable
-**Text** view is the default; use the **PDF / Text** toggle to switch to the PDF,
-which is downloaded only when you first open it. The PDF is cached in the
-`pdf/` folder and the full text (from arXiv's HTML) in `fulltext/`, so both
-reopen instantly.
-While a first download runs, a status chip counts the elapsed seconds and
-offers a **read on arXiv** link; if a download fails or times out, the chip
-links to the PDF on arXiv instead. Closing the paper (×) returns you to the
+Once a paper is selected, the picker is replaced by the reader. Each open paper
+is a **tab** at the top; use **+** to add more tabs and **×** on a tab to close
+it, and click a tab to make it the active paper. The reader shows the active
+paper's selectable **Text** (the PDF option was removed for a simpler,
+text-first reading experience). The chat is grounded in *all* open papers
+(abstracts) plus the active paper's full text, and references them as [1],
+[2], … when comparing. The full text (from arXiv's HTML) is cached in
+`fulltext/` so it reopens instantly. Closing the last tab returns you to the
 picker.
 
 When no paper is open, you can drag a PDF directly into the **Conversation**
 box. ArXistant stores it locally, extracts selectable text page by page, splits
-the text into searchable chunks, and opens it in the same PDF/Text reader. Its
+the text into searchable chunks, and opens it in the same reader. Its
 Text view uses a bundled PDF.js renderer, so the printed layout—including
 headings, columns, equations, tables, and figures—is retained while a selectable
 text layer remains available for highlights and annotations.
+In the Text view, hover near the top of the paper to reveal a zoom bar
+(− / + / reset) that appears only while your cursor is in that region and
+fades a moment after you leave.
 Local PDFs support highlights, colors, annotation notes, and question-aware
 chunk retrieval. Scanned PDFs are not OCRed and report a clear error when no
 selectable text is available. The PDF files remain local and are not included
@@ -127,6 +138,8 @@ simply ask — with or without a paper selected:
 
 - "Find papers on X" → **search_papers** (Semantic Scholar, with citation
   counts and TLDRs).
+- "Search my saved papers for X" → **search_library** (offline TF-IDF over your
+  saved library's titles/abstracts/notes).
 - "More papers like this one" → **find_related** (S2 recommendations, falling
   back to TF-IDF similarity over your saved/daily library).
 - "What cites / does this paper reference" → **citation_graph** (ADS).
@@ -144,14 +157,12 @@ a single structured answer with consistent sections: **Answer**, **Evidence**
 (exact `QUOTE:` lines that get highlighted), **Related papers**, and **Sources
 & caveats**.
 
-The LLM settings live in the left panel, which starts hidden, and the
-conversation in the right one. Red arrow handles at the panel edges toggle each
-panel open and closed — hover over one to see whether it controls **Settings**
-or **Chat** — and the boundary between the paper and the chat can be dragged to
-resize them. Panel state and the chat width are remembered in the browser.
-
-Quick prompt chips offer good first questions, such as a five-bullet summary or
-the main results and caveats.
+The page is the reader plus the conversation panel: a red arrow handle at the
+right edge toggles the chat panel open and closed, and the boundary between
+the paper and the chat can be dragged to resize them. Panel state and the chat
+width are remembered in the browser. A one-line LLM status sits under the chat
+input — hover the cursor over it (or tap it on a touch screen) to open a
+floating box explaining where and how to configure the LLM.
 
 Conversations are kept for the current page session only; **New Chat** clears
 the history. Nothing is sent anywhere except the LLM provider you configure —
@@ -178,11 +189,12 @@ The Saved Papers page provides full-text-style filtering across locally stored
 metadata. You can edit notes and remove records. The database is SQLite and
 never needs a hosted ArXistant account.
 
-Every paper card shows its tags, and **🏷️ Edit tags** opens the same tag
-editor as the Daily/Recent pages. The **Filter by tags** bar above the list
-shows every tag in your library with a count; click one or more tags to show
-only papers that carry *all* selected tags. Tag filtering combines with the
-text search box.
+Paper rows match the Daily page: the arXiv ID sits before the title, the ID
+links to arXiv, and the title links to AlphaXiv. Every paper card shows its
+tags, and **🏷️ Edit tags** opens the same tag editor as the Daily/Recent pages.
+The **Filter by tags** bar above the list shows every tag in your library with
+a count; click one or more tags to show only papers that carry *all* selected
+tags. Tag filtering combines with the text search box.
 
 ## Cloud sync
 
@@ -224,13 +236,31 @@ folder you already sync with Dropbox/iCloud/OneDrive or the Nutstore desktop app
 
 ## Search
 
-The Search page supports:
+The Search page queries two sources:
 
 - **arXiv search**, which does not require an ADS token.
-- **ADS search**, which includes ADS metadata and requires a token.
+- **ADS / SciX search**, which adds ADS metadata (year, citation count,
+  bibcode, DOI) and requires a token.
 
-Search results can be saved directly into the same local database as daily
-recommendations.
+Results use the same card layout as the Daily page: the arXiv ID sits before
+the title, the ID links to arXiv, and the title links to AlphaXiv — or, for
+ADS-only records without an arXiv ID, to the ADS abstract page or the DOI.
+Year and citation-count badges plus **DOI** / **ADS** links summarize each
+record, and every card carries the same action buttons as the daily list:
+
+- **💾** saves the paper into the local database (click again to remove it),
+- **💬** opens the paper directly in the Chat reader,
+- **🏷️** tags it (the paper is saved first if needed).
+
+Records without an arXiv ID — some ADS-only entries — are marked "No arXiv
+ID — cannot save to DB": the database is keyed by arXiv ID, so those records
+can be read but not saved, tagged, or opened in Chat.
+
+Requests to arXiv and ADS are retried automatically when a source is slow or
+rate-limits the query, with the provider's `Retry-After` hint respected; if
+the source stays unavailable, the page shows a clear error message instead of
+a silent failure. A floating **▲** button at the bottom right returns you to
+the top of a long result list.
 
 ## Publications from SciX/ADS
 

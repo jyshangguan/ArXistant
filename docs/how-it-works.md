@@ -62,19 +62,27 @@ and JSON endpoints. It:
 - Initializes and queries the SQLite database.
 - Serves daily, recent, saved-paper, publication, search, chat, and model pages.
 - Starts refresh and training subprocesses with the same Python interpreter.
-- Calls arXiv and ADS APIs.
+- Calls arXiv and ADS APIs with bounded retries and backoff, so transient
+  failures recover on their own and rate limits (HTTP 429) surface as clear
+  messages after the provider's `Retry-After` hint is respected.
 - Proxies Chat questions to a configurable OpenAI-compatible LLM endpoint and
-  streams the answer back as server-sent events. It also downloads paper PDFs
-  and full-text HTML (arXiv HTML, falling back to ar5iv) on demand and caches
-  them locally; the Chat page renders the HTML in a same-origin iframe so text
-  can be selected and LLM-cited passages highlighted.
+  streams the answer back as server-sent events. It also downloads paper full
+  text (arXiv HTML, falling back to ar5iv) on demand and caches it locally; the
+  Chat page renders the HTML in a same-origin iframe so text can be selected
+  and LLM-cited passages highlighted. The extension's Settings page reads and
+  writes this LLM configuration through `/api/chat/config` and can test the
+  saved credentials with a tiny provider request — the server stays the single
+  place the key is stored (OS keychain when available).
 - Stores model retraining state and launches training in a background thread.
 - Serves paper-discovery endpoints (`/api/discover/*`): Semantic Scholar search
   and recommendations (keyless), the ADS citation graph and reviews/trending
   operators (token), TF-IDF similarity over the local library, and full-text
   search of cached papers. The chat assistant exposes these as callable tools
-  (search_papers, find_related, citation_graph) alongside web_search; results
-  are rendered in the conversation as clickable paper lists.
+  (search_papers, search_library, find_related, citation_graph) alongside
+  web_search; results are rendered in the conversation as clickable paper
+  lists.
+- Injects the shared save / tag / chat button scripts into the Daily, Recent,
+  Saved Papers, and Search pages, so every paper card offers the same actions.
 
 Requests are handled on separate threads (a threading HTTP server) so a slow
 or streaming LLM response cannot block the rest of the app.
@@ -144,11 +152,12 @@ directory. Debian/Ubuntu normally uses `~/.local/share/arxistant`.
 Important data includes:
 
 ```text
-arxiv_papers.db                 SQLite papers and publications
+arxiv_papers.db                 SQLite papers, publications, tags, highlights
 ads_token.txt                   Optional ADS API token
 scix_config.json                SciX library configuration
 chat_config.json                Chat LLM base URL, model, temperature
-pdf/                            Cached paper PDFs used by the Chat page
+pdf/                            Bounded LRU cache of arXiv PDFs (on demand)
+local_documents/                Dropped-in PDFs with extracted text and chunks
 fulltext/                       Cached paper full-text HTML for the Text view
 cloud/config.json               Cloud sync settings (no secrets)
 arxiv_ranked_personalized.html  Generated daily page
@@ -163,8 +172,11 @@ ml_ranker/
 └── custom_negative.json
 ```
 
-The Nutstore WebDAV app password and the Chat LLM API key are not stored in
-this directory; they live in the operating-system keychain via `keyring`.
+The Nutstore WebDAV app password is never written to the data directory; it
+lives in the operating-system keychain via `keyring`. The Chat LLM API key is
+kept in the owner-only (chmod-600) `chat_config.json` — the reliable store when
+the server runs as a detached background daemon — with a best-effort keychain
+copy that a freshly saved key overrides.
 
 The data directory can be overridden manually with the
 `ARXISTANT_DATA_DIR` environment variable. `ARXISTANT_PORT` changes the server
@@ -236,16 +248,22 @@ periodic Nutstore auto-sync every 30 minutes. See the
 
 ```text
 ArXistant/
-├── chrome-extension/          Chrome UI, alarms, notifications, settings
+├── chrome-extension/          Chrome UI, alarms, notifications, and the
+│                              settings page (server, reminders, retraining,
+│                              cloud sync, LLM, debug — folded sections)
 ├── docs/                      User and technical documentation
 ├── packaging/linux/           Debian builder, launcher, and systemd unit
 ├── src/
+│   ├── arxistant_cloud_providers.py
 │   ├── arxistant_paths.py     Shared application/data paths
+│   ├── arxistant_secrets.py   Keychain-backed secret storage
+│   ├── arxistant_sync.py      Snapshot export/merge for cloud sync
+│   ├── arxistant_tasks.py     In-process vs subprocess task dispatch
 │   ├── arxiv_db_server.py     Local pages and JSON API
 │   ├── arxiv_daily_ranker_html.py
 │   ├── arxiv_ml_ranker.py
 │   └── interest_generator.py
-├── tests/                     Portability regression tests
+├── tests/                     Portability and feature regression tests
 ├── local/                     Git-ignored development data
 ├── requirements.txt
 └── start_server.sh            macOS development launcher

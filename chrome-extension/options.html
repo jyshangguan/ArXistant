@@ -68,21 +68,34 @@
       margin-top: 4px;
     }
 
+    .hint.ok {
+      color: #2e7d32;
+    }
+
+    .hint.warn {
+      color: #b26a00;
+    }
+
     input[type="text"],
     input[type="time"],
-    input[type="number"] {
+    input[type="number"],
+    input[type="password"],
+    select {
       width: 100%;
       padding: 10px 12px;
       border: 1px solid #ddd;
       border-radius: 6px;
       font-size: 14px;
       font-family: inherit;
+      background: white;
       transition: border-color 0.15s;
     }
 
     input[type="text"]:focus,
     input[type="time"]:focus,
-    input[type="number"]:focus {
+    input[type="number"]:focus,
+    input[type="password"]:focus,
+    select:focus {
       outline: none;
       border-color: #b31b1b;
     }
@@ -173,13 +186,56 @@
       color: #c62828;
     }
 
+    /* Collapsible sections: content is hidden until the title is clicked. */
+    .section {
+      border: 1px solid #e8e8e8;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      background: white;
+      overflow: hidden;
+    }
+
     .section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
       font-size: 14px;
       font-weight: 600;
       color: #333;
-      margin: 24px 0 12px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid #e8e8e8;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .section-title::-webkit-details-marker {
+      display: none;
+    }
+
+    .section-title::before {
+      content: "▸";
+      color: #b31b1b;
+      font-size: 12px;
+      transition: transform 0.15s;
+    }
+
+    .section[open] > .section-title::before {
+      content: "▾";
+    }
+
+    .section-title:hover {
+      background: #faf6f6;
+      color: #b31b1b;
+    }
+
+    .section-body {
+      padding: 2px 14px 14px;
+      border-top: 1px solid #f0e6e6;
+    }
+
+    .section-body .form-group:last-child {
+      margin-bottom: 0;
     }
 
     .info-box {
@@ -214,101 +270,159 @@
 
     <div class="info-box">
       <p>
-        Configure when and where ArXistant reminds you to check your daily arXiv papers.
-        Every configured reminder is shown, even if you already opened a paper page that day.
+        Configure the extension, the local server, cloud sync, and the LLM used by the Chat page.
+        Sections are folded — click a title to show its content, click again to fold it back.
       </p>
     </div>
 
-    <div class="section-title">Server</div>
+    <details class="section" id="section-server">
+      <summary class="section-title">Server</summary>
+      <div class="section-body">
 
-    <div class="form-group">
-      <label for="server-url">ArXistant Server URL</label>
-      <input type="text" id="server-url" value="http://localhost:8765/daily.html" placeholder="http://localhost:8765/daily.html">
-      <p class="hint">The URL of your local ArXistant server. Default is <code>http://localhost:8765/daily.html</code>.</p>
-    </div>
+        <div class="form-group">
+          <label for="server-url">ArXistant Server URL</label>
+          <input type="text" id="server-url" value="http://localhost:8765/daily.html" placeholder="http://localhost:8765/daily.html">
+          <p class="hint">The URL of your local ArXistant server. Default is <code>http://localhost:8765/daily.html</code>.</p>
+        </div>
 
-    <div class="section-title">Reminder Times</div>
 
-    <div class="form-group">
-      <label>Daily Reminder Times</label>
-      <div id="reminder-times"></div>
-      <button type="button" id="btn-add-time" class="btn btn-secondary">+ Add reminder</button>
-      <p class="hint">Add as many local reminder times as you need.</p>
-      <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
-        <input type="checkbox" id="skip-weekends" checked>
-        <span>Skip reminders on Saturday and Sunday</span>
-      </label>
-      <p class="hint">Enabled by default. Weekend alarms resume automatically on Monday.</p>
-      <pre id="alarm-status" class="alarm-status">Loading scheduled reminders…</pre>
-    </div>
-
-    <div class="section-title">ML Retraining</div>
-
-    <div class="form-group">
-      <label for="retrain-after-changes">Retrain after saved-paper changes</label>
-      <input type="number" id="retrain-after-changes" min="1" max="100" step="1" value="5">
-      <p class="hint">Saving a new paper or removing a saved paper counts as one change. Training runs in the background when this threshold is reached.</p>
-      <pre id="retraining-status" class="alarm-status">Loading ML retraining status…</pre>
-    </div>
-
-    <div class="section-title">Cloud Sync</div>
-
-    <div class="form-group">
-      <label for="cloud-provider">Cloud Provider</label>
-      <select id="cloud-provider" style="width:100%; padding:10px 12px; border:1px solid #ddd; border-radius:6px; font-size:14px; font-family:inherit;">
-        <option value="local_folder">Local folder (offline / folder-sync)</option>
-        <option value="webdav">Nutstore WebDAV (坚果云)</option>
-      </select>
-    </div>
-
-    <div class="form-group" id="cloud-local-group">
-      <label for="cloud-folder">Sync folder path</label>
-      <input type="text" id="cloud-folder" placeholder="/path/to/synced/folder">
-      <p class="hint">Any folder, e.g. one already synced by Dropbox/iCloud/OneDrive. ArXistant keeps a snapshot file there.</p>
-    </div>
-
-    <div class="form-group" id="cloud-webdav-group" style="display:none;">
-      <label for="webdav-url">WebDAV address</label>
-      <input type="text" id="webdav-url" placeholder="https://dav.jianguoyun.com/dav/">
-      <label for="webdav-username" style="margin-top:10px;">Email</label>
-      <input type="text" id="webdav-username" placeholder="you@example.com">
-      <label for="webdav-password" style="margin-top:10px;">App password (第三方应用密码)</label>
-      <input type="password" id="webdav-password" placeholder="App password">
-      <p class="hint">Generate a dedicated app password in Nutstore settings (坚果云 → 账户信息 → 安全选项 → 第三方应用管理) — do <strong>not</strong> use your real password. It is stored in the system keychain (macOS Keychain / Linux Secret Service), never on disk. ArXistant creates an <code>ArXistant</code> folder here for the snapshot.</p>
-    </div>
-
-    <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; cursor:pointer;">
-      <input type="checkbox" id="cloud-enabled">
-      <span>Enable cloud sync</span>
-    </label>
-
-    <div class="form-group" style="display:flex; gap:10px; flex-wrap:wrap;">
-      <button id="btn-cloud-connect" class="btn btn-secondary">🔗 Connect</button>
-      <button id="btn-cloud-disconnect" class="btn btn-secondary">Disconnect</button>
-    </div>
-    <pre id="cloud-status" class="alarm-status">Loading cloud sync status…</pre>
-
-    <div class="section-title">Debug</div>
-
-    <div class="form-group">
-      <label>Test Notification</label>
-      <p class="hint">Click to trigger a test notification immediately. Useful for verifying notification permissions.</p>
-      <button id="btn-test-notify" class="btn btn-secondary" style="margin-top:8px;">🔔 Test Notification</button>
-      <p id="test-status" class="hint" style="margin-top:8px;"></p>
-      <div class="info-box" id="macos-notify-help" style="margin-top:12px; margin-bottom:0; display:none;">
-        <p>
-          If Chrome accepts the test but no banner appears, open
-          <strong>System Settings → Notifications → Google Chrome</strong> and
-          enable notifications with alert style <strong>Banners</strong> or
-          <strong>Alerts</strong>. Also turn off Focus/Do Not Disturb while
-          testing.
-        </p>
-        <a class="btn btn-secondary" style="display:inline-block; width:auto; margin-top:8px; text-decoration:none;"
-           href="x-apple.systempreferences:com.apple.Notifications-Settings.extension?com.google.Chrome">
-          Open macOS Notification Settings
-        </a>
       </div>
-    </div>
+    </details>
+
+    <details class="section" id="section-reminders">
+      <summary class="section-title">Reminder Times</summary>
+      <div class="section-body">
+
+        <div class="form-group">
+          <label>Daily Reminder Times</label>
+          <div id="reminder-times"></div>
+          <button type="button" id="btn-add-time" class="btn btn-secondary">+ Add reminder</button>
+          <p class="hint">Add as many local reminder times as you need.</p>
+          <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
+            <input type="checkbox" id="skip-weekends" checked>
+            <span>Skip reminders on Saturday and Sunday</span>
+          </label>
+          <p class="hint">Enabled by default. Weekend alarms resume automatically on Monday.</p>
+          <pre id="alarm-status" class="alarm-status">Loading scheduled reminders…</pre>
+        </div>
+
+      </div>
+    </details>
+
+    <details class="section" id="section-retraining">
+      <summary class="section-title">ML Retraining</summary>
+      <div class="section-body">
+
+        <div class="form-group">
+          <label for="retrain-after-changes">Retrain after saved-paper changes</label>
+          <input type="number" id="retrain-after-changes" min="1" max="100" step="1" value="5">
+          <p class="hint">Saving a new paper or removing a saved paper counts as one change. Training runs in the background when this threshold is reached.</p>
+          <pre id="retraining-status" class="alarm-status">Loading ML retraining status…</pre>
+        </div>
+
+      </div>
+    </details>
+
+    <details class="section" id="section-cloud">
+      <summary class="section-title">Cloud Sync</summary>
+      <div class="section-body">
+
+        <div class="form-group">
+          <label for="cloud-provider">Cloud Provider</label>
+          <select id="cloud-provider">
+            <option value="local_folder">Local folder (offline / folder-sync)</option>
+            <option value="webdav">Nutstore WebDAV (坚果云)</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="cloud-local-group">
+          <label for="cloud-folder">Sync folder path</label>
+          <input type="text" id="cloud-folder" placeholder="/path/to/synced/folder">
+          <p class="hint">Any folder, e.g. one already synced by Dropbox/iCloud/OneDrive. ArXistant keeps a snapshot file there.</p>
+        </div>
+
+        <div class="form-group" id="cloud-webdav-group" style="display:none;">
+          <label for="webdav-url">WebDAV address</label>
+          <input type="text" id="webdav-url" placeholder="https://dav.jianguoyun.com/dav/">
+          <label for="webdav-username" style="margin-top:10px;">Email</label>
+          <input type="text" id="webdav-username" placeholder="you@example.com">
+          <label for="webdav-password" style="margin-top:10px;">App password (第三方应用密码)</label>
+          <input type="password" id="webdav-password" placeholder="App password">
+          <p class="hint">Generate a dedicated app password in Nutstore settings (坚果云 → 账户信息 → 安全选项 → 第三方应用管理) — do <strong>not</strong> use your real password. It is stored in the macOS Keychain, never on disk. ArXistant creates an <code>ArXistant</code> folder here for the snapshot.</p>
+        </div>
+
+        <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; cursor:pointer;">
+          <input type="checkbox" id="cloud-enabled">
+          <span>Enable cloud sync</span>
+        </label>
+
+        <div class="form-group" style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button id="btn-cloud-connect" class="btn btn-secondary">🔗 Connect</button>
+          <button id="btn-cloud-disconnect" class="btn btn-secondary">Disconnect</button>
+        </div>
+        <pre id="cloud-status" class="alarm-status">Loading cloud sync status…</pre>
+
+      </div>
+    </details>
+
+    <details class="section" id="section-llm">
+      <summary class="section-title">LLM (Chat)</summary>
+      <div class="section-body">
+
+        <div class="form-group">
+          <label for="llm-preset">Provider preset</label>
+          <select id="llm-preset">
+            <option value="custom">Custom / keep my values</option>
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="moonshot">Moonshot (Kimi)</option>
+            <option value="zhipu">Zhipu (GLM)</option>
+            <option value="ollama">Local Ollama</option>
+          </select>
+          <label for="llm-base-url" style="margin-top:10px;">Base URL</label>
+          <input type="text" id="llm-base-url" placeholder="https://api.openai.com/v1">
+          <label for="llm-model" style="margin-top:10px;">Model</label>
+          <input type="text" id="llm-model" placeholder="gpt-4o-mini, deepseek-chat, …">
+          <label for="llm-api-key" style="margin-top:10px;">API key</label>
+          <input type="password" id="llm-api-key" placeholder="API key">
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+            <button id="btn-llm-save" class="btn btn-secondary">Save LLM Settings</button>
+            <button id="btn-llm-test" class="btn btn-secondary">Test Connection</button>
+          </div>
+          <p class="hint" id="llm-status">Loading…</p>
+          <p class="hint">Configures the LLM used by the server's <strong>Chat</strong> page (paper reading helper). The API key is stored in a private local file with owner-only permissions (with a best-effort copy in the OS keychain); base URL and model stay in ArXistant's local data directory.</p>
+        </div>
+
+      </div>
+    </details>
+
+    <details class="section" id="section-debug">
+      <summary class="section-title">Debug</summary>
+      <div class="section-body">
+
+        <div class="form-group">
+          <label>Test Notification</label>
+          <p class="hint">Click to trigger a test notification immediately. Useful for verifying macOS notification permissions.</p>
+          <button id="btn-test-notify" class="btn btn-secondary" style="margin-top:8px;">🔔 Test Notification</button>
+          <p id="test-status" class="hint" style="margin-top:8px;"></p>
+          <div class="info-box" style="margin-top:12px; margin-bottom:0;">
+            <p>
+              If Chrome accepts the test but no banner appears, open
+              <strong>System Settings → Notifications → Google Chrome</strong> and
+              enable notifications with alert style <strong>Banners</strong> or
+              <strong>Alerts</strong>. Also turn off Focus/Do Not Disturb while
+              testing.
+            </p>
+            <a class="btn btn-secondary" style="display:inline-block; width:auto; margin-top:8px; text-decoration:none;"
+               href="x-apple.systempreferences:com.apple.Notifications-Settings.extension?com.google.Chrome">
+              Open macOS Notification Settings
+            </a>
+          </div>
+        </div>
+
+      </div>
+    </details>
 
     <div class="actions">
       <button id="btn-save" class="btn btn-primary">Save Settings</button>

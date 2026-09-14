@@ -30,6 +30,22 @@ const cloudWebdavGroup = document.getElementById('cloud-webdav-group');
 const webdavUrlInput = document.getElementById('webdav-url');
 const webdavUsernameInput = document.getElementById('webdav-username');
 const webdavPasswordInput = document.getElementById('webdav-password');
+const llmPresetInput = document.getElementById('llm-preset');
+const llmBaseUrlInput = document.getElementById('llm-base-url');
+const llmModelInput = document.getElementById('llm-model');
+const llmApiKeyInput = document.getElementById('llm-api-key');
+const btnLlmSave = document.getElementById('btn-llm-save');
+const btnLlmTest = document.getElementById('btn-llm-test');
+const llmStatus = document.getElementById('llm-status');
+
+const LLM_PRESETS = {
+  openai:     { baseUrl: 'https://api.openai.com/v1',            model: 'gpt-4o-mini' },
+  deepseek:   { baseUrl: 'https://api.deepseek.com/v1',          model: 'deepseek-chat' },
+  openrouter: { baseUrl: 'https://openrouter.ai/api/v1',         model: 'openai/gpt-4o-mini' },
+  moonshot:   { baseUrl: 'https://api.moonshot.cn/v1',           model: 'moonshot-v1-8k' },
+  zhipu:      { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+  ollama:     { baseUrl: 'http://localhost:11434/v1',            model: 'llama3.1' }
+};
 
 let currentPlatform = 'unknown';
 
@@ -47,7 +63,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   await loadSettings();
   await loadCloudStatus();
+  await loadLlmConfig();
 });
+
+// Folded sections: reveal the one a validation error points at, so the user
+// can fix the field without hunting for the right title to click.
+function expandSection(id) {
+  const section = document.getElementById(id);
+  if (section instanceof HTMLDetailsElement) section.open = true;
+}
 
 function addTimeRow(time = '10:30') {
   const row = document.createElement('div');
@@ -96,9 +120,16 @@ async function saveSettings() {
   const reminderTimes = collectTimes();
   const skipWeekends = skipWeekendsInput.checked;
   const retrainAfterChanges = Number.parseInt(retrainAfterChangesInput.value, 10);
-  if (!serverUrl) return showStatus('Server URL cannot be empty.', 'error');
-  if (!reminderTimes.length) return showStatus('Add at least one reminder time.', 'error');
+  if (!serverUrl) {
+    expandSection('section-server');
+    return showStatus('Server URL cannot be empty.', 'error');
+  }
+  if (!reminderTimes.length) {
+    expandSection('section-reminders');
+    return showStatus('Add at least one reminder time.', 'error');
+  }
   if (!Number.isInteger(retrainAfterChanges) || retrainAfterChanges < 1 || retrainAfterChanges > 100) {
+    expandSection('section-retraining');
     return showStatus('Retraining threshold must be between 1 and 100.', 'error');
   }
 
@@ -196,6 +227,96 @@ function bindEvents() {
   btnCloudDisconnect.addEventListener('click', disconnectCloud);
   cloudProviderInput.addEventListener('change', updateCloudProviderFields);
   cloudEnabledInput.addEventListener('change', onCloudEnabledChange);
+  llmPresetInput.addEventListener('change', applyLlmPreset);
+  btnLlmSave.addEventListener('click', saveLlmConfig);
+  btnLlmTest.addEventListener('click', testLlmConnection);
+}
+
+// ── LLM (Chat) ──
+// The credentials live on the ArXistant server (same store the Chat page's
+// status reads); the background worker relays them to /api/chat/config.
+
+function applyLlmPreset() {
+  const preset = LLM_PRESETS[llmPresetInput.value];
+  if (!preset) return;
+  if (preset.baseUrl) llmBaseUrlInput.value = preset.baseUrl;
+  if (preset.model) llmModelInput.value = preset.model;
+}
+
+function updateLlmStatus(cfg) {
+  const missing = [];
+  if (!cfg.base_url) missing.push('base URL');
+  if (!cfg.model) missing.push('model');
+  if (!cfg.has_api_key) missing.push('API key');
+  if (missing.length === 0) {
+    llmStatus.textContent = '✅ Ready — ' + cfg.model +
+      (cfg.key_storage === 'file' ? ' · key in local file'
+        : cfg.key_storage === 'keychain' ? ' · key from OS keychain' : '') +
+      ' (use Test Connection to verify)';
+    llmStatus.className = 'hint ok';
+  } else {
+    llmStatus.textContent = '⚠️ Missing: ' + missing.join(', ');
+    llmStatus.className = 'hint warn';
+  }
+}
+
+async function loadLlmConfig() {
+  llmStatus.textContent = 'Loading LLM settings…';
+  llmStatus.className = 'hint';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getChatConfig' });
+    if (!response.success) throw new Error(response.error || 'Failed to load LLM settings');
+    const cfg = response.config || {};
+    llmBaseUrlInput.value = cfg.base_url || '';
+    llmModelInput.value = cfg.model || '';
+    llmApiKeyInput.value = '';
+    llmApiKeyInput.placeholder = cfg.has_api_key ? 'API key saved — leave blank to keep' : 'API key';
+    updateLlmStatus(cfg);
+  } catch (error) {
+    llmStatus.textContent = '⚠️ Could not load LLM settings: ' + error.message;
+    llmStatus.className = 'hint warn';
+  }
+}
+
+async function saveLlmConfig() {
+  const payload = {
+    base_url: llmBaseUrlInput.value.trim(),
+    model: llmModelInput.value.trim()
+  };
+  const apiKey = llmApiKeyInput.value.trim();
+  if (apiKey) payload.api_key = apiKey;
+  if (!payload.base_url || !payload.model) {
+    llmStatus.textContent = '⚠️ Base URL and model cannot be empty.';
+    llmStatus.className = 'hint warn';
+    return;
+  }
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'saveChatConfig', config: payload });
+    if (!response.success) throw new Error(response.error || 'Failed to save LLM settings');
+    await loadLlmConfig();
+    // Verify the saved credentials right away so a missing or stale key is
+    // caught here, not later as a provider 401 mid-chat.
+    await testLlmConnection();
+  } catch (error) {
+    llmStatus.textContent = '⚠️ ' + error.message;
+    llmStatus.className = 'hint warn';
+  }
+}
+
+async function testLlmConnection() {
+  llmStatus.textContent = '⏳ Testing connection…';
+  llmStatus.className = 'hint';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'testChatConnection' });
+    if (!response.success) throw new Error(response.error || 'Connection test failed');
+    const model = response.result?.model;
+    llmStatus.textContent = '✅ Connection OK — the provider answered a test request' +
+      (model ? ` (${model})` : '') + '.';
+    llmStatus.className = 'hint ok';
+  } catch (error) {
+    llmStatus.textContent = '⚠️ ' + error.message;
+    llmStatus.className = 'hint warn';
+  }
 }
 
 // ── Cloud Sync ──
