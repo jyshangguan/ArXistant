@@ -637,13 +637,64 @@ def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote
     raise RuntimeError(f"{label} did not respond after {attempts} attempts ({last_error}).")
 
 
+# --- Search query builders (Search page) -------------------------------------
+#
+# Both sources accept field:value syntax in the search box; the builders only
+# decide what is passed through raw versus wrapped in a default field.
+
+# arXiv API field prefixes (documented lowercase) plus the submittedDate
+# range filter; a query using any of them — or an explicit boolean operator —
+# is an advanced query and must be passed through untouched instead of being
+# wrapped in all:, which would produce nonsense like all:au:Shangguan.
+_ARXIV_FIELD_RE = re.compile(
+    r"(?:^|\s)(all|ti|au|abs|co|jr|cat|rn|submittedDate):", re.I)
+_ARXIV_OPERATOR_RE = re.compile(r"\s(?:AND|OR|ANDNOT)\s")
+
+
+def build_arxiv_search_query(query):
+    """Return the search_query value for the arXiv API.
+
+    Plain keywords are wrapped in the all: prefix (every field). A query
+    that already scopes terms with field prefixes (au:, ti:, abs:, cat:,
+    submittedDate:, …) or boolean operators (AND / OR / ANDNOT) is passed
+    through raw, with known prefixes normalized to the documented lowercase
+    form.
+    """
+    query = (query or "").strip()
+    if not query:
+        return query
+    if _ARXIV_FIELD_RE.search(query) or _ARXIV_OPERATOR_RE.search(query):
+        return _ARXIV_FIELD_RE.sub(lambda m: m.group(0).lower(), query)
+    return "all:" + query
+
+
+# ADS's id: is an internal record id that never matches a paper identifier
+# (id:1802.08364 finds nothing); the field users mean is identifier:.
+_ADS_ID_FIELD_RE = re.compile(r"(^|\s)id:(?=\S)", re.I)
+
+
+def build_ads_query(query):
+    """Return the q value for the ADS / SciX API.
+
+    ADS natively understands space-separated field:value clauses (implicit
+    AND), quoted phrases, dash year ranges (year:2018-2020), and explicit
+    AND / OR / ANDNOT, so the query is passed through as typed — except the
+    id: prefix, which is remapped to identifier: so the Saved-Papers-style
+    id: token does the expected thing here too.
+    """
+    query = (query or "").strip()
+    if not query:
+        return query
+    return _ADS_ID_FIELD_RE.sub(lambda m: m.group(1) + "identifier:", query)
+
+
 def search_arxiv_api(query, max_results=20):
     """Search arXiv API and return list of paper dicts."""
     import xml.etree.ElementTree as ET
-    encoded_q = urllib.parse.quote(query)
+    search_q = build_arxiv_search_query(query)
     url = (
         f"https://export.arxiv.org/api/query?"
-        f"search_query=all:{encoded_q}&max_results={max_results}"
+        f"search_query={urllib.parse.quote(search_q, safe=':')}&max_results={max_results}"
         f"&sortBy=relevance&sortOrder=descending"
     )
     data = _fetch_with_retries(url, headers={'User-Agent': 'Mozilla/5.0'}, label="arXiv")
@@ -689,7 +740,7 @@ def search_ads_api(query, token, max_results=20):
     """Search ADS API and return list of paper dicts."""
     url = "https://api.adsabs.harvard.edu/v1/search/query"
     params = {
-        'q': query,
+        'q': build_ads_query(query),
         'rows': max_results,
         # 'identifier' feeds the storage-key rule: papers with an arXiv
         # version are keyed by their arXiv ID, the rest by bibcode.
@@ -2703,13 +2754,21 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/chat.html":
             self._send_html(CHAT_PAGE_HTML)
 
-        elif path == "/search-arxiv.html":
-            html = SEARCH_ARXIV_HTML
+        elif path == "/search.html":
+            html = SEARCH_HTML
             if '<!-- save-button-embedded -->' not in html:
                 html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
             if '<!-- chat-link-embedded -->' not in html:
                 html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
             self._send_html(html)
+
+        elif path == "/search-arxiv.html":
+            # Old name from when the page only searched arXiv; keep bookmarks
+            # working with a permanent redirect to /search.html.
+            self.send_response(301)
+            self.send_header("Location", "/search.html")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
 
         elif path == "/api/arxiv/search":
             q = query.get("q", [""])[0]
@@ -4024,7 +4083,7 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
     var ITEMS = [
         toggleItem,
         { icon: '📂', label: 'Saved Papers', href: '/database.html', desc: 'Search, annotate, and remove saved papers' },
-        { icon: '🔍', label: 'Search arXiv', href: '/search-arxiv.html', desc: 'Find papers and save them' },
+        { icon: '🔍', label: 'Search', href: '/search.html', desc: 'Find papers and save them' },
         { icon: '💬', label: 'Chat', href: '/chat.html', desc: 'Read and discuss your papers with an LLM' },
         { icon: '📚', label: 'My Publications', href: '/publications.html', desc: 'Import and manage your publications' },
         { icon: '🧠', label: 'ML Features', href: '/ml-features.html', desc: 'Inspect training and ranking features' },
@@ -4109,18 +4168,20 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
 """
 
 
-SEARCH_ARXIV_HTML = """<!DOCTYPE html>
+SEARCH_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Search arXiv / ADS</title>
+  <title>Search Papers</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
     h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
     h2 { font-size: 1.1em; margin-top: 0; }
     h2 a { color: #b31b1b; text-decoration: none; }
     h2 a:hover { text-decoration: underline; }
+    .syntax-hint { font-size: 0.78em; color: #888; margin: -14px 2px 18px 2px; line-height: 1.7; }
+    .syntax-hint code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.92em; background: #f0f0f0; border: 1px solid #e2e2e2; border-radius: 4px; padding: 0 4px; color: #555; white-space: nowrap; }
     .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
     .paper:hover { background: #f5f5f5; }
     .score-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
@@ -4160,16 +4221,17 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>🔍 Search arXiv / ADS</h1>
+  <h1>🔍 Search Papers</h1>
 
   <div class="search-row">
-    <input type="text" class="search-box" id="searchInput" placeholder="Enter keywords, title, author, arXiv ID..." onkeydown="if(event.key==='Enter')doSearch()">
+    <input type="text" class="search-box" id="searchInput" placeholder="Keywords, or field:value — e.g. au:&quot;Shangguan&quot; / first_author:&quot;Shangguan&quot; year:2018" onkeydown="if(event.key==='Enter')doSearch()">
     <button class="search-btn" id="searchBtn" onclick="doSearch()">🔍 Search</button>
   </div>
   <div class="source-toggle">
     <label><input type="radio" name="source" value="arxiv" checked> arXiv API</label>
     <label><input type="radio" name="source" value="ads"> ADS / SciX</label>
   </div>
+  <p class="syntax-hint" id="syntaxHint"></p>
 
   <p class="stats" id="stats">Enter a query and click Search.</p>
   <div id="results"></div>
@@ -4181,6 +4243,32 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
     // attribute (on the daily page that is the list date); search results
     // use the search date.
     document.querySelector('h1').setAttribute('data-date', new Date().toISOString().slice(0, 10));
+
+    // Syntax examples swap with the selected source so the hint always
+    // matches the API that will receive the query.
+    const SYNTAX_HINTS = {
+      arxiv: 'Plain words search every field. Scope a term with a prefix: ' +
+        '<code>au:</code> author, <code>ti:</code> title, <code>abs:</code> abstract, ' +
+        '<code>cat:</code> category, <code>all:</code> everything; quote phrases ' +
+        '(<code>ti:"dark matter"</code>) and join terms with <code>AND</code> / ' +
+        '<code>OR</code> / <code>ANDNOT</code>. Examples: <code>au:Shangguan</code> · ' +
+        '<code>abs:"AGN feedback"</code> · <code>cat:astro-ph.GA AND abs:"star formation"</code>',
+      ads: 'Plain words search every field; a space between terms means AND. ' +
+        'Scope with fields: <code>first_author:</code> · <code>author:</code> · ' +
+        '<code>title:</code> · <code>abs:</code> · <code>year:2018</code> (or ' +
+        '<code>year:2018-2020</code>) · <code>arXiv:1802.08364</code> · ' +
+        '<code>bibcode:</code> · <code>property:refereed</code>; combine with ' +
+        '<code>AND</code> / <code>OR</code> / <code>ANDNOT</code>. Example: ' +
+        '<code>first_author:"Shangguan" year:2018 abs:"AGN feedback"</code>'
+    };
+    function updateSyntaxHint() {
+      const source = document.querySelector('input[name="source"]:checked');
+      const el = document.getElementById('syntaxHint');
+      if (source && el) el.innerHTML = SYNTAX_HINTS[source.value] || '';
+    }
+    document.querySelectorAll('input[name="source"]').forEach(radio =>
+      radio.addEventListener('change', updateSyntaxHint));
+    updateSyntaxHint();
 
     async function doSearch() {
       const q = document.getElementById('searchInput').value.trim();
@@ -4992,7 +5080,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
     <a href="/database.html">📂 Saved Papers</a>
-    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/search.html">🔍 Search</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
     <a href="/cloud-sync.html">☁️ Cloud Sync</a>
@@ -6909,7 +6997,7 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
-    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/search.html">🔍 Search</a>
     <a href="/chat.html">💬 Chat</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
@@ -7306,7 +7394,7 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
-    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/search.html">🔍 Search</a>
     <a href="/chat.html">💬 Chat</a>
     <a href="/database.html">📂 Saved Papers</a>
     <a href="/ml-features.html">🧠 ML Features</a>
@@ -7574,7 +7662,7 @@ def run_server(port=8765):
     print(f"  Saved papers:     http://{bind_host}:{port}/database.html")
     print(f"  My publications:  http://{bind_host}:{port}/publications.html")
     print(f"  My ML features:   http://{bind_host}:{port}/ml-features.html")
-    print(f"  Search arXiv/ADS: http://{bind_host}:{port}/search-arxiv.html")
+    print(f"  Search: http://{bind_host}:{port}/search.html")
     print(f"  Chat with papers: http://{bind_host}:{port}/chat.html")
     print("Press Ctrl+C to stop")
     try:

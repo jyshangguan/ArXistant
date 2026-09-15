@@ -28,7 +28,7 @@ The server health endpoint is
 | Saved Papers | `/database.html` | Search, annotate, and remove saved papers |
 | Chat | `/chat.html` | Read papers (tabs, highlights) and ask an LLM about them |
 | My Publications | `/publications.html` | Import and manage your publication list |
-| Search arXiv/ADS | `/search-arxiv.html` | Find papers; save, tag, or open them in Chat |
+| Search | `/search.html` | Find papers (arXiv or ADS/SciX); save, tag, or open them in Chat |
 | ML Features | `/ml-features.html` | Inspect training state and ranking features |
 
 All addresses are served from `http://localhost:8765`.
@@ -290,6 +290,49 @@ rate-limits the query, with the provider's `Retry-After` hint respected; if
 the source stays unavailable, the page shows a clear error message instead of
 a silent failure. A floating **▲** button at the bottom right returns you to
 the top of a long result list.
+
+### Search syntax
+
+Plain keywords search every field on both sources. A term can be scoped to
+one category with `field:value` — the example hint under the search box
+always shows the syntax of the selected source.
+
+**arXiv** (no token needed) uses the
+[arXiv API prefixes](https://info.arxiv.org/help/api/user-manual.html#query_details):
+
+| Example | Meaning |
+|---|---|
+| `au:Shangguan` | author |
+| `ti:"dark matter"` | title phrase (quote multi-word phrases) |
+| `abs:"AGN feedback"` | abstract phrase |
+| `cat:astro-ph.GA` | category |
+| `cat:astro-ph.GA AND abs:"star formation"` | both must match |
+| `ti:quasar ANDNOT abs:radio` | first term, excluding the second |
+
+Operators are `AND`, `OR`, `ANDNOT` (uppercase). A query that already uses a
+prefix or an operator is sent to arXiv as typed; plain keywords are wrapped
+in `all:` so they match every field.
+
+**ADS / SciX** (needs the token) accepts space-separated field clauses — a
+space between clauses means AND:
+
+| Example | Meaning |
+|---|---|
+| `first_author:"Shangguan"` | first (lead) author |
+| `author:"Shangguan"` | any author |
+| `title:quasar` | title |
+| `abs:"AGN feedback"` | abstract phrase |
+| `year:2018` | year (or `year:2018-2020`, `year:[2018 TO 2020]`) |
+| `arXiv:1802.08364` | paper by its arXiv ID |
+| `bibcode:2018ApJ...854..158S` | paper by its bibcode |
+| `property:refereed` | only refereed papers |
+| `first_author:"Shangguan" year:2018 abs:"AGN feedback"` | all must match |
+
+The user's own combination works verbatim: `first_author:"Shangguan"
+year:2018 abs:"AGN feedback"` returns the 2018 AGN-feedback paper. The
+Saved-Papers-style `id:` token is remapped to ADS's `identifier:` field
+automatically; `tag:` and `note:` have no ADS equivalent (they filter your
+local library only).
 
 ## Papers from scixplorer.org
 

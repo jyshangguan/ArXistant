@@ -171,7 +171,7 @@ async function toggleServer() {
 // ── Button Bindings ──
 function bindButtons() {
   btnDaily.addEventListener('click', () => openPage('/daily.html'));
-  btnSearch.addEventListener('click', () => openPage('/search-arxiv.html'));
+  btnSearch.addEventListener('click', () => openPage('/search.html'));
   btnChat.addEventListener('click', () => openPage('/chat.html'));
   btnRecent.addEventListener('click', () => openPage('/recent.html'));
   btnML.addEventListener('click', () => openPage('/ml-features.html'));

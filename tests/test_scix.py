@@ -415,7 +415,7 @@ class ScixUiHtmlTests(unittest.TestCase):
         self.assertIn("https://scixplorer.org/abs/", html)
 
     def test_search_page_emits_data_paper_id(self):
-        html = server.SEARCH_ARXIV_HTML
+        html = server.SEARCH_HTML
         self.assertIn("data-paper-id", html)
         self.assertIn("p.is_arxiv", html)
 
