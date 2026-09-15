@@ -1080,6 +1080,31 @@ def _llm_http_error(code):
     return msg
 
 
+def _llm_net_error(exc):
+    """Translate a network-level LLM failure into an actionable message.
+
+    Providers behind load balancers (e.g. Aliyun MaaS) often drop the TCP
+    connection when the Authorization header is empty, which urllib reports
+    as a confusing 'Connection refused'. Detect that case explicitly.
+    """
+    text = str(exc)
+    low = text.lower()
+    if "connection refused" in low:
+        return ("Could not connect to the LLM provider. If the API key was "
+                "just added or changed, restart the ArXistant server so it "
+                "picks up the new key. If the key is unchanged, the provider "
+                "endpoint may be down or blocking this machine.")
+    if "connection reset" in low or "broken pipe" in low:
+        return ("The LLM provider closed the connection. This often means "
+                "the request was not authenticated — re-check the API key in "
+                "the extension's LLM Settings, then restart the server.")
+    if "timed out" in low or "timeout" in low:
+        return "The LLM provider did not respond in time — try again."
+    if "name or service not known" in low or "getaddrinfo" in low:
+        return "Could not resolve the LLM provider's address — check the base URL."
+    return text
+
+
 def _chat_completion(base_url, model, messages, temperature, api_key, tools=None):
     """One non-streaming OpenAI-compatible chat completion; returns parsed JSON."""
     url = base_url.strip().rstrip("/")
@@ -1202,7 +1227,7 @@ def run_chat_agent(base_url, model, messages, temperature, api_key, max_iters=4)
                 return {"unsupported": True}
             return http_error(e)
         except Exception as e:
-            return {"unsupported": False, "error": str(e)}
+            return {"unsupported": False, "error": _llm_net_error(e)}
         choice = (resp.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         tool_calls = msg.get("tool_calls") or []
@@ -1245,7 +1270,7 @@ def run_chat_agent(base_url, model, messages, temperature, api_key, max_iters=4)
     except urllib.error.HTTPError as e:
         return http_error(e)
     except Exception as e:
-        return {"unsupported": False, "error": str(e)}
+        return {"unsupported": False, "error": _llm_net_error(e)}
     choice = (resp.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
     return {"unsupported": False, "final": _strip_tool_markup(msg.get("content") or ""), "statuses": statuses}
@@ -2613,7 +2638,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._sse_write(b"data: [DONE]\n\n")
                 return
             except Exception as e:
-                self._sse_write({"error": str(e)})
+                self._sse_write({"error": _llm_net_error(e)})
                 self._sse_write(b"data: [DONE]\n\n")
                 return
             if not tool_calls:
@@ -3098,7 +3123,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(
                     {"success": False, "error": _llm_http_error(e.code)}, 502)
             except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 502)
+                self._send_json(
+                    {"success": False, "error": _llm_net_error(e)}, 502)
 
         elif path == "/api/chat":
             messages = data.get("messages") or []
@@ -3138,7 +3164,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass  # The browser closed the chat.
             except Exception as exc:
                 try:
-                    self._sse_write({"error": str(exc)})
+                    self._sse_write({"error": _llm_net_error(exc)})
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                 except Exception:
