@@ -398,11 +398,211 @@ def deduplicate_custom_keywords():
 
 
 def load_ads_token():
-    """Load ADS API token from local file."""
+    """Load the ADS / SciX API token from the local file."""
     if not os.path.exists(ADS_TOKEN_PATH):
         return None
     with open(ADS_TOKEN_PATH, 'r', encoding='utf-8') as f:
         return f.read().strip()
+
+
+def save_ads_token(token):
+    """Persist the ADS / SciX API token (owner-only file); empty clears it."""
+    token = (token or "").strip()
+    if not token:
+        try:
+            os.remove(ADS_TOKEN_PATH)
+        except FileNotFoundError:
+            pass
+        return ""
+    os.makedirs(os.path.dirname(ADS_TOKEN_PATH) or ".", exist_ok=True)
+    with open(ADS_TOKEN_PATH, "w", encoding="utf-8") as f:
+        f.write(token)
+    try:
+        os.chmod(ADS_TOKEN_PATH, 0o600)
+    except OSError:
+        pass  # Non-POSIX filesystems may not support chmod.
+    return token
+
+
+# --- SciX / bibcode-keyed papers ---------------------------------------------
+#
+# Papers browsed on scixplorer.org are identified by their ADS bibcode (it is
+# the URL path of a scixplorer paper page). A paper's storage key follows one
+# rule everywhere: use its arXiv ID when the record has one, otherwise the
+# bibcode. The key lives in the existing saved_papers.arxiv_id column, so no
+# schema change is needed and the key space stays unified — a paper saved from
+# the Daily page by arXiv ID and the same paper saved from scixplorer collapse
+# into one row instead of duplicating.
+
+SCIX_API_BASE = "https://api.scixplorer.org/v1/search/query"
+SCIX_RESOLVE_FL = ("title,author,abstract,bibcode,year,arxiv,identifier,doi,"
+                   "citation_count,pubdate")
+
+# New-style arXiv IDs (YYMM.NNNNN) and old-style (archive/YYMMNNN).
+_ARXIV_KEY_RE = re.compile(r"^(?:\d{4}\.\d{4,5}|[a-z\-]+/\d{7})(v\d+)?$")
+# "arXiv:2307.11273" entries inside a record's identifier list.
+_ARXIV_IDENT_RE = re.compile(r"^arXiv:((?:\d{4}\.\d{4,5}|[a-z\-]+/\d{7}))(v\d+)?$",
+                             re.IGNORECASE)
+# ADS bibcodes built from new-style arXiv IDs: 2018arXiv180706209P.
+_ARXIV_BIBCODE_RE = re.compile(r"^\d{4}arXiv(\d{4})(\d{4,5})[A-Za-z]$")
+
+
+def is_arxiv_id(key):
+    """True when a paper storage key is an arXiv ID (new or old style)."""
+    return bool(_ARXIV_KEY_RE.match((key or "").strip()))
+
+
+def arxiv_id_from_bibcode(bibcode):
+    """Map an ADS arXiv bibcode (2018arXiv180706209P) back to 1807.06209.
+
+    Returns '' for bibcodes that are not arXiv records; the conversion lets
+    /api/save re-key stray arXiv bibcodes so one paper can never be stored
+    twice (once by arXiv ID, once by bibcode).
+    """
+    m = _ARXIV_BIBCODE_RE.match((bibcode or "").strip())
+    if not m:
+        return ""
+    return m.group(1) + "." + m.group(2)
+
+
+def _norm_ident(value):
+    """Normalize an identifier for exact matching (case/prefix/version-insensitive)."""
+    v = str(value or "").strip().lower()
+    if v.startswith("arxiv:"):
+        v = v[6:]
+    return re.sub(r"v\d+$", "", v)
+
+
+def arxiv_id_from_doc(doc):
+    """Extract a canonical (version-less) arXiv ID from a SciX/ADS doc.
+
+    The `arxiv` field is only populated on some records, but the identifier
+    list reliably carries an "arXiv:YYMM.NNNNN" entry whenever the record is
+    an arXiv paper or has an arXiv preprint version.
+    """
+    candidates = []
+    arxiv_field = doc.get("arxiv")
+    if isinstance(arxiv_field, str):
+        candidates.append(arxiv_field)
+    elif isinstance(arxiv_field, list):
+        candidates.extend(str(x) for x in arxiv_field if x)
+    for ident in doc.get("identifier") or []:
+        candidates.append(str(ident or ""))
+    for cand in candidates:
+        cand = cand.strip()
+        m = _ARXIV_IDENT_RE.match(cand)
+        if m:
+            return m.group(1)
+        if _ARXIV_KEY_RE.match(cand):
+            return re.sub(r"v\d+$", "", cand)
+    return arxiv_id_from_bibcode(doc.get("bibcode") or "")
+
+
+def paper_key_for_doc(doc):
+    """The storage key for a SciX/ADS doc: arXiv ID when present, else bibcode."""
+    key = arxiv_id_from_doc(doc)
+    if key:
+        return key
+    return str(doc.get("bibcode") or "").strip()
+
+
+def scix_paper_from_doc(doc):
+    """Map a SciX/ADS doc to the paper dict shape used by save/chat/search."""
+    def first(value):
+        if isinstance(value, list):
+            return str(value[0]) if value else ""
+        return str(value or "")
+
+    title = first(doc.get("title")).strip()
+    authors = doc.get("author") or []
+    if isinstance(authors, str):
+        authors = [authors]
+    year = str(doc.get("year") or "")
+    pubdate = first(doc.get("pubdate"))
+    if not year and len(pubdate) >= 4:
+        year = pubdate[:4]
+    key = paper_key_for_doc(doc)
+    return {
+        "id": key,
+        "title": title,
+        "authors": authors,
+        "abstract": first(doc.get("abstract")).strip(),
+        "year": year,
+        "bibcode": str(doc.get("bibcode") or "").strip(),
+        "doi": first(doc.get("doi")),
+        "citation_count": doc.get("citation_count") or 0,
+        "pubdate": pubdate,
+        "source": "scix",
+        "is_arxiv": is_arxiv_id(key),
+    }
+
+
+def scix_resolve(identifier):
+    """Resolve one bibcode / arXiv ID to a normalized paper dict via SciX.
+
+    Returns None when nothing matches exactly. Raises RuntimeError for
+    missing-token or network problems, ValueError for malformed input.
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        raise ValueError("No identifier provided")
+    # Bibcodes contain & . - and alphanumerics; arXiv IDs add / and the
+    # arXiv: prefix form. Anything else (spaces, quotes, slashes beyond one)
+    # cannot be a real identifier and is rejected before it reaches the URL.
+    if not re.match(r"^(?:arXiv:)?[A-Za-z0-9.&\-]+(?:/[A-Za-z0-9.\-]+)?$", identifier,
+                    re.IGNORECASE):
+        raise ValueError("Invalid identifier: " + repr(identifier))
+    token = load_ads_token()
+    if not token:
+        raise RuntimeError(
+            "No ADS token configured — add it in the extension's Settings "
+            "(ADS / SciX section) or in ads_token.txt")
+    params = {
+        "q": 'identifier:"%s"' % identifier,
+        "rows": 5,
+        "fl": SCIX_RESOLVE_FL,
+        "sort": "score desc",
+    }
+    url = SCIX_API_BASE + "?" + urllib.parse.urlencode(params)
+    data = json.loads(_fetch_with_retries(
+        url,
+        headers={"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token},
+        label="SciX",
+    ))
+    docs = (data.get("response") or {}).get("docs") or []
+    want = _norm_ident(identifier)
+    for doc in docs:
+        cands = [doc.get("bibcode") or ""]
+        cands.extend(str(x or "") for x in (doc.get("identifier") or []))
+        if want in {_norm_ident(x) for x in cands}:
+            return scix_paper_from_doc(doc)
+    return None
+
+
+def test_ads_token(token=None):
+    """Validate an ADS / SciX token with a minimal query. Returns numFound."""
+    token = (token or load_ads_token() or "").strip()
+    if not token:
+        raise RuntimeError("No ADS token configured")
+    params = {"q": "*:*", "rows": 0}
+    url = SCIX_API_BASE + "?" + urllib.parse.urlencode(params)
+    try:
+        data = json.loads(_fetch_with_retries(
+            url,
+            headers={"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token},
+            label="SciX", timeout=15))
+    except RuntimeError as e:
+        low = str(e).lower()
+        if "http 401" in low:
+            raise RuntimeError(
+                "SciX rejected the token (HTTP 401) — copy it again from "
+                "ui.adsabs.harvard.edu → Account → API Token")
+        if "http 403" in low:
+            raise RuntimeError(
+                "SciX refused the token (HTTP 403) — it may have expired")
+        raise
+    num = (data.get("response") or {}).get("numFound")
+    return int(num) if isinstance(num, int) else 0
 
 
 def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote server"):
@@ -491,7 +691,10 @@ def search_ads_api(query, token, max_results=20):
     params = {
         'q': query,
         'rows': max_results,
-        'fl': 'title,author,abstract,bibcode,year,arxiv,doi,citation_count,pubdate',
+        # 'identifier' feeds the storage-key rule: papers with an arXiv
+        # version are keyed by their arXiv ID, the rest by bibcode.
+        'fl': 'title,author,abstract,bibcode,year,arxiv,identifier,doi,'
+              'citation_count,pubdate',
         'sort': 'score desc'
     }
     query_str = urllib.parse.urlencode(params)
@@ -508,14 +711,13 @@ def search_ads_api(query, token, max_results=20):
         abstract = doc.get('abstract', '') or ''
         bibcode = doc.get('bibcode', '')
         year = str(doc.get('year', ''))
-        arxiv = doc.get('arxiv', '')
         doi = doc.get('doi', [''])[0] if isinstance(doc.get('doi'), list) else doc.get('doi', '')
         citation_count = doc.get('citation_count', 0)
         pubdate = doc.get('pubdate', '')
 
-        arxiv_id = ''
-        if arxiv:
-            arxiv_id = arxiv if '.' in arxiv else ''
+        # Storage key: arXiv ID when the record has one, else the bibcode —
+        # the same rule scixplorer-saved papers follow.
+        arxiv_id = paper_key_for_doc(doc)
 
         papers.append({
             'id': arxiv_id,
@@ -527,7 +729,8 @@ def search_ads_api(query, token, max_results=20):
             'doi': doi,
             'citation_count': citation_count,
             'pubdate': pubdate,
-            'source': 'ads'
+            'source': 'ads',
+            'is_arxiv': is_arxiv_id(arxiv_id),
         })
 
     return papers
@@ -1730,6 +1933,78 @@ def fetch_paper_fulltext(arxiv_id):
     raise ValueError("Could not fetch full text for " + arxiv_id +
                      (": " + str(last_err) if last_err else ""))
 
+
+def scix_abstract_card_html(key, paper=None, error=None):
+    """Build the reader page for a non-arXiv (bibcode-keyed) paper.
+
+    The Chat page loads this in its reader iframe instead of the arXiv full
+    text: same-origin, selectable, highlightable — grounding and highlights
+    work on the abstract. The body carries data-arx-abstract="true" so the
+    chat page's load-poll accepts it regardless of abstract length.
+    """
+    key = (key or "").strip()
+    safe_key = html_escape(key, quote=True)
+    bibcode = html_escape(((paper or {}).get("bibcode") or key), quote=True)
+    if error:
+        body = ("<p class='error'><strong>Could not load this SciX paper.</strong></p>"
+                f"<p>{html_escape(str(error))}</p>")
+    else:
+        p = paper or {}
+        title = html_escape(p.get("title") or ("SciX paper " + key))
+        authors = p.get("authors") or ""
+        if isinstance(authors, list):
+            authors = ", ".join(authors)
+        authors_html = ""
+        if authors:
+            authors_html = f"<p class='authors'>{html_escape(authors)}</p>"
+        abstract = (p.get("abstract") or "").strip()
+        abs_html = (f"<p class='abstract'>{html_escape(abstract)}</p>" if abstract
+                    else "<p class='abstract missing'>No abstract is available for this "
+                         "record on SciX.</p>")
+        year = html_escape(str(p.get("year") or ""))
+        year_html = f"<span class='badge'>{year}</span> " if year else ""
+        citations = p.get("citation_count") or 0
+        cite_html = (f"<span class='badge blue'>{int(citations)} citations</span> "
+                     if citations else "")
+        body = (
+            "<h1>" + title + "</h1>"
+            + authors_html
+            + "<p class='badges'>" + year_html + cite_html
+            + f"<span class='badge gray'>{bibcode}</span></p>"
+            + abs_html
+            + "<p class='hint'>Abstract-only record — ArXistant has no full text for "
+              "non-arXiv papers. Select any text to highlight it; ask the assistant "
+              "about this abstract.</p>"
+        )
+    link = ('https://scixplorer.org/abs/' + bibcode)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SciX {safe_key} — ArXistant</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         max-width: 720px; margin: 0 auto; padding: 28px 24px; line-height: 1.65; color: #333; }}
+  h1 {{ color: #1a1a1a; font-size: 1.25em; margin: 0 0 6px; }}
+  .authors {{ color: #555; margin: 0 0 10px; }}
+  .badges {{ margin: 0 0 16px; }}
+  .badge {{ display: inline-block; background: #b31b1b; color: white; padding: 2px 8px;
+            border-radius: 12px; font-size: 0.75em; font-weight: bold; margin-right: 4px; }}
+  .badge.blue {{ background: #1976d2; }}
+  .badge.gray {{ background: #555; }}
+  .abstract {{ font-size: 0.98em; }}
+  .abstract.missing {{ color: #888; font-style: italic; }}
+  .hint {{ margin-top: 20px; padding-top: 12px; border-top: 1px dashed #ccc;
+           color: #888; font-size: 0.85em; }}
+  .error {{ color: #c62828; }}
+</style>
+</head>
+<body data-arx-abstract="true">
+{body}
+<p class='hint'><a href="{link}" target="_blank" rel="noopener">Open this paper on scixplorer ↗</a></p>
+</body>
+</html>"""
+
 # --- End chat helpers --------------------------------------------------------
 
 def normalize_tags(value):
@@ -2375,6 +2650,46 @@ class Handler(BaseHTTPRequestHandler):
                 "keychain_available": arxistant_secrets.is_available(),
             })
 
+        elif path == "/api/ads/token":
+            self._send_json({
+                "success": True,
+                "has_token": bool(load_ads_token()),
+            })
+
+        elif path == "/api/scix/resolve":
+            # Accept ?q= plus the aliases callers naturally reach for.
+            ident = (query.get("q", [""])[0] or
+                     query.get("identifier", [""])[0] or
+                     query.get("bibcode", [""])[0] or
+                     query.get("arxiv_id", [""])[0]).strip()
+            # A stray arXiv bibcode is canonicalized before resolving so the
+            # response key always follows the storage-key rule.
+            converted = arxiv_id_from_bibcode(ident)
+            if converted:
+                ident = converted
+            if not ident:
+                self._send_json({"success": False,
+                                 "error": "No identifier provided (?q=...)"}, 400)
+                return
+            try:
+                paper = scix_resolve(ident)
+            except ValueError as e:
+                self._send_json({"success": False, "error": str(e)}, 400)
+                return
+            except RuntimeError as e:
+                # Missing token is a configuration problem (503); network
+                # failures are upstream (502).
+                self._send_json({"success": False, "error": str(e)},
+                                503 if "No ADS token" in str(e) else 502)
+                return
+            if paper is None or not paper.get("id"):
+                self._send_json({
+                    "success": False,
+                    "error": "SciX has no record for identifier " + ident,
+                }, 404)
+                return
+            self._send_json({"success": True, "paper": paper})
+
         elif path == "/api/chat/library":
             try:
                 papers = collect_chat_library()
@@ -2505,7 +2820,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "chunks": chunks})
 
         elif path == "/api/chat/fulltext":
-            arxiv_id = query.get("arxiv_id", [""])[0]
+            arxiv_id = (query.get("arxiv_id", [""])[0] or "").strip()
+            # arXiv-bibcode keys are canonicalized to the arXiv ID first.
+            converted = arxiv_id_from_bibcode(arxiv_id)
+            if converted:
+                arxiv_id = converted
+            if arxiv_id and not is_arxiv_id(arxiv_id):
+                # Non-arXiv paper (SciX bibcode key): the reader shows an
+                # abstract-only card. Prefer stored metadata (saved paper,
+                # no network); resolve via SciX when it is not saved yet.
+                paper = None
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    row = conn.execute(
+                        "SELECT title, authors, abstract FROM saved_papers "
+                        "WHERE arxiv_id = ?", (arxiv_id,)).fetchone()
+                    conn.close()
+                except sqlite3.Error:
+                    row = None
+                if row and (row[2] or "").strip():
+                    paper = {"title": row[0], "authors": row[1],
+                             "abstract": row[2], "bibcode": arxiv_id,
+                             "citation_count": 0}
+                if paper is None:
+                    try:
+                        paper = scix_resolve(arxiv_id)
+                    except RuntimeError as e:
+                        self._send_html(
+                            scix_abstract_card_html(arxiv_id, error=str(e)), 200)
+                        return
+                if paper is None:
+                    self._send_html(scix_abstract_card_html(
+                        arxiv_id,
+                        error="SciX has no record for " + arxiv_id + "."), 200)
+                    return
+                self._send_html(scix_abstract_card_html(arxiv_id, paper=paper))
+                return
             try:
                 ft_path = fetch_paper_fulltext(arxiv_id)
             except Exception as e:
@@ -2812,7 +3162,20 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             try:
-                arxiv_id = data.get("arxiv_id", "")
+                arxiv_id = (data.get("arxiv_id", "") or "").strip()
+                # Key-rule guard: an ADS arXiv bibcode is re-keyed to the
+                # arXiv ID so one paper can never be stored twice (once
+                # saved by arXiv ID from the Daily page, once by bibcode
+                # from scixplorer). idempotent for arXiv-ID keys.
+                converted = arxiv_id_from_bibcode(arxiv_id)
+                if converted:
+                    data = dict(data)
+                    data["arxiv_id"] = arxiv_id = converted
+                if not arxiv_id:
+                    self._send_json(
+                        {"success": False,
+                         "error": "No paper identifier provided"}, 400)
+                    return
                 c.execute("SELECT notes, tags, highlights FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
                 existing = c.fetchone()
                 was_saved = existing is not None
@@ -3055,6 +3418,31 @@ class Handler(BaseHTTPRequestHandler):
             arxistant_secrets.delete_secret(arxistant_secrets.WEBDAV_PASSWORD)
             arxistant_sync.save_config(config)
             self._send_json({"success": True, "config": config})
+
+        elif path == "/api/ads/token":
+            # Save (non-empty) or clear (empty) the ADS / SciX token.
+            token = str(data.get("token") or "")
+            save_ads_token(token)
+            self._send_json({
+                "success": True,
+                "has_token": bool(load_ads_token()),
+                "message": ("Token saved." if token.strip()
+                            else "Token removed."),
+            })
+
+        elif path == "/api/ads/token/test":
+            # Validate the stored token with a minimal SciX query so a stale
+            # or mistyped token surfaces here, not as a cryptic failure later.
+            try:
+                num_found = test_ads_token()
+                self._send_json({
+                    "success": True,
+                    "num_found": num_found,
+                    "message": "Token accepted — SciX answered with "
+                               f"{num_found:,} records.",
+                })
+            except RuntimeError as e:
+                self._send_json({"success": False, "error": str(e)}, 502)
 
         elif path == "/api/chat/config":
             config = load_chat_config()
@@ -3638,8 +4026,12 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
       }
 
       container.innerHTML = papers.map((p, i) => {
-        const arxivId = p.id || '';
-        const hasArxiv = arxivId && arxivId.includes('.');
+        // Storage key: the server applies the key rule (arXiv ID when the
+        // record has one, else the ADS bibcode) so ADS/SciX results can be
+        // saved, tagged, and discussed exactly like daily-page papers.
+        const paperId = p.id || '';
+        const hasArxiv = p.is_arxiv !== undefined ? !!p.is_arxiv
+          : /^\\d{4}\\.\\d{4,5}(v\\d+)?$/.test(paperId);
         const title = escapeHtml(p.title || '');
         const abstract = escapeHtml(p.abstract || '');
         const authors = Array.isArray(p.authors) ? p.authors : (p.authors || '').split(',').map(a => a.trim()).filter(Boolean);
@@ -3647,21 +4039,22 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
           ? escapeHtml(authors.join(', '))
           : escapeHtml(authors.slice(0, 5).join(', ')) + '<span class="et-al">, et al. (' + authors.length + ' authors)</span>';
         const year = p.year || '';
-        const bibcode = p.bibcode || '';
+        const bibcode = p.bibcode || (paperId && !hasArxiv ? paperId : '');
         const citationCount = p.citation_count || 0;
         const doi = p.doi || '';
 
         // Title row matches the daily page: "N. arXiv:ID — Title (→ alphaxiv)".
-        // Papers without an arXiv ID get no .arxiv-id anchor, so the shared
-        // save/chat/tag buttons skip them.
+        // Bibcode-keyed (journal-only) papers link to their scixplorer page
+        // instead, and the .paper card carries data-paper-id so the shared
+        // save/chat/tag buttons bind to the storage key.
         let idHtml = '';
         let titleHref = '#';
         if (hasArxiv) {
-          idHtml = `<span class="arxiv-id"><a href="https://arxiv.org/abs/${arxivId}" target="_blank">arXiv:${arxivId}</a></span> — `;
-          titleHref = `https://alphaxiv.org/abs/${arxivId}`;
+          idHtml = `<span class="arxiv-id"><a href="https://arxiv.org/abs/${escapeHtml(paperId)}" target="_blank">arXiv:${escapeHtml(paperId)}</a></span> — `;
+          titleHref = `https://alphaxiv.org/abs/${escapeHtml(paperId)}`;
         } else if (bibcode) {
-          idHtml = `<span class="arxiv-id">${escapeHtml(bibcode)}</span> — `;
-          titleHref = `https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract`;
+          idHtml = `<span class="arxiv-id"><a href="https://scixplorer.org/abs/${escapeHtml(bibcode)}" target="_blank">${escapeHtml(bibcode)}</a></span> — `;
+          titleHref = `https://scixplorer.org/abs/${escapeHtml(bibcode)}`;
         } else if (doi) {
           titleHref = `https://doi.org/${escapeHtml(doi)}`;
         }
@@ -3676,11 +4069,11 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
         if (bibcode) extraLinks.push(`<a href="https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract" target="_blank">ADS</a>`);
         const extraHtml = extraLinks.length ? `<span class="meta-links">${extraLinks.join(' · ')}</span>` : '';
 
-        const noArxiv = hasArxiv ? '' : '<span class="no-arxiv">No arXiv ID — cannot save to DB</span>';
+        const noArxiv = paperId ? '' : '<span class="no-arxiv">No identifier — cannot save to DB</span>';
 
         const absId = 'abs-search-' + i;
         return `
-          <div class="paper">
+          <div class="paper" data-paper-id="${escapeHtml(paperId)}">
             <h2>${i + 1}. ${idHtml}<a href="${titleHref}" target="_blank">${title}</a></h2>
             <p class="authors"><strong>Authors:</strong> ${authorStr}</p>
             <div class="score-row">
@@ -3777,7 +4170,7 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
 
 // Re-runnable so pages that render papers dynamically (e.g. search results)
 // can attach buttons after each render. Idempotent: skips papers that have no
-// arXiv ID or already have a save button.
+// storage key or already have a save button.
 window.arxistantAttachSaveButtons = async function () {
     let savedIds = new Set();
     try {
@@ -3794,7 +4187,15 @@ window.arxistantAttachSaveButtons = async function () {
     papers.forEach((paper) => {
         const arxivLink = paper.querySelector('.arxiv-id a');
         const titleLink = paper.querySelector('h2 > a');
-        const arxivId = arxivLink ? arxivLink.href.split('/abs/')[1] : '';
+        // Storage key: explicit data-paper-id (search results) or the
+        // identifier in the /abs/ link (arXiv IDs on the daily page, ADS
+        // bibcodes on SciX cards). Works for arXiv- and bibcode-keyed
+        // papers alike.
+        let arxivId = paper.dataset.paperId || '';
+        if (!arxivId && arxivLink) {
+            const raw = arxivLink.href.split('/abs/')[1] || '';
+            try { arxivId = decodeURIComponent(raw); } catch (e) { arxivId = raw; }
+        }
         if (!arxivId) return;
         if (document.getElementById('save-btn-' + arxivId)) return;
         const title = titleLink ? titleLink.textContent : '';
@@ -3907,8 +4308,17 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
         const scoreEl = paper.querySelector('.score');
         const scoreText = scoreEl ? scoreEl.textContent.replace('Relevance: ', '') : '0';
         const h1 = document.querySelector('h1');
+        // The storage key: the explicit data-paper-id attribute when the
+        // renderer set one (search results), else the identifier embedded in
+        // the /abs/ link (arXiv IDs on the daily page, bibcodes on SciX
+        // cards) — both are the key /api/save understands.
+        let paperId = paper.dataset.paperId || '';
+        if (!paperId && arxivLink) {
+            const raw = arxivLink.href.split('/abs/')[1] || '';
+            try { paperId = decodeURIComponent(raw); } catch (e) { paperId = raw; }
+        }
         return {
-            arxivId: arxivLink ? arxivLink.href.split('/abs/')[1] : '',
+            arxivId: paperId,
             title: titleLink ? titleLink.textContent : '',
             authors: authorsEl ? authorsEl.textContent.replace('Authors:', '').trim() : '',
             abstract: abstractEl ? abstractEl.textContent : '',
@@ -4146,13 +4556,17 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
 CHAT_LINK_SCRIPT = """<!-- chat-link-embedded -->
 <script>
 // Re-runnable for pages that render papers dynamically (search results);
-// skips papers that already have a chat button or have no arXiv ID.
+// skips papers that already have a chat button or have no storage key
+// (arXiv ID or ADS bibcode).
 window.arxistantAttachChatLinks = function () {
     document.querySelectorAll('.paper').forEach((paper) => {
         if (paper.querySelector('.chat-link-btn')) return;
         const arxivLink = paper.querySelector('.arxiv-id a');
-        if (!arxivLink) return;
-        const arxivId = arxivLink.href.split('/abs/')[1];
+        let arxivId = paper.dataset.paperId || '';
+        if (!arxivId && arxivLink) {
+            const raw = arxivLink.href.split('/abs/')[1] || '';
+            try { arxivId = decodeURIComponent(raw); } catch (e) { arxivId = raw; }
+        }
         if (!arxivId) return;
         const link = document.createElement('a');
         link.href = '/chat.html?paper=' + encodeURIComponent(arxivId);
@@ -4250,6 +4664,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .badge.daily { background: #b31b1b; }
     .badge.recent { background: #1976d2; }
     .badge.arxiv { background: #555; }
+    .badge.scix { background: #5e35b1; }
 
     .pdf-wrap { position: relative; flex: 1; min-width: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background: #525659; }
     .pdf-wrap iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; }
@@ -4502,7 +4917,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv', local: '📄 Local PDF' };
+    const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv', scix: '🛰️ SciX', local: '📄 Local PDF' };
     const HIGHLIGHT_COLORS = ['#9be7ff', '#ffe08a', '#b9f6ca', '#ffccbc', '#e1bee7', '#d7ccc8'];
 
     let library = [];
@@ -4529,6 +4944,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     function $(id) { return document.getElementById(id); }
 
     function normalizeId(id) { return (id || '').replace(/v\\d+$/, ''); }
+    // Storage keys are arXiv IDs for arXiv papers and ADS bibcodes for
+    // journal-only SciX papers; only the former have arXiv-side affordances.
+    function isArxivId(id) { return /^(\\d{4}\\.\\d{4,5}|[a-z\\-]+\\/\\d{7})$/.test(normalizeId(id || '')); }
 
     function escapeHtml(text) {
       if (text === null || text === undefined) return '';
@@ -4765,11 +5183,15 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       $('readerView').classList.remove('hidden');
       $('paperInfo').classList.remove('hidden');
       const local = p.source === 'local' || p.local;
-      $('paperIdText').textContent = local ? 'Local PDF' : 'arXiv:' + p.arxiv_id;
-      $('paperAbsLink').classList.toggle('hidden', !!local);
+      const arxivKey = !local && isArxivId(p.arxiv_id);
+      $('paperIdText').textContent = local ? 'Local PDF'
+        : (arxivKey ? 'arXiv:' + p.arxiv_id : 'SciX:' + p.arxiv_id);
+      $('paperAbsLink').classList.toggle('hidden', !arxivKey);
       $('paperScixLink').classList.toggle('hidden', !!local);
       if (!local) {
-        $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
+        if (arxivKey) {
+          $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
+        }
         $('paperScixLink').href = scixUrlFor(p);
       }
       userHighlights = Array.isArray(p.highlights) ? p.highlights.slice() : [];
@@ -4824,11 +5246,13 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     }
 
     function scixUrlFor(p) {
-      // SciXplorer record pages use ADS-style bibcodes; for arXiv papers the
-      // bibcode is <year>arXiv<digits><first-author-surname-initial>, the same
-      // convention arXiv itself uses for its ADS links. Fall back to a SciX
-      // search when the ID or author list does not fit the pattern.
+      // Bibcode-keyed papers (journal-only SciX records) link straight to
+      // their scixplorer page; arXiv-keyed papers build the ADS-style arXiv
+      // bibcode from the ID and first author, as before.
       const id = (p.arxiv_id || '').trim();
+      if (id && !isArxivId(id)) {
+        return 'https://scixplorer.org/abs/' + encodeURIComponent(id);
+      }
       const authors = (p.authors || '').trim();
       const m = id.match(/^(\\d{2})\\d{2}\\.(\\d{4,5})(v\\d+)?$/);
       if (m && authors) {
@@ -5018,7 +5442,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         try { doc = frame.contentDocument; } catch (e) {}
         if (!doc || !doc.body || doc.readyState === 'loading') return;
         if ((p.source === 'local' || p.local) && doc.body.dataset.pdfReady !== 'true') return;
-        if ((doc.body.innerText || '').length < 200) return;
+        // SciX abstract cards are marked by the server; they can be shorter
+        // than the full-text threshold yet are ready to select/highlight.
+        if (doc.body.dataset.arxAbstract !== 'true' && (doc.body.innerText || '').length < 200) return;
         clearInterval(poll);
         textLoadingFor = null;
         fullText = doc.body.innerText;
@@ -5754,8 +6180,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     async function pinFromUrl(id) {
       const norm = normalizeId(id);
       let p = libraryById[norm] || libraryById[id];
-      if (!p) {
-        // Not in the local library — look it up on the arXiv API.
+      if (!p && isArxivId(norm)) {
+        // Not in the local library and shaped like an arXiv ID — look it
+        // up on the arXiv API.
         try {
           const resp = await fetch('/api/arxiv/search?q=' + encodeURIComponent(id));
           const data = await resp.json();
@@ -5772,6 +6199,27 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             };
           }
         } catch (e) { console.warn('arXiv lookup failed:', e); }
+      }
+      if (!p) {
+        // Bibcode keys from scixplorer (or an arXiv ID the arXiv API could
+        // not find) resolve through the server's SciX endpoint.
+        try {
+          const resp = await fetch('/api/scix/resolve?q=' + encodeURIComponent(id));
+          const data = await resp.json();
+          if (data.success && data.paper) {
+            const hit = data.paper;
+            p = {
+              arxiv_id: hit.id || id,
+              title: hit.title || '',
+              authors: Array.isArray(hit.authors) ? hit.authors.join(', ') : (hit.authors || ''),
+              abstract: hit.abstract || '',
+              source: 'scix',
+              bibcode: hit.bibcode || '',
+              year: hit.year || '',
+              score: 0
+            };
+          }
+        } catch (e) { console.warn('SciX lookup failed:', e); }
       }
       if (p) {
         if (!libraryById[normalizeId(p.arxiv_id)]) {
