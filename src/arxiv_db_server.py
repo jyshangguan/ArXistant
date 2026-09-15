@@ -1859,6 +1859,30 @@ ARXIV_HTML_URLS = (
 
 _SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
 
+# Cached full-text copies record the URL they were fetched from in this meta
+# tag. Copies without it predate the per-source <base> fix and are refreshed
+# once on next open.
+_FULLTEXT_SOURCE_RE = re.compile(
+    r'<meta\s+name="arxistant-fulltext-source"', re.I)
+
+
+def _fulltext_cache_current(path):
+    """True when a cached full-text copy records its source URL.
+
+    Legacy copies were written with an arxiv.org <base> even when the
+    document came from the ar5iv fallback. ar5iv references figures with
+    root-relative paths (/html/<id>/assets/fig.png) that resolve against
+    the <base> host, so those figures 404'd at arxiv.org — the reader
+    showed text without figures. Copies without the source meta are
+    refreshed once; if every source is unreachable, the stale copy is
+    still served rather than an error page.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return bool(_FULLTEXT_SOURCE_RE.search(f.read(8192)))
+    except OSError:
+        return False
+
 
 _TITLE_H1_RE = re.compile(r'<h1\b[^>]*ltx_title_document[^>]*>.*?</h1>', re.S | re.I)
 _FIRST_H1_RE = re.compile(r'<h1\b[^>]*>.*?</h1>', re.S | re.I)
@@ -1890,8 +1914,10 @@ def fetch_paper_fulltext(arxiv_id):
     """Return a local path to a sanitized HTML copy of the paper's full text.
 
     Prefers arxiv.org/html, falling back to ar5iv. Scripts are stripped, the
-    document title is cleaned of inline thanks/notes, and a <base> tag is
-    injected so relative assets resolve at the source. Cached.
+    document title is cleaned of inline thanks/notes, and a <base> tag
+    pointing at the URL that actually served the document is injected so
+    relative AND root-relative assets (figures) resolve exactly as they
+    would in a browser on the source site. Cached.
     """
     base = _safe_pdf_filename(arxiv_id)
     if base is None:
@@ -1899,8 +1925,11 @@ def fetch_paper_fulltext(arxiv_id):
     filename = base[:-4] + ".html"
     os.makedirs(FULLTEXT_CACHE_DIR, exist_ok=True)
     path = os.path.join(FULLTEXT_CACHE_DIR, filename)
+    stale_copy = None
     if os.path.exists(path) and os.path.getsize(path) > 0:
-        return path
+        if _fulltext_cache_current(path):
+            return path
+        stale_copy = path  # legacy format: refresh once, keep as a fallback
     last_err = None
     for tmpl in ARXIV_HTML_URLS:
         url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
@@ -1909,6 +1938,11 @@ def fetch_paper_fulltext(arxiv_id):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
+                # The exact document URL (after redirects). Root-relative
+                # asset paths resolve against its host: basing the document
+                # here is what makes ar5iv-served figures load instead of
+                # 404ing at arxiv.org.
+                final_url = getattr(resp, "geturl", lambda: url)()
         except Exception as e:
             last_err = e
             continue
@@ -1918,18 +1952,29 @@ def fetch_paper_fulltext(arxiv_id):
             continue
         html = _SCRIPT_RE.sub("", html)
         html = clean_fulltext_title(html)
-        base_href = "https://arxiv.org/html/" + urllib.parse.quote(arxiv_id, safe="/")
+        meta_tag = ('<meta name="arxistant-fulltext-source" content="'
+                    + html_escape(final_url, quote=True) + '">')
+        if re.search(r"<base\b[^>]*\shref\s*=", html, re.I):
+            # The source declares its own base. The first <base href> in a
+            # document wins, so injecting one in front of it would break
+            # the source's own asset resolution; only record the source.
+            inject = meta_tag
+        else:
+            inject = ('<base href="' + html_escape(final_url, quote=True)
+                      + '">' + meta_tag)
         if re.search(r"<head\b[^>]*>", html, re.I):
             html = re.sub(r"<head\b[^>]*>",
-                          lambda m: m.group(0) + '<base href="' + base_href + '">',
+                          lambda m: m.group(0) + inject,
                           html, count=1, flags=re.I)
         else:
-            html = '<base href="' + base_href + '">' + html
+            html = inject + html
         temp_path = f"{path}.{threading.get_ident()}.tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(html)
         os.replace(temp_path, path)
         return path
+    if stale_copy is not None:
+        return stale_copy
     raise ValueError("Could not fetch full text for " + arxiv_id +
                      (": " + str(last_err) if last_err else ""))
 
