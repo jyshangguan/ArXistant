@@ -244,17 +244,21 @@ The Search page queries two sources:
 
 Results use the same card layout as the Daily page: the arXiv ID sits before
 the title, the ID links to arXiv, and the title links to AlphaXiv — or, for
-ADS-only records without an arXiv ID, to the ADS abstract page or the DOI.
-Year and citation-count badges plus **DOI** / **ADS** links summarize each
-record, and every card carries the same action buttons as the daily list:
+ADS-only records without an arXiv version, the bibcode and title link to the
+paper's page on [scixplorer.org](https://scixplorer.org/). Year and
+citation-count badges plus **DOI** / **ADS** links summarize each record, and
+every card carries the same action buttons as the daily list:
 
 - **💾** saves the paper into the local database (click again to remove it),
 - **💬** opens the paper directly in the Chat reader,
 - **🏷️** tags it (the paper is saved first if needed).
 
-Records without an arXiv ID — some ADS-only entries — are marked "No arXiv
-ID — cannot save to DB": the database is keyed by arXiv ID, so those records
-can be read but not saved, tagged, or opened in Chat.
+All of these work for ADS-only records too: a paper is stored under its
+arXiv ID when the record has one, and under its ADS bibcode otherwise, so
+journal-only papers can be saved, tagged, and discussed exactly like arXiv
+papers (Chat grounds those discussions in the abstract — see
+[SciXplorer papers](#papers-from-scixplorerorg)). Only records with neither
+an arXiv ID nor a bibcode, which are rare, cannot be saved.
 
 Requests to arXiv and ADS are retried automatically when a source is slow or
 rate-limits the query, with the provider's `Retry-After` hint respected; if
@@ -262,9 +266,42 @@ the source stays unavailable, the page shows a clear error message instead of
 a silent failure. A floating **▲** button at the bottom right returns you to
 the top of a long result list.
 
+## Papers from scixplorer.org
+
+While you browse [scixplorer.org](https://scixplorer.org/), the ArXistant
+extension shows a small panel on paper pages (`/abs/<bibcode>`). The panel
+reads the paper's bibcode from the page URL and resolves the record through
+your local server, so it works even though scixplorer.org itself cannot be
+accessed by the server.
+
+The panel offers:
+
+- **▸ Show abstract** — the paper's abstract, fetched once per paper.
+- **💾 Save / ✓ Saved** — save the paper to (or remove it from) your library;
+  the same unified key rule applies, so a paper saved from the Daily page
+  and the same paper saved from scixplorer are one record, never a
+  duplicate.
+- **💬 Chat** — opens the paper in the Chat reader on your local server.
+  Journal-only papers get an abstract-only reader you can highlight and
+  annotate; papers with an arXiv version load the full text as usual.
+
+The panel needs the **ADS / SciX token**. Set it once from the extension's
+**Settings → ADS / SciX** section: paste the token from
+[NASA ADS API settings](https://ui.adsabs.harvard.edu/user/settings/token),
+click **Save Token** (it is verified immediately), and reload any open
+scixplorer.org tabs. The token is stored by your local server with
+owner-only file permissions.
+
+If the panel does not appear: confirm you are on a paper page, check that the
+server is running (the extension popup shows its status), and that the
+extension was reloaded after gaining the new scixplorer.org permission —
+Chrome asks you to re-approve host permissions when an unpacked extension is
+reloaded.
+
 ## Publications from SciX/ADS
 
-1. Add an ADS API token as described in the installation guide.
+1. Add an ADS API token — either from the extension's **Settings → ADS /
+   SciX** section or as described in the installation guide.
 2. Open **My Publications**.
 3. Paste a SciX library URL such as
    `https://scixplorer.org/user/libraries/...`.

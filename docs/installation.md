@@ -217,8 +217,13 @@ Building the APK from source is covered in the
 ## ADS API token
 
 An ADS token is optional. Daily arXiv ranking and the saved-paper database work
-without one. SciX publication import and ADS search require a token from the
+without one. SciX publication import, ADS search, and the ArXistant panel on
+[scixplorer.org](https://scixplorer.org/) require a token from the
 [NASA ADS API settings](https://ui.adsabs.harvard.edu/user/settings/token).
+
+The easiest way to set it: open the extension's **Settings** page, expand the
+**ADS / SciX** section, paste the token, and click **Save Token** — it is
+verified against SciX immediately. Alternatively, save it manually.
 
 For a repository installation, save it as:
 

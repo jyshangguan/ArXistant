@@ -38,6 +38,11 @@ personal preferences remain on your computer.
 - **arXiv and ADS search** — find papers and save, tag, or open them in Chat
   without leaving ArXistant, with automatic retries when a source is slow or
   rate-limited.
+- **SciXplorer integration** — a small ArXistant panel on
+  [scixplorer.org](https://scixplorer.org/) paper pages shows the abstract,
+  saves the paper, and opens it in Chat; journal-only papers are stored by
+  bibcode with the same notes/tags/highlights, and the ADS token can be set
+  right from the extension's Settings page.
 - **Publication management** — import your publications from a SciX/ADS library
   with duplicate detection.
 - **Chrome reminders** — choose multiple reminder times, skip weekends, and
