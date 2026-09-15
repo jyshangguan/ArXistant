@@ -270,8 +270,9 @@
 
     <div class="info-box">
       <p>
-        Configure the extension, the local server, cloud sync, and the LLM used by the Chat page.
-        Sections are folded — click a title to show its content, click again to fold it back.
+        Configure the extension, the local server, cloud sync, the LLM used by the Chat page,
+        and the ADS / SciX token. Sections are folded — click a title to show its content,
+        click again to fold it back.
       </p>
     </div>
 
@@ -361,6 +362,25 @@
           <button id="btn-cloud-disconnect" class="btn btn-secondary">Disconnect</button>
         </div>
         <pre id="cloud-status" class="alarm-status">Loading cloud sync status…</pre>
+
+      </div>
+    </details>
+
+    <details class="section" id="section-ads">
+      <summary class="section-title">ADS / SciX</summary>
+      <div class="section-body">
+
+        <div class="form-group">
+          <label for="ads-token">ADS / SciX API token</label>
+          <input type="password" id="ads-token" placeholder="API token">
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+            <button id="btn-ads-save" class="btn btn-secondary">Save Token</button>
+            <button id="btn-ads-test" class="btn btn-secondary">Test Token</button>
+            <button id="btn-ads-clear" class="btn btn-secondary">Remove Token</button>
+          </div>
+          <p class="hint" id="ads-status">Loading…</p>
+          <p class="hint">Used by ADS / SciX search in ArXistant, the ArXistant panel on <strong>scixplorer.org</strong> paper pages, and SciX-backed chat lookups. Get a token at <strong>ui.adsabs.harvard.edu</strong> → Account → <strong>API Token</strong>. It is stored in ArXistant's local data directory with owner-only permissions.</p>
+        </div>
 
       </div>
     </details>

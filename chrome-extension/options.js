@@ -37,6 +37,11 @@ const llmApiKeyInput = document.getElementById('llm-api-key');
 const btnLlmSave = document.getElementById('btn-llm-save');
 const btnLlmTest = document.getElementById('btn-llm-test');
 const llmStatus = document.getElementById('llm-status');
+const adsTokenInput = document.getElementById('ads-token');
+const btnAdsSave = document.getElementById('btn-ads-save');
+const btnAdsTest = document.getElementById('btn-ads-test');
+const btnAdsClear = document.getElementById('btn-ads-clear');
+const adsStatus = document.getElementById('ads-status');
 
 const LLM_PRESETS = {
   openai:     { baseUrl: 'https://api.openai.com/v1',            model: 'gpt-4o-mini' },
@@ -64,6 +69,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   await loadCloudStatus();
   await loadLlmConfig();
+  await loadAdsToken();
 });
 
 // Folded sections: reveal the one a validation error points at, so the user
@@ -230,6 +236,9 @@ function bindEvents() {
   llmPresetInput.addEventListener('change', applyLlmPreset);
   btnLlmSave.addEventListener('click', saveLlmConfig);
   btnLlmTest.addEventListener('click', testLlmConnection);
+  btnAdsSave.addEventListener('click', saveAdsToken);
+  btnAdsTest.addEventListener('click', testAdsToken);
+  btnAdsClear.addEventListener('click', clearAdsToken);
 }
 
 // ── LLM (Chat) ──
@@ -316,6 +325,76 @@ async function testLlmConnection() {
   } catch (error) {
     llmStatus.textContent = '⚠️ ' + error.message;
     llmStatus.className = 'hint warn';
+  }
+}
+
+// ── ADS / SciX token ──
+// The token lives on the ArXistant server (owner-only ads_token.txt in its
+// data directory); the background worker relays saves/tests to /api/ads/token.
+
+async function loadAdsToken() {
+  adsStatus.textContent = 'Loading ADS / SciX token status…';
+  adsStatus.className = 'hint';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getAdsToken' });
+    if (!response.success) throw new Error(response.error || 'Failed to load token status');
+    const has = !!(response.state && response.state.has_token);
+    adsTokenInput.value = '';
+    adsTokenInput.placeholder = has ? 'Token saved — paste a new one to replace' : 'API token';
+    adsStatus.textContent = has
+      ? '✅ Token saved (use Test Token to verify it works).'
+      : '⚠️ No token saved — ADS / SciX search, the scixplorer.org panel, and SciX chat lookups need it.';
+    adsStatus.className = has ? 'hint ok' : 'hint warn';
+  } catch (error) {
+    adsStatus.textContent = '⚠️ Could not load token status: ' + error.message;
+    adsStatus.className = 'hint warn';
+  }
+}
+
+async function saveAdsToken() {
+  const token = adsTokenInput.value.trim();
+  if (!token) {
+    adsStatus.textContent = '⚠️ Paste a token first (get one at ui.adsabs.harvard.edu → Account → API Token).';
+    adsStatus.className = 'hint warn';
+    return;
+  }
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'saveAdsToken', token });
+    if (!response.success) throw new Error(response.error || 'Failed to save the token');
+    await loadAdsToken();
+    // Verify right away so a stale or mistyped token surfaces here.
+    await testAdsToken();
+  } catch (error) {
+    adsStatus.textContent = '⚠️ ' + error.message;
+    adsStatus.className = 'hint warn';
+  }
+}
+
+async function testAdsToken() {
+  adsStatus.textContent = '⏳ Testing token…';
+  adsStatus.className = 'hint';
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'testAdsToken' });
+    if (!response.success) throw new Error(response.error || 'Token test failed');
+    const result = response.result || {};
+    if (!result.success) throw new Error(result.error || 'The server could not verify the token');
+    adsStatus.textContent = '✅ ' + (result.message || 'Token accepted.');
+    adsStatus.className = 'hint ok';
+  } catch (error) {
+    adsStatus.textContent = '⚠️ ' + error.message;
+    adsStatus.className = 'hint warn';
+  }
+}
+
+async function clearAdsToken() {
+  if (!confirm('Remove the stored ADS / SciX token? ADS search, the scixplorer.org panel, and SciX chat lookups will stop working.')) return;
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'saveAdsToken', token: '' });
+    if (!response.success) throw new Error(response.error || 'Failed to remove the token');
+    await loadAdsToken();
+  } catch (error) {
+    adsStatus.textContent = '⚠️ ' + error.message;
+    adsStatus.className = 'hint warn';
   }
 }
 
