@@ -1372,6 +1372,158 @@ def search_library(query, limit=12):
     return out
 
 
+# --- Fielded search over saved papers (Saved Papers page) --------------------
+#
+# The Saved Papers search box accepts plain keywords (substring match across
+# title, authors, abstract, notes, and the paper ID) plus field:value tokens
+# that scope a term to one category:
+#
+#   tag:lrd            papers tagged exactly "lrd"
+#   author:shangguan   substring of the author list
+#   title:quasar       substring of the title
+#   abs:feedback       substring of the abstract
+#   note:followup      substring of your notes
+#   year:2023          publication year derived from the arXiv ID or bibcode
+#                      (year:2020-2024 selects an inclusive range)
+#   id:1802.08364      substring of the storage key (arXiv ID or bibcode;
+#                      arXiv:1802.08364 works as an alias)
+#
+# Values may be quoted (title:"dark matter"), multiple tokens AND together,
+# and unknown prefixes (e.g. https: in a URL) fall back to plain terms.
+
+SEARCH_FIELDS = ("tag", "author", "title", "abs", "note", "year", "id")
+_FIELD_ALIASES = {"arxiv": "id"}
+
+# field:"quoted value" | field:value | plain-term ("quoted" or bare)
+_QUERY_TOKEN_RE = re.compile(
+    r"([A-Za-z]+):(?:\"([^\"]*)\"|(\S*))|(\"[^\"]*\"|\S+)")
+
+_YEAR_VALUE_RE = re.compile(r"^(\d{4})(?:\s*-\s*(\d{4}))?$")
+
+
+def parse_fielded_query(query):
+    """Split a query into field-scoped values and plain terms.
+
+    Returns (fields, plain): fields is {field: [values]} for every known
+    field (empty lists when unused); plain is the list of unscoped terms.
+    Tolerant of partial input while typing ("tag:" with no value yet is
+    dropped, an unbalanced quote falls back to whitespace splitting).
+    """
+    fields = {f: [] for f in SEARCH_FIELDS}
+    plain = []
+    for match in _QUERY_TOKEN_RE.finditer(query or ""):
+        field, quoted, raw, plain_token = match.groups()
+        if field is not None:
+            value = (quoted if quoted is not None else (raw or "")).strip()
+            if not value:
+                continue  # a bare prefix — user is still typing
+            key = _FIELD_ALIASES.get(field.lower(), field.lower())
+            if key in fields:
+                fields[key].append(value)
+            else:
+                plain.append(match.group(0))  # e.g. a URL's https: prefix
+        elif plain_token:
+            term = plain_token.strip('"').strip()
+            if term:
+                plain.append(term)
+    return fields, plain
+
+
+def paper_year_from_key(key):
+    """Best-effort publication year from a paper's storage key.
+
+    New-style arXiv IDs (2609.12040 → 2026), old-style IDs
+    (math/0102001 → 2001), and ADS bibcodes (2020A&A...641A...6P → 2020,
+    including arXiv bibcodes like 2023arXiv230711273V) all encode the year.
+    Returns None when the key carries no year.
+    """
+    key = str(key or "").strip()
+    m = re.match(r"^(\d{4})[A-Za-z]", key)  # ADS bibcode: year + journal code
+    if m:
+        year = int(m.group(1))
+        if 1800 <= year <= 2100:
+            return year
+    m = re.match(r"^(\d{2})\d{2}\.\d{4,5}", key)  # new-style arXiv ID
+    if m:
+        yy = int(m.group(1))
+        return (1900 if yy >= 95 else 2000) + yy
+    m = re.match(r"^[A-Za-z\-]+/(\d{2})\d{4}", key)  # old-style arXiv ID
+    if m:
+        yy = int(m.group(1))
+        return (1900 if yy >= 95 else 2000) + yy
+    return None
+
+
+def _year_value_matches(year, value):
+    """True when a paper year satisfies year:VALUE (single or inclusive range)."""
+    m = _YEAR_VALUE_RE.match(str(value).strip())
+    if not m:
+        return False
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    if end < start:
+        start, end = end, start
+    return start <= year <= end
+
+
+def _paper_tags_set(paper):
+    return {t.strip().lower()
+            for t in str(paper.get("tags") or "").split(",") if t.strip()}
+
+
+def _paper_matches_fields(paper, fields):
+    """True when the paper satisfies every field-scoped value (AND)."""
+    low = {name: str(paper.get(name) or "").lower()
+           for name in ("title", "authors", "abstract", "notes", "arxiv_id")}
+    for value in fields["tag"]:
+        if value.strip().lower() not in _paper_tags_set(paper):
+            return False
+    for value in fields["author"]:
+        if value.lower() not in low["authors"]:
+            return False
+    for value in fields["title"]:
+        if value.lower() not in low["title"]:
+            return False
+    for value in fields["abs"]:
+        if value.lower() not in low["abstract"]:
+            return False
+    for value in fields["note"]:
+        if value.lower() not in low["notes"]:
+            return False
+    for value in fields["id"]:
+        if value.lower() not in low["arxiv_id"]:
+            return False
+    for value in fields["year"]:
+        year = paper_year_from_key(paper.get("arxiv_id"))
+        if year is None or not _year_value_matches(year, value):
+            return False
+    return True
+
+
+def _paper_matches_plain(paper, terms):
+    """True when every plain term appears in the searchable text (AND)."""
+    haystack = " ".join(
+        str(paper.get(name) or "")
+        for name in ("arxiv_id", "title", "authors", "abstract", "notes")
+    ).lower()
+    return all(term.lower() in haystack for term in terms)
+
+
+def search_saved_papers(query):
+    """Filter saved papers by plain keywords and/or field:value tokens."""
+    fields, plain = parse_fielded_query(query)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM saved_papers ORDER BY date_saved DESC")]
+    conn.close()
+    if not any(fields.values()) and not plain:
+        return rows
+    return [p for p in rows
+            if _paper_matches_fields(p, fields) and
+            (not plain or _paper_matches_plain(p, plain))]
+
+
 def run_tool(name, args):
     """Dispatch a chat tool. Returns (kind, value): kind 'text' or 'papers'."""
     try:
@@ -2610,17 +2762,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"success": True, "paper": dict(row)})
 
         elif path == "/api/search":
-            q = query.get("q", [""])[0].lower()
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("""
-                SELECT * FROM saved_papers 
-                WHERE LOWER(title) LIKE ? OR LOWER(authors) LIKE ? OR LOWER(abstract) LIKE ? OR LOWER(notes) LIKE ?
-                ORDER BY date_saved DESC
-            """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
-            rows = [dict(r) for r in c.fetchall()]
-            conn.close()
+            # Plain keywords (title/authors/abstract/notes/id) plus optional
+            # field:value tokens: tag:, author:, title:, abs:, note:, year:,
+            # id: — see parse_fielded_query. Multiple tokens AND together.
+            q = query.get("q", [""])[0]
+            try:
+                rows = search_saved_papers(q)
+            except sqlite3.Error as e:
+                self._send_json({"papers": [], "count": 0, "query": q,
+                                 "error": str(e)}, 500)
+                return
             self._send_json({"papers": rows, "count": len(rows), "query": q})
 
         elif path == "/api/publications":
@@ -6692,8 +6843,10 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
     h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
-    .search-box { width: 100%; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; margin-bottom: 20px; box-sizing: border-box; }
+    .search-box { width: 100%; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; margin-bottom: 8px; box-sizing: border-box; }
     .search-box:focus { outline: none; border-color: #b31b1b; }
+    .search-hint { font-size: 0.75em; color: #888; margin: 0 2px 18px 2px; line-height: 1.6; }
+    .search-hint code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.92em; background: #f0f0f0; border: 1px solid #e2e2e2; border-radius: 4px; padding: 0 4px; color: #555; white-space: nowrap; }
     .stats { color: #666; margin-bottom: 20px; }
     .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
     .paper:hover { background: #f5f5f5; }
@@ -6715,9 +6868,13 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     .notes { margin-top: 10px; }
     .notes textarea { width: 100%; min-height: 60px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 0.9em; box-sizing: border-box; }
     .notes button { margin-top: 6px; padding: 4px 12px; background: #b31b1b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
-    .tag-bar { margin: 0 0 16px 0; padding: 10px 12px; background: #f0f7f6; border: 1px solid #d5e8e5; border-radius: 6px; }
-    .tag-bar-title { font-size: 0.8em; font-weight: bold; color: #00695c; margin-bottom: 6px; }
+    .tag-bar { margin: 0 0 16px 0; padding: 8px 12px; background: #f0f7f6; border: 1px solid #d5e8e5; border-radius: 6px; }
+    .tag-bar-title { font-size: 0.8em; font-weight: bold; color: #00695c; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
     .tag-bar-title .hint { font-weight: normal; color: #888; }
+    .tag-bar-title::before { content: "▸ "; color: #00695c; font-size: 0.9em; }
+    .tag-bar[open] > .tag-bar-title::before { content: "▾ "; }
+    .tag-bar-selected { background: #e0f2f1; color: #00695c; border: 1px solid #b2dfdb; border-radius: 10px; padding: 1px 8px; font-size: 0.95em; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tag-bar-body { margin-top: 6px; }
     .tag-bar-chips { display: flex; flex-wrap: wrap; gap: 6px; }
     .tag-bar-chips:empty::after { content: 'No tags yet. Add tags with the 🏷️ button on a paper below, or from the Daily/Recent pages.'; color: #888; font-size: 0.8em; }
     .tag-filter-chip { display: inline-flex; align-items: center; gap: 5px; background: white; color: #00695c; border: 1px solid #b2dfdb; border-radius: 12px; padding: 2px 10px; font-size: 0.8em; cursor: pointer; user-select: none; }
@@ -6759,14 +6916,22 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     <a href="/cloud-sync.html">☁️ Cloud Sync</a>
   </div>
   <h1>My arXiv Paper Database</h1>
-  <input type="text" class="search-box" id="searchInput" placeholder="Search by title, author, abstract, or notes..." oninput="searchPapers()">
-  <div id="tagBar" class="tag-bar"></div>
+  <input type="text" class="search-box" id="searchInput" placeholder="Search — e.g. tag:lrd author:shangguan, or plain keywords" oninput="searchPapers()">
+  <p class="search-hint">
+    Scope a term with <code>tag:</code> <code>author:</code> <code>title:</code>
+    <code>abs:</code> <code>note:</code> <code>year:</code> <code>id:</code>
+    (ranges like <code>year:2020-2024</code> work; quoted values too:
+    <code>title:"dark matter"</code>). Terms combine — all must match.
+    Plain keywords search the title, authors, abstract, notes, and ID.
+  </p>
+  <details id="tagBar" class="tag-bar"></details>
   <p class="stats" id="stats">Loading...</p>
   <div id="paperList"></div>
 
   <script>
     let allPapers = [];
     let selectedTags = new Set();  // lowercased tag keys; papers must carry ALL of them
+    let tagBarOpen = false;        // the tag list is folded until the user opens it
     let openEditorId = null;
     let tagDbSaveQueue = Promise.resolve();  // serializes tag auto-saves
 
@@ -6786,8 +6951,12 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       applyFilters();
     }
 
+    let searchDebounceTimer = null;
     function searchPapers() {
-      applyFilters();
+      // Fielded queries are longer than plain words; debounce so one query
+      // is one request instead of one per keystroke.
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(applyFilters, 250);
     }
 
     // ── Tag filtering (issue #3) ──
@@ -6808,28 +6977,50 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     }
 
     function renderTagBar() {
+      // The tag list is folded by default; clicking the title shows every
+      // tag. Selected tags stay visible in the title while folded so the
+      // active filter is always obvious. tagBarOpen survives re-renders.
       const bar = document.getElementById('tagBar');
       const entries = allTagCounts();
-      let html = '<div class="tag-bar-title">🏷️ Filter by tags <span class="hint">(papers must have ALL selected tags)</span>' +
-        (selectedTags.size ? '<button class="tag-clear" data-action="clear">Clear filter</button>' : '') +
-        '</div>';
-      html += '<div class="tag-bar-chips">' + entries.map(([k, e]) =>
+      const selectedLabels = entries.filter(([k]) => selectedTags.has(k)).map(([, e]) => e.label);
+      let title = '<summary class="tag-bar-title"><span>🏷️ Filter by tags</span>';
+      if (entries.length) {
+        title += '<span class="hint">(' + entries.length + ' tag' + (entries.length !== 1 ? 's' : '') +
+          (tagBarOpen ? '' : ' — click to show') + ')</span>';
+      } else {
+        title += '<span class="hint">(no tags yet)</span>';
+      }
+      if (selectedTags.size) {
+        title += '<span class="tag-bar-selected" title="' + escapeAttr(selectedLabels.join(', ')) + '">' +
+          escapeHtml(selectedLabels.join(', ')) + '</span>' +
+          '<button class="tag-clear" data-action="clear">Clear</button>';
+      }
+      title += '</summary>';
+      const chips = entries.map(([k, e]) =>
         `<span class="tag-filter-chip${selectedTags.has(k) ? ' selected' : ''}" data-tag="${escapeAttr(k)}">${escapeHtml(e.label)} <span class="count">${e.count}</span></span>`
-      ).join('') + '</div>';
-      bar.innerHTML = html;
+      ).join('');
+      bar.innerHTML = title + '<div class="tag-bar-body"><div class="tag-bar-chips">' + chips + '</div></div>';
+      bar.open = tagBarOpen;
     }
 
+    document.getElementById('tagBar').addEventListener('toggle', (e) => {
+      tagBarOpen = e.target.open;
+    });
+
     document.getElementById('tagBar').addEventListener('click', (e) => {
-      const chip = e.target.closest('.tag-filter-chip');
-      if (chip) {
-        const k = chip.dataset.tag;
-        if (selectedTags.has(k)) selectedTags.delete(k); else selectedTags.add(k);
+      // Clear sits inside the summary; without preventDefault the same click
+      // would also fold/unfold the list.
+      if (e.target.closest('[data-action="clear"]')) {
+        e.preventDefault();
+        selectedTags.clear();
         renderTagBar();
         applyFilters();
         return;
       }
-      if (e.target.closest('[data-action="clear"]')) {
-        selectedTags.clear();
+      const chip = e.target.closest('.tag-filter-chip');
+      if (chip) {
+        const k = chip.dataset.tag;
+        if (selectedTags.has(k)) selectedTags.delete(k); else selectedTags.add(k);
         renderTagBar();
         applyFilters();
       }

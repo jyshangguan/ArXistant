@@ -192,9 +192,34 @@ never needs a hosted ArXistant account.
 Paper rows match the Daily page: the arXiv ID sits before the title, the ID
 links to arXiv, and the title links to AlphaXiv. Every paper card shows its
 tags, and **🏷️ Edit tags** opens the same tag editor as the Daily/Recent pages.
-The **Filter by tags** bar above the list shows every tag in your library with
-a count; click one or more tags to show only papers that carry *all* selected
-tags. Tag filtering combines with the text search box.
+
+The **Filter by tags** bar is folded by default — the title shows how many
+tags your library has, and clicking it shows every tag with a count. Click
+one or more tags to show only papers that carry *all* selected tags; the
+selected tags stay visible in the folded title so the active filter is always
+obvious, and **Clear** resets it. Tag filtering combines with the text search
+box.
+
+### Search format
+
+Plain keywords match the title, authors, abstract, notes, and paper ID. A
+term can also be scoped to one category with `field:value`:
+
+| Token | Matches |
+|---|---|
+| `tag:lrd` | papers tagged exactly `lrd` |
+| `author:shangguan` | substring of the author list |
+| `title:quasar` | substring of the title |
+| `abs:feedback` | substring of the abstract |
+| `note:followup` | substring of your notes |
+| `year:2023` | publication year (also ranges: `year:2020-2024`) |
+| `id:1802.08364` | substring of the paper ID (`arXiv:` is an alias) |
+
+Multiple terms combine — every term must match, so
+`tag:lrd author:shangguan year:2020-2024` lists papers that carry the tag
+**and** the author **and** fall in the years. Values containing spaces can be
+quoted (`title:"dark matter"`). The publication year is derived from the
+arXiv ID or ADS bibcode, so it works for bibcode-keyed SciX papers too.
 
 ## Cloud sync
 
