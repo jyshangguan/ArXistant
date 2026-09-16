@@ -16,7 +16,7 @@ server or a desktop Mac.
 
 Prebuilt, signed APKs are attached to each
 [GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
-For v0.3.1 the direct download is:
+For the latest published release (v0.3.1) the direct download is:
 
 <https://github.com/jyshangguan/ArXistant/releases/download/v0.3.1/arxistant-release.v0.3.1.apk>
 
@@ -164,7 +164,7 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android version is
-**v0.3.1** (`versionName "0.3.1"`, `versionCode 6` in `app/build.gradle`);
+**v0.3.2** (`versionName "0.3.2"`, `versionCode 7` in `app/build.gradle`);
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 

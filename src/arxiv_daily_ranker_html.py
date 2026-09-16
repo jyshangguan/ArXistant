@@ -27,7 +27,7 @@ def _fetch_url(url, timeout=45, attempts=3):
     for attempt in range(1, attempts + 1):
         try:
             request = urllib.request.Request(
-                url, headers={'User-Agent': 'ArXistant/0.3.1 (personal arXiv reader)'}
+                url, headers={'User-Agent': 'ArXistant/0.3.2 (personal arXiv reader)'}
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = response.read()
