@@ -4180,8 +4180,37 @@ SEARCH_HTML = """<!DOCTYPE html>
     h2 { font-size: 1.1em; margin-top: 0; }
     h2 a { color: #b31b1b; text-decoration: none; }
     h2 a:hover { text-decoration: underline; }
-    .syntax-hint { font-size: 0.78em; color: #888; margin: -14px 2px 18px 2px; line-height: 1.7; }
-    .syntax-hint code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.92em; background: #f0f0f0; border: 1px solid #e2e2e2; border-radius: 4px; padding: 0 4px; color: #555; white-space: nowrap; }
+    /* Token notice: explains how to enable search before the user tries it. */
+    .token-banner { margin: 20px 0 0; padding: 13px 16px; border: 1px solid #efd08a; border-left: 4px solid #e0a52f; background: #fffbef; border-radius: 8px; }
+    .token-banner > strong { color: #7a5400; font-size: 0.92em; }
+    .token-banner p, .token-banner ol { font-size: 0.84em; color: #6d5622; margin: 9px 0 0; line-height: 1.65; }
+    .token-banner ol { padding-left: 20px; }
+    .token-banner li { margin: 4px 0; }
+    .token-banner code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.95em; background: #fff; border: 1px solid #ecd9ae; border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+    .token-banner a { color: #b31b1b; }
+
+    /* Search syntax: a foldable card with an aligned field table instead of
+       one run-on paragraph, and clear space below the search box. */
+    .syntax-card { margin: 20px 0 24px; border: 1px solid #e4e4e4; border-radius: 8px; background: #fafafa; }
+    .syntax-card > summary { cursor: pointer; list-style: none; padding: 10px 14px; font-size: 0.86em; font-weight: 600; color: #555; user-select: none; }
+    .syntax-card > summary::-webkit-details-marker { display: none; }
+    .syntax-card > summary::before { content: "▸ "; color: #b31b1b; }
+    .syntax-card[open] > summary::before { content: "▾ "; }
+    .syntax-card > summary:hover { color: #b31b1b; }
+    .syntax-body { padding: 2px 14px 14px; border-top: 1px solid #ececec; }
+    .syntax-lead { font-size: 0.84em; color: #666; margin: 11px 0 13px; }
+    .syntax-lead code, .syntax-note code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.95em; background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 0 5px; color: #555; }
+    .syntax-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 9px 20px; margin: 0 0 13px; }
+    /* Fixed first column so every description starts at the same x — a
+       reference table, not a row of differently-sized chips. */
+    .syntax-row { display: grid; grid-template-columns: 120px 1fr; gap: 9px; align-items: baseline; font-size: 0.84em; }
+    .syntax-row code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.95em; color: #b31b1b; white-space: nowrap; }
+    .syntax-row span { color: #666; }
+    .syntax-note { font-size: 0.8em; color: #888; margin: 0 0 13px; }
+    .syntax-example { font-size: 0.84em; color: #666; background: #fff; border: 1px dashed #ccc; border-radius: 6px; padding: 9px 11px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .syntax-example > code { font-family: "SF Mono", Monaco, Consolas, monospace; color: #333; word-break: break-word; }
+    .syntax-try { margin-left: auto; flex: 0 0 auto; background: #b31b1b; color: #fff; border: none; border-radius: 5px; padding: 4px 13px; font-size: 0.95em; cursor: pointer; }
+    .syntax-try:hover { background: #8a1515; }
     .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
     .paper:hover { background: #f5f5f5; }
     .score-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
@@ -4198,7 +4227,7 @@ SEARCH_HTML = """<!DOCTYPE html>
     .save-btn:hover { opacity: 0.9; }
     .search-box { flex: 1; min-width: 200px; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; box-sizing: border-box; }
     .search-box:focus { outline: none; border-color: #b31b1b; }
-    .search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .search-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .search-btn { padding: 8px 20px; background: #b31b1b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95em; font-weight: bold; }
     .search-btn:hover { background: #8a1515; }
     .search-btn:disabled { background: #ccc; cursor: not-allowed; }
@@ -4224,7 +4253,27 @@ SEARCH_HTML = """<!DOCTYPE html>
     <input type="text" class="search-box" id="searchInput" placeholder="Keywords, or field:value — e.g. first_author:&quot;Shangguan&quot; year:2018" onkeydown="if(event.key==='Enter')doSearch()">
     <button class="search-btn" id="searchBtn" onclick="doSearch()">🔍 Search</button>
   </div>
-  <p class="syntax-hint" id="syntaxHint"></p>
+  <div id="tokenBanner"></div>
+
+  <details class="syntax-card" id="syntaxCard" open>
+    <summary>Search syntax</summary>
+    <div class="syntax-body">
+      <p class="syntax-lead">
+        Plain words search every field, and a space between terms means
+        <strong>AND</strong>. Scope a term with <code>field:value</code>:
+      </p>
+      <div class="syntax-grid" id="syntaxGrid"></div>
+      <p class="syntax-note">
+        Quote multi-word phrases (<code>abs:"AGN feedback"</code>). Combine
+        clauses with <code>AND</code> / <code>OR</code> / <code>ANDNOT</code>.
+      </p>
+      <div class="syntax-example">
+        <span>Example:</span>
+        <code id="syntaxExample">first_author:"Shangguan" year:2018 abs:"AGN feedback"</code>
+        <button class="syntax-try" id="syntaxTry" type="button">Try it</button>
+      </div>
+    </div>
+  </details>
 
   <p class="stats" id="stats">Enter a query and click Search.</p>
   <div id="results"></div>
@@ -4241,27 +4290,69 @@ SEARCH_HTML = """<!DOCTYPE html>
     // everything the old arXiv option did (ADS indexes arXiv papers) and it
     // adds journal-only records, metadata, and citation counts. The
     // /api/arxiv/search endpoint remains for the Chat page lookup.
-    document.getElementById('syntaxHint').innerHTML =
-      'Plain words search every field; a space between terms means AND. ' +
-      'Scope with fields: <code>first_author:</code> · <code>author:</code> · ' +
-      '<code>title:</code> · <code>abs:</code> · <code>year:2018</code> (or ' +
-      '<code>year:2018-2020</code>) · <code>arXiv:1802.08364</code> · ' +
-      '<code>bibcode:</code> · <code>property:refereed</code>; combine with ' +
-      '<code>AND</code> / <code>OR</code> / <code>ANDNOT</code>. Example: ' +
-      '<code>first_author:"Shangguan" year:2018 abs:"AGN feedback"</code>';
+    const SYNTAX_FIELDS = [
+      ['first_author:', 'first (lead) author'],
+      ['author:', 'any author'],
+      ['title:', 'title words'],
+      ['abs:', 'abstract words'],
+      ['year:', '2018, or a range: 2018-2020'],
+      ['arXiv:', 'by arXiv ID'],
+      ['bibcode:', 'by ADS bibcode'],
+      ['doi:', 'by DOI'],
+      ['keyword:', 'author keywords'],
+      ['property:', 'e.g. refereed']
+    ];
+    document.getElementById('syntaxGrid').innerHTML = SYNTAX_FIELDS.map(function (f) {
+      return '<div class="syntax-row"><code>' + f[0] + '</code><span>' + f[1] + '</span></div>';
+    }).join('');
 
-    // Searching now needs the ADS token; surface its absence before the
-    // user types a query instead of as a 503 after they hit Search.
+    document.getElementById('syntaxTry').addEventListener('click', function () {
+      document.getElementById('searchInput').value =
+        document.getElementById('syntaxExample').textContent;
+      doSearch();
+    });
+
+    // Searching needs the ADS / SciX token. Explain how to add one up front
+    // instead of letting the first search fail with an API error.
+    function renderTokenBanner(state) {
+      const el = document.getElementById('tokenBanner');
+      const stats = document.getElementById('stats');
+      if (state === 'ok') { el.innerHTML = ''; return; }
+      if (state === 'offline') {
+        el.innerHTML =
+          '<div class="token-banner">' +
+          '<strong>Cannot reach the ArXistant server</strong>' +
+          '<p>Start the server from the extension popup, then reload this page.</p>' +
+          '</div>';
+        stats.textContent = 'Search is unavailable until the server is running.';
+        return;
+      }
+      el.innerHTML =
+        '<div class="token-banner">' +
+        '<strong>ADS / SciX token not set — search will not work until you add one</strong>' +
+        '<ol>' +
+        '<li>Get a free token at ' +
+        '<a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">ui.adsabs.harvard.edu</a> ' +
+        '(sign in, then Account → API Token).</li>' +
+        '<li>Open the ArXistant extension Settings — from the popup, or by ' +
+        'right-clicking the toolbar icon and choosing Options.</li>' +
+        '<li>Expand <strong>ADS / SciX</strong>, paste the token, and click ' +
+        '<strong>Save Token</strong>. It is verified immediately.</li>' +
+        '</ol>' +
+        '<p>Then reload this page. The token stays in your local data ' +
+        'directory with owner-only file permissions.</p>' +
+        '</div>';
+      stats.textContent = 'Search is unavailable until the ADS / SciX token is set (see above).';
+    }
+
     (async function checkToken() {
       try {
         const resp = await fetch('/api/ads/token');
         const data = await resp.json();
-        if (data && data.has_token === false) {
-          document.getElementById('stats').innerHTML =
-            '⚠️ ADS / SciX search needs a token — open the ArXistant extension ' +
-            'Settings, expand the <strong>ADS / SciX</strong> section, and save one.';
-        }
-      } catch (e) { /* the search itself will surface server problems */ }
+        renderTokenBanner(data && data.has_token === true ? 'ok' : 'missing');
+      } catch (e) {
+        renderTokenBanner('offline');
+      }
     })();
 
     async function doSearch() {

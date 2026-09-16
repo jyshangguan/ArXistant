@@ -243,29 +243,64 @@ class SearchPageHtmlTests(unittest.TestCase):
         self.assertIn("<title>Search Papers</title>", self.HTML)
         self.assertNotIn("Search arXiv", self.HTML)
 
-    def test_syntax_hint_is_static_and_shows_ads_syntax(self):
-        # ADS / SciX is the single source; the hint is one static string
-        # (no per-source swapping machinery anymore).
-        self.assertIn('id="syntaxHint"', self.HTML)
-        self.assertIn("getElementById('syntaxHint').innerHTML", self.HTML)
+    def test_syntax_is_a_foldable_card_not_a_run_on_paragraph(self):
+        self.assertIn('<details class="syntax-card" id="syntaxCard" open>',
+                      self.HTML)
+        self.assertIn("<summary>Search syntax</summary>", self.HTML)
+        self.assertIn('id="syntaxGrid"', self.HTML)
+        self.assertIn("syntax-row", self.HTML)
+        # The old single dense paragraph is gone.
+        self.assertNotIn("syntax-hint", self.HTML)
         self.assertNotIn("SYNTAX_HINTS", self.HTML)
         self.assertNotIn('name="source"', self.HTML)
 
-    def test_ads_examples_are_shown(self):
-        for example in ("first_author:", "author:", "title:", "abs:",
-                        "year:2018", "year:2018-2020", "arXiv:1802.08364",
-                        "bibcode:", "property:refereed",
-                        'first_author:"Shangguan" year:2018 abs:"AGN feedback"'):
-            self.assertIn(example, self.HTML)
+    def test_ads_fields_are_listed_as_aligned_rows(self):
+        self.assertIn("SYNTAX_FIELDS", self.HTML)
+        for field in ("first_author:", "author:", "title:", "abs:", "year:",
+                      "arXiv:", "bibcode:", "doi:", "keyword:", "property:"):
+            self.assertIn(f"['{field}'", self.HTML)
+
+    def test_syntax_card_has_space_below_the_search_box(self):
+        # The old hint used a negative top margin (-14px) that pulled it up
+        # into the search box; spacing now comes from the card itself.
+        self.assertNotIn("margin: -14px", self.HTML)
+        self.assertIn(".syntax-card { margin: 20px 0 24px;", self.HTML)
+        # The search row no longer adds its own cramped bottom margin.
+        row_css = self.HTML.split(".search-row {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("margin-bottom", row_css)
 
     def test_search_calls_the_ads_endpoint_only(self):
         self.assertIn("fetch('/api/ads/search?q='", self.HTML)
         self.assertNotIn("'/api/' + source + '/search'", self.HTML)
         self.assertNotIn("arXiv API", self.HTML)
 
-    def test_missing_token_is_surfaced_before_searching(self):
+    def test_example_query_can_be_run_directly(self):
+        self.assertIn('id="syntaxExample"', self.HTML)
+        self.assertIn(
+            'first_author:"Shangguan" year:2018 abs:"AGN feedback"', self.HTML)
+        self.assertIn('id="syntaxTry"', self.HTML)
+        self.assertIn("doSearch();", self.HTML)
+
+    def test_token_banner_explains_how_to_set_the_token(self):
+        self.assertIn('<div id="tokenBanner"></div>', self.HTML)
+        self.assertIn("renderTokenBanner", self.HTML)
         self.assertIn("/api/ads/token", self.HTML)
-        self.assertIn("checkToken", self.HTML)
+        self.assertIn("ADS / SciX token not set", self.HTML)
+        # Where to get a token, where to paste it, and what to do after.
+        self.assertIn("ui.adsabs.harvard.edu/user/settings/token", self.HTML)
+        self.assertIn("Save Token", self.HTML)
+        self.assertIn("reload this page", self.HTML)
+        # The steps are an ordered list, not a run-on sentence.
+        self.assertIn("<ol>", self.HTML)
+        self.assertIn("<li>", self.HTML)
+
+    def test_token_banner_is_separate_from_the_search_status_line(self):
+        # doSearch rewrites #stats; the banner lives in its own element so the
+        # token explanation is never clobbered by a search.
+        self.assertIn("const el = document.getElementById('tokenBanner');",
+                      self.HTML)
+        self.assertIn('id="stats"', self.HTML)
+        self.assertIn("token-banner", self.HTML)
 
     def test_placeholder_mentions_fielded_format(self):
         self.assertIn("first_author:&quot;Shangguan&quot;", self.HTML)
