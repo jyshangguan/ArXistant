@@ -4250,7 +4250,7 @@ SEARCH_HTML = """<!DOCTYPE html>
   <h1>🔍 Search Papers</h1>
 
   <div class="search-row">
-    <input type="text" class="search-box" id="searchInput" placeholder="Keywords, or field:value — e.g. first_author:&quot;Shangguan&quot; year:2018" onkeydown="if(event.key==='Enter')doSearch()">
+    <input type="text" class="search-box" id="searchInput" placeholder="Keywords, or field:value — e.g. first_author:Greene author:Ho year:2005" onkeydown="if(event.key==='Enter')doSearch()">
     <button class="search-btn" id="searchBtn" onclick="doSearch()">🔍 Search</button>
   </div>
   <div id="tokenBanner"></div>
@@ -4269,7 +4269,7 @@ SEARCH_HTML = """<!DOCTYPE html>
       </p>
       <div class="syntax-example">
         <span>Example:</span>
-        <code id="syntaxExample">first_author:"Shangguan" year:2018 abs:"AGN feedback"</code>
+        <code id="syntaxExample">first_author:Greene author:Ho year:2005</code>
         <button class="syntax-try" id="syntaxTry" type="button">Try it</button>
       </div>
     </div>

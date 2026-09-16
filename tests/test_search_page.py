@@ -105,7 +105,12 @@ class SearchArxivApiTests(unittest.TestCase):
 
 
 class BuildAdsQueryTests(unittest.TestCase):
-    def test_user_example_passes_through_verbatim(self):
+    def test_documented_example_passes_through_verbatim(self):
+        # The example shown in the page's Search syntax card and docs.
+        q = "first_author:Greene author:Ho year:2005"
+        self.assertEqual(server.build_ads_query(q), q)
+
+    def test_quoted_phrases_pass_through_verbatim(self):
         q = 'first_author:"Shangguan" year:2018 abs:"AGN feedback"'
         self.assertEqual(server.build_ads_query(q), q)
 
@@ -199,7 +204,9 @@ class SearchPageEndpointTests(unittest.TestCase):
         self.assertEqual(data["count"], 1)
         self.assertEqual(data["papers"][0]["id"], "1802.08364")
 
-    def test_ads_endpoint_passes_fielded_query_verbatim(self):
+    def test_ads_endpoint_encodes_quoted_fielded_query(self):
+        # Quotes and spaces must survive URL encoding (quote_plus): this is
+        # why the test uses a quoted phrase rather than the page's example.
         ads_response = json.dumps({"response": {"numFound": 1, "docs": [
             {"title": ["T"], "author": ["A"], "abstract": "B",
              "bibcode": "b", "year": "2018", "identifier": []}]}})
@@ -237,6 +244,16 @@ class SearchPageEndpointTests(unittest.TestCase):
 
 class SearchPageHtmlTests(unittest.TestCase):
     HTML = server.SEARCH_HTML
+    # The query shown in the syntax card and the placeholder; the docs use the
+    # same one, and test_documented_example_matches_the_docs keeps them agreed.
+    EXAMPLE_QUERY = "first_author:Greene author:Ho year:2005"
+
+    def test_documented_example_matches_the_docs(self):
+        guide = (PROJECT_ROOT / "docs" / "user-guide.md").read_text(
+            encoding="utf-8")
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn(f"`{self.EXAMPLE_QUERY}`", guide)
+        self.assertIn(f"`{self.EXAMPLE_QUERY}`", readme)
 
     def test_page_is_renamed(self):
         self.assertIn("<h1>🔍 Search Papers</h1>", self.HTML)
@@ -277,7 +294,7 @@ class SearchPageHtmlTests(unittest.TestCase):
     def test_example_query_can_be_run_directly(self):
         self.assertIn('id="syntaxExample"', self.HTML)
         self.assertIn(
-            'first_author:"Shangguan" year:2018 abs:"AGN feedback"', self.HTML)
+            f'<code id="syntaxExample">{self.EXAMPLE_QUERY}</code>', self.HTML)
         self.assertIn('id="syntaxTry"', self.HTML)
         self.assertIn("doSearch();", self.HTML)
 
@@ -303,7 +320,9 @@ class SearchPageHtmlTests(unittest.TestCase):
         self.assertIn("token-banner", self.HTML)
 
     def test_placeholder_mentions_fielded_format(self):
-        self.assertIn("first_author:&quot;Shangguan&quot;", self.HTML)
+        self.assertIn(
+            'placeholder="Keywords, or field:value — e.g. '
+            + self.EXAMPLE_QUERY + '"', self.HTML)
 
     def test_navigation_links_use_the_new_address(self):
         for page in (server.DATABASE_VIEWER_HTML, server.CHAT_PAGE_HTML,

@@ -305,22 +305,23 @@ the top of a long result list.
 ### Search syntax
 
 Plain keywords search every field; a space between terms means AND. A term
-can be scoped to one category with `field:value` — the hint under the search
-box shows the same syntax:
+can be scoped to one category with `field:value` — the **Search syntax** card
+under the search box lists the same fields:
 
 | Example | Meaning |
 |---|---|
-| `first_author:"Shangguan"` | first (lead) author |
-| `author:"Shangguan"` | any author |
+| `first_author:Greene` | first (lead) author |
+| `author:Ho` | any author |
 | `title:quasar` | title |
 | `abs:"AGN feedback"` | abstract phrase |
-| `year:2018` | year (or `year:2018-2020`, `year:[2018 TO 2020]`) |
+| `year:2005` | year (or `year:2005-2010`, `year:[2005 TO 2010]`) |
 | `arXiv:1802.08364` | paper by its arXiv ID |
 | `bibcode:2018ApJ...854..158S` | paper by its bibcode |
 | `property:refereed` | only refereed papers |
-| `first_author:"Shangguan" year:2018 abs:"AGN feedback"` | all must match |
+| `first_author:Greene author:Ho year:2005` | all must match |
 
-The Saved-Papers-style `id:` token is remapped to ADS's `identifier:` field
+Single-word values need no quotes; quote any value that contains spaces. The
+Saved-Papers-style `id:` token is remapped to ADS's `identifier:` field
 automatically; `tag:` and `note:` have no ADS equivalent (they filter your
 local library only).
 

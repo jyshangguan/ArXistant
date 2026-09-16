@@ -36,9 +36,9 @@ personal preferences remain on your computer.
 - **Local paper database** — search saved papers, maintain notes, and remove
   records through a browser interface.
 - **ADS / SciX search** — find papers (fielded queries like
-  `first_author:"Shangguan" year:2018`) and save, tag, or open them in Chat
-  without leaving ArXistant, with automatic retries when a source is slow or
-  rate-limited.
+  `first_author:Greene author:Ho year:2005`) and save, tag, or open them in
+  Chat without leaving ArXistant, with automatic retries when a source is slow
+  or rate-limited.
 - **SciXplorer integration** — a small ArXistant panel on
   [scixplorer.org](https://scixplorer.org/) paper pages shows the abstract,
   saves the paper, and opens it in Chat; journal-only papers are stored by
