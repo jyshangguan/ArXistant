@@ -1,10 +1,13 @@
-"""Tests for the Search page: rename, arXiv fielded pass-through, ADS fields.
+"""Tests for the Search page: rename, ADS-only source, fielded queries.
 
-The page moved from /search-arxiv.html to /search.html (it stopped being
-arXiv-only long ago), the arXiv query builder must pass fielded queries
-through raw instead of wrapping them in all: (which produced nonsense like
-all:au:Shangguan), and ADS queries keep the user's field:value format with
-only the useless id: prefix remapped to identifier:.
+The page moved from /search-arxiv.html to /search.html and now searches a
+single source, ADS / SciX (its fielded syntax covers arXiv papers, which ADS
+indexes, plus journal-only records and metadata). The /api/arxiv/search
+endpoint is kept — the Chat page uses it to look up papers pinned by ID — so
+its query builder stays covered here: fielded queries must pass through raw
+instead of being wrapped in all: (which produced nonsense like
+all:au:Shangguan). ADS queries keep the user's field:value format with only
+the useless id: prefix remapped to identifier:.
 """
 
 import json
@@ -216,6 +219,21 @@ class SearchPageEndpointTests(unittest.TestCase):
             "+abs%3A%22AGN+feedback%22", url)
         self.assertEqual(data["count"], 1)
 
+    def test_arxiv_endpoint_is_kept_for_the_chat_page_lookup(self):
+        # The Search page no longer offers the arXiv source, but the Chat
+        # page's pinFromUrl() resolves unknown arXiv IDs through this
+        # endpoint (it needs no ADS token), so it must keep working.
+        with mock.patch.object(server, "_fetch_with_retries",
+                               return_value=ARXIV_ENTRY.decode()) as fr:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{self.port}"
+                    "/api/arxiv/search?q=au:Shangguan") as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        url = fr.call_args[0][0]
+        self.assertIn("search_query=au:Shangguan&", url)
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["papers"][0]["id"], "1802.08364")
+
 
 class SearchPageHtmlTests(unittest.TestCase):
     HTML = server.SEARCH_HTML
@@ -225,17 +243,13 @@ class SearchPageHtmlTests(unittest.TestCase):
         self.assertIn("<title>Search Papers</title>", self.HTML)
         self.assertNotIn("Search arXiv", self.HTML)
 
-    def test_syntax_hint_swaps_with_selected_source(self):
+    def test_syntax_hint_is_static_and_shows_ads_syntax(self):
+        # ADS / SciX is the single source; the hint is one static string
+        # (no per-source swapping machinery anymore).
         self.assertIn('id="syntaxHint"', self.HTML)
-        self.assertIn("SYNTAX_HINTS", self.HTML)
-        self.assertIn("updateSyntaxHint()", self.HTML)
-        self.assertIn("addEventListener('change', updateSyntaxHint)",
-                      self.HTML)
-
-    def test_arxiv_examples_are_shown(self):
-        for example in ("au:", "ti:", "abs:", "cat:",
-                        'ti:"dark matter"', "ANDNOT"):
-            self.assertIn(example, self.HTML)
+        self.assertIn("getElementById('syntaxHint').innerHTML", self.HTML)
+        self.assertNotIn("SYNTAX_HINTS", self.HTML)
+        self.assertNotIn('name="source"', self.HTML)
 
     def test_ads_examples_are_shown(self):
         for example in ("first_author:", "author:", "title:", "abs:",
@@ -244,8 +258,16 @@ class SearchPageHtmlTests(unittest.TestCase):
                         'first_author:"Shangguan" year:2018 abs:"AGN feedback"'):
             self.assertIn(example, self.HTML)
 
+    def test_search_calls_the_ads_endpoint_only(self):
+        self.assertIn("fetch('/api/ads/search?q='", self.HTML)
+        self.assertNotIn("'/api/' + source + '/search'", self.HTML)
+        self.assertNotIn("arXiv API", self.HTML)
+
+    def test_missing_token_is_surfaced_before_searching(self):
+        self.assertIn("/api/ads/token", self.HTML)
+        self.assertIn("checkToken", self.HTML)
+
     def test_placeholder_mentions_fielded_format(self):
-        self.assertIn("au:&quot;Shangguan&quot;", self.HTML)
         self.assertIn("first_author:&quot;Shangguan&quot;", self.HTML)
 
     def test_navigation_links_use_the_new_address(self):

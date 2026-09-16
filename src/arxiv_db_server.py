@@ -4199,9 +4199,6 @@ SEARCH_HTML = """<!DOCTYPE html>
     .search-box { flex: 1; min-width: 200px; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; box-sizing: border-box; }
     .search-box:focus { outline: none; border-color: #b31b1b; }
     .search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-    .source-toggle { display: flex; gap: 16px; align-items: center; margin-bottom: 20px; }
-    .source-toggle label { cursor: pointer; font-size: 0.95em; }
-    .source-toggle input { margin-right: 4px; cursor: pointer; }
     .search-btn { padding: 8px 20px; background: #b31b1b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95em; font-weight: bold; }
     .search-btn:hover { background: #8a1515; }
     .search-btn:disabled { background: #ccc; cursor: not-allowed; }
@@ -4224,12 +4221,8 @@ SEARCH_HTML = """<!DOCTYPE html>
   <h1>🔍 Search Papers</h1>
 
   <div class="search-row">
-    <input type="text" class="search-box" id="searchInput" placeholder="Keywords, or field:value — e.g. au:&quot;Shangguan&quot; / first_author:&quot;Shangguan&quot; year:2018" onkeydown="if(event.key==='Enter')doSearch()">
+    <input type="text" class="search-box" id="searchInput" placeholder="Keywords, or field:value — e.g. first_author:&quot;Shangguan&quot; year:2018" onkeydown="if(event.key==='Enter')doSearch()">
     <button class="search-btn" id="searchBtn" onclick="doSearch()">🔍 Search</button>
-  </div>
-  <div class="source-toggle">
-    <label><input type="radio" name="source" value="arxiv" checked> arXiv API</label>
-    <label><input type="radio" name="source" value="ads"> ADS / SciX</label>
   </div>
   <p class="syntax-hint" id="syntaxHint"></p>
 
@@ -4244,46 +4237,46 @@ SEARCH_HTML = """<!DOCTYPE html>
     // use the search date.
     document.querySelector('h1').setAttribute('data-date', new Date().toISOString().slice(0, 10));
 
-    // Syntax examples swap with the selected source so the hint always
-    // matches the API that will receive the query.
-    const SYNTAX_HINTS = {
-      arxiv: 'Plain words search every field. Scope a term with a prefix: ' +
-        '<code>au:</code> author, <code>ti:</code> title, <code>abs:</code> abstract, ' +
-        '<code>cat:</code> category, <code>all:</code> everything; quote phrases ' +
-        '(<code>ti:"dark matter"</code>) and join terms with <code>AND</code> / ' +
-        '<code>OR</code> / <code>ANDNOT</code>. Examples: <code>au:Shangguan</code> · ' +
-        '<code>abs:"AGN feedback"</code> · <code>cat:astro-ph.GA AND abs:"star formation"</code>',
-      ads: 'Plain words search every field; a space between terms means AND. ' +
-        'Scope with fields: <code>first_author:</code> · <code>author:</code> · ' +
-        '<code>title:</code> · <code>abs:</code> · <code>year:2018</code> (or ' +
-        '<code>year:2018-2020</code>) · <code>arXiv:1802.08364</code> · ' +
-        '<code>bibcode:</code> · <code>property:refereed</code>; combine with ' +
-        '<code>AND</code> / <code>OR</code> / <code>ANDNOT</code>. Example: ' +
-        '<code>first_author:"Shangguan" year:2018 abs:"AGN feedback"</code>'
-    };
-    function updateSyntaxHint() {
-      const source = document.querySelector('input[name="source"]:checked');
-      const el = document.getElementById('syntaxHint');
-      if (source && el) el.innerHTML = SYNTAX_HINTS[source.value] || '';
-    }
-    document.querySelectorAll('input[name="source"]').forEach(radio =>
-      radio.addEventListener('change', updateSyntaxHint));
-    updateSyntaxHint();
+    // ADS / SciX is the single search source. Its fielded syntax covers
+    // everything the old arXiv option did (ADS indexes arXiv papers) and it
+    // adds journal-only records, metadata, and citation counts. The
+    // /api/arxiv/search endpoint remains for the Chat page lookup.
+    document.getElementById('syntaxHint').innerHTML =
+      'Plain words search every field; a space between terms means AND. ' +
+      'Scope with fields: <code>first_author:</code> · <code>author:</code> · ' +
+      '<code>title:</code> · <code>abs:</code> · <code>year:2018</code> (or ' +
+      '<code>year:2018-2020</code>) · <code>arXiv:1802.08364</code> · ' +
+      '<code>bibcode:</code> · <code>property:refereed</code>; combine with ' +
+      '<code>AND</code> / <code>OR</code> / <code>ANDNOT</code>. Example: ' +
+      '<code>first_author:"Shangguan" year:2018 abs:"AGN feedback"</code>';
+
+    // Searching now needs the ADS token; surface its absence before the
+    // user types a query instead of as a 503 after they hit Search.
+    (async function checkToken() {
+      try {
+        const resp = await fetch('/api/ads/token');
+        const data = await resp.json();
+        if (data && data.has_token === false) {
+          document.getElementById('stats').innerHTML =
+            '⚠️ ADS / SciX search needs a token — open the ArXistant extension ' +
+            'Settings, expand the <strong>ADS / SciX</strong> section, and save one.';
+        }
+      } catch (e) { /* the search itself will surface server problems */ }
+    })();
 
     async function doSearch() {
       const q = document.getElementById('searchInput').value.trim();
       if (!q) return;
-      const source = document.querySelector('input[name="source"]:checked').value;
       const btn = document.getElementById('searchBtn');
       const stats = document.getElementById('stats');
       const results = document.getElementById('results');
 
       btn.disabled = true;
-      stats.textContent = 'Searching ' + source.toUpperCase() + '...';
+      stats.textContent = 'Searching ADS / SciX...';
       results.innerHTML = '<p class="loading">Loading results...</p>';
 
       try {
-        const resp = await fetch('/api/' + source + '/search?q=' + encodeURIComponent(q));
+        const resp = await fetch('/api/ads/search?q=' + encodeURIComponent(q));
         const data = await resp.json();
 
         if (data.error) {
@@ -4293,8 +4286,8 @@ SEARCH_HTML = """<!DOCTYPE html>
           return;
         }
 
-        stats.textContent = data.count + ' result' + (data.count !== 1 ? 's' : '') + ' from ' + source.toUpperCase();
-        await renderResults(data.papers, source);
+        stats.textContent = data.count + ' result' + (data.count !== 1 ? 's' : '') + ' from ADS / SciX';
+        await renderResults(data.papers, 'ads');
       } catch (e) {
         stats.textContent = 'Search failed.';
         results.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';

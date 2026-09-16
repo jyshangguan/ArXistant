@@ -28,7 +28,7 @@ The server health endpoint is
 | Saved Papers | `/database.html` | Search, annotate, and remove saved papers |
 | Chat | `/chat.html` | Read papers (tabs, highlights) and ask an LLM about them |
 | My Publications | `/publications.html` | Import and manage your publication list |
-| Search | `/search.html` | Find papers (arXiv or ADS/SciX); save, tag, or open them in Chat |
+| Search | `/search.html` | Find papers via ADS / SciX; save, tag, or open them in Chat |
 | ML Features | `/ml-features.html` | Inspect training state and ranking features |
 
 All addresses are served from `http://localhost:8765`.
@@ -261,11 +261,13 @@ folder you already sync with Dropbox/iCloud/OneDrive or the Nutstore desktop app
 
 ## Search
 
-The Search page queries two sources:
-
-- **arXiv search**, which does not require an ADS token.
-- **ADS / SciX search**, which adds ADS metadata (year, citation count,
-  bibcode, DOI) and requires a token.
+The Search page queries **ADS / SciX**, which indexes arXiv papers *and*
+journal-only records, and adds metadata (year, citation count, bibcode, DOI).
+It requires an
+[ADS token](https://ui.adsabs.harvard.edu/user/settings/token) — set it from
+the extension's **Settings → ADS / SciX** section (see
+[Installation](installation.html#ads-api-token)). Without a token, the page
+says so before you search.
 
 Results use the same card layout as the Daily page: the arXiv ID sits before
 the title, the ID links to arXiv, and the title links to AlphaXiv — or, for
@@ -278,14 +280,23 @@ every card carries the same action buttons as the daily list:
 - **💬** opens the paper directly in the Chat reader,
 - **🏷️** tags it (the paper is saved first if needed).
 
-All of these work for ADS-only records too: a paper is stored under its
-arXiv ID when the record has one, and under its ADS bibcode otherwise, so
-journal-only papers can be saved, tagged, and discussed exactly like arXiv
-papers (Chat grounds those discussions in the abstract — see
+Saving from the search page and saving from the Daily page produce the same
+record: a paper with an arXiv version is always stored under its arXiv ID —
+the same key the daily list uses — and journal-only papers are stored under
+their ADS bibcode. Saving a paper you already saved from the daily list
+updates that row instead of duplicating it, keeping its notes, tags, and
+highlights. Only the two informational fields differ: `date_fetched` records
+where the save came from (the list date on the Daily page, the search date
+here), and `relevance_score` is 0 when saved from search (the daily-page
+ranking score; the ML model trains on title and abstract only, so this does
+not affect learning).
+
+All of the save/tag/chat actions work for ADS-only records too (Chat grounds
+those discussions in the abstract — see
 [SciXplorer papers](#papers-from-scixplorerorg)). Only records with neither
 an arXiv ID nor a bibcode, which are rare, cannot be saved.
 
-Requests to arXiv and ADS are retried automatically when a source is slow or
+Requests to ADS are retried automatically when the source is slow or
 rate-limits the query, with the provider's `Retry-After` hint respected; if
 the source stays unavailable, the page shows a clear error message instead of
 a silent failure. A floating **▲** button at the bottom right returns you to
@@ -293,28 +304,9 @@ the top of a long result list.
 
 ### Search syntax
 
-Plain keywords search every field on both sources. A term can be scoped to
-one category with `field:value` — the example hint under the search box
-always shows the syntax of the selected source.
-
-**arXiv** (no token needed) uses the
-[arXiv API prefixes](https://info.arxiv.org/help/api/user-manual.html#query_details):
-
-| Example | Meaning |
-|---|---|
-| `au:Shangguan` | author |
-| `ti:"dark matter"` | title phrase (quote multi-word phrases) |
-| `abs:"AGN feedback"` | abstract phrase |
-| `cat:astro-ph.GA` | category |
-| `cat:astro-ph.GA AND abs:"star formation"` | both must match |
-| `ti:quasar ANDNOT abs:radio` | first term, excluding the second |
-
-Operators are `AND`, `OR`, `ANDNOT` (uppercase). A query that already uses a
-prefix or an operator is sent to arXiv as typed; plain keywords are wrapped
-in `all:` so they match every field.
-
-**ADS / SciX** (needs the token) accepts space-separated field clauses — a
-space between clauses means AND:
+Plain keywords search every field; a space between terms means AND. A term
+can be scoped to one category with `field:value` — the hint under the search
+box shows the same syntax:
 
 | Example | Meaning |
 |---|---|
@@ -328,9 +320,7 @@ space between clauses means AND:
 | `property:refereed` | only refereed papers |
 | `first_author:"Shangguan" year:2018 abs:"AGN feedback"` | all must match |
 
-The user's own combination works verbatim: `first_author:"Shangguan"
-year:2018 abs:"AGN feedback"` returns the 2018 AGN-feedback paper. The
-Saved-Papers-style `id:` token is remapped to ADS's `identifier:` field
+The Saved-Papers-style `id:` token is remapped to ADS's `identifier:` field
 automatically; `tag:` and `note:` have no ADS equivalent (they filter your
 local library only).
 
