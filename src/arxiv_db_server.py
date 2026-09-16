@@ -398,11 +398,211 @@ def deduplicate_custom_keywords():
 
 
 def load_ads_token():
-    """Load ADS API token from local file."""
+    """Load the ADS / SciX API token from the local file."""
     if not os.path.exists(ADS_TOKEN_PATH):
         return None
     with open(ADS_TOKEN_PATH, 'r', encoding='utf-8') as f:
         return f.read().strip()
+
+
+def save_ads_token(token):
+    """Persist the ADS / SciX API token (owner-only file); empty clears it."""
+    token = (token or "").strip()
+    if not token:
+        try:
+            os.remove(ADS_TOKEN_PATH)
+        except FileNotFoundError:
+            pass
+        return ""
+    os.makedirs(os.path.dirname(ADS_TOKEN_PATH) or ".", exist_ok=True)
+    with open(ADS_TOKEN_PATH, "w", encoding="utf-8") as f:
+        f.write(token)
+    try:
+        os.chmod(ADS_TOKEN_PATH, 0o600)
+    except OSError:
+        pass  # Non-POSIX filesystems may not support chmod.
+    return token
+
+
+# --- SciX / bibcode-keyed papers ---------------------------------------------
+#
+# Papers browsed on scixplorer.org are identified by their ADS bibcode (it is
+# the URL path of a scixplorer paper page). A paper's storage key follows one
+# rule everywhere: use its arXiv ID when the record has one, otherwise the
+# bibcode. The key lives in the existing saved_papers.arxiv_id column, so no
+# schema change is needed and the key space stays unified — a paper saved from
+# the Daily page by arXiv ID and the same paper saved from scixplorer collapse
+# into one row instead of duplicating.
+
+SCIX_API_BASE = "https://api.scixplorer.org/v1/search/query"
+SCIX_RESOLVE_FL = ("title,author,abstract,bibcode,year,arxiv,identifier,doi,"
+                   "citation_count,pubdate")
+
+# New-style arXiv IDs (YYMM.NNNNN) and old-style (archive/YYMMNNN).
+_ARXIV_KEY_RE = re.compile(r"^(?:\d{4}\.\d{4,5}|[a-z\-]+/\d{7})(v\d+)?$")
+# "arXiv:2307.11273" entries inside a record's identifier list.
+_ARXIV_IDENT_RE = re.compile(r"^arXiv:((?:\d{4}\.\d{4,5}|[a-z\-]+/\d{7}))(v\d+)?$",
+                             re.IGNORECASE)
+# ADS bibcodes built from new-style arXiv IDs: 2018arXiv180706209P.
+_ARXIV_BIBCODE_RE = re.compile(r"^\d{4}arXiv(\d{4})(\d{4,5})[A-Za-z]$")
+
+
+def is_arxiv_id(key):
+    """True when a paper storage key is an arXiv ID (new or old style)."""
+    return bool(_ARXIV_KEY_RE.match((key or "").strip()))
+
+
+def arxiv_id_from_bibcode(bibcode):
+    """Map an ADS arXiv bibcode (2018arXiv180706209P) back to 1807.06209.
+
+    Returns '' for bibcodes that are not arXiv records; the conversion lets
+    /api/save re-key stray arXiv bibcodes so one paper can never be stored
+    twice (once by arXiv ID, once by bibcode).
+    """
+    m = _ARXIV_BIBCODE_RE.match((bibcode or "").strip())
+    if not m:
+        return ""
+    return m.group(1) + "." + m.group(2)
+
+
+def _norm_ident(value):
+    """Normalize an identifier for exact matching (case/prefix/version-insensitive)."""
+    v = str(value or "").strip().lower()
+    if v.startswith("arxiv:"):
+        v = v[6:]
+    return re.sub(r"v\d+$", "", v)
+
+
+def arxiv_id_from_doc(doc):
+    """Extract a canonical (version-less) arXiv ID from a SciX/ADS doc.
+
+    The `arxiv` field is only populated on some records, but the identifier
+    list reliably carries an "arXiv:YYMM.NNNNN" entry whenever the record is
+    an arXiv paper or has an arXiv preprint version.
+    """
+    candidates = []
+    arxiv_field = doc.get("arxiv")
+    if isinstance(arxiv_field, str):
+        candidates.append(arxiv_field)
+    elif isinstance(arxiv_field, list):
+        candidates.extend(str(x) for x in arxiv_field if x)
+    for ident in doc.get("identifier") or []:
+        candidates.append(str(ident or ""))
+    for cand in candidates:
+        cand = cand.strip()
+        m = _ARXIV_IDENT_RE.match(cand)
+        if m:
+            return m.group(1)
+        if _ARXIV_KEY_RE.match(cand):
+            return re.sub(r"v\d+$", "", cand)
+    return arxiv_id_from_bibcode(doc.get("bibcode") or "")
+
+
+def paper_key_for_doc(doc):
+    """The storage key for a SciX/ADS doc: arXiv ID when present, else bibcode."""
+    key = arxiv_id_from_doc(doc)
+    if key:
+        return key
+    return str(doc.get("bibcode") or "").strip()
+
+
+def scix_paper_from_doc(doc):
+    """Map a SciX/ADS doc to the paper dict shape used by save/chat/search."""
+    def first(value):
+        if isinstance(value, list):
+            return str(value[0]) if value else ""
+        return str(value or "")
+
+    title = first(doc.get("title")).strip()
+    authors = doc.get("author") or []
+    if isinstance(authors, str):
+        authors = [authors]
+    year = str(doc.get("year") or "")
+    pubdate = first(doc.get("pubdate"))
+    if not year and len(pubdate) >= 4:
+        year = pubdate[:4]
+    key = paper_key_for_doc(doc)
+    return {
+        "id": key,
+        "title": title,
+        "authors": authors,
+        "abstract": first(doc.get("abstract")).strip(),
+        "year": year,
+        "bibcode": str(doc.get("bibcode") or "").strip(),
+        "doi": first(doc.get("doi")),
+        "citation_count": doc.get("citation_count") or 0,
+        "pubdate": pubdate,
+        "source": "scix",
+        "is_arxiv": is_arxiv_id(key),
+    }
+
+
+def scix_resolve(identifier):
+    """Resolve one bibcode / arXiv ID to a normalized paper dict via SciX.
+
+    Returns None when nothing matches exactly. Raises RuntimeError for
+    missing-token or network problems, ValueError for malformed input.
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        raise ValueError("No identifier provided")
+    # Bibcodes contain & . - and alphanumerics; arXiv IDs add / and the
+    # arXiv: prefix form. Anything else (spaces, quotes, slashes beyond one)
+    # cannot be a real identifier and is rejected before it reaches the URL.
+    if not re.match(r"^(?:arXiv:)?[A-Za-z0-9.&\-]+(?:/[A-Za-z0-9.\-]+)?$", identifier,
+                    re.IGNORECASE):
+        raise ValueError("Invalid identifier: " + repr(identifier))
+    token = load_ads_token()
+    if not token:
+        raise RuntimeError(
+            "No ADS token configured — add it in the extension's Settings "
+            "(ADS / SciX section) or in ads_token.txt")
+    params = {
+        "q": 'identifier:"%s"' % identifier,
+        "rows": 5,
+        "fl": SCIX_RESOLVE_FL,
+        "sort": "score desc",
+    }
+    url = SCIX_API_BASE + "?" + urllib.parse.urlencode(params)
+    data = json.loads(_fetch_with_retries(
+        url,
+        headers={"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token},
+        label="SciX",
+    ))
+    docs = (data.get("response") or {}).get("docs") or []
+    want = _norm_ident(identifier)
+    for doc in docs:
+        cands = [doc.get("bibcode") or ""]
+        cands.extend(str(x or "") for x in (doc.get("identifier") or []))
+        if want in {_norm_ident(x) for x in cands}:
+            return scix_paper_from_doc(doc)
+    return None
+
+
+def test_ads_token(token=None):
+    """Validate an ADS / SciX token with a minimal query. Returns numFound."""
+    token = (token or load_ads_token() or "").strip()
+    if not token:
+        raise RuntimeError("No ADS token configured")
+    params = {"q": "*:*", "rows": 0}
+    url = SCIX_API_BASE + "?" + urllib.parse.urlencode(params)
+    try:
+        data = json.loads(_fetch_with_retries(
+            url,
+            headers={"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token},
+            label="SciX", timeout=15))
+    except RuntimeError as e:
+        low = str(e).lower()
+        if "http 401" in low:
+            raise RuntimeError(
+                "SciX rejected the token (HTTP 401) — copy it again from "
+                "ui.adsabs.harvard.edu → Account → API Token")
+        if "http 403" in low:
+            raise RuntimeError(
+                "SciX refused the token (HTTP 403) — it may have expired")
+        raise
+    num = (data.get("response") or {}).get("numFound")
+    return int(num) if isinstance(num, int) else 0
 
 
 def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote server"):
@@ -437,13 +637,64 @@ def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote
     raise RuntimeError(f"{label} did not respond after {attempts} attempts ({last_error}).")
 
 
+# --- Search query builders (Search page) -------------------------------------
+#
+# Both sources accept field:value syntax in the search box; the builders only
+# decide what is passed through raw versus wrapped in a default field.
+
+# arXiv API field prefixes (documented lowercase) plus the submittedDate
+# range filter; a query using any of them — or an explicit boolean operator —
+# is an advanced query and must be passed through untouched instead of being
+# wrapped in all:, which would produce nonsense like all:au:Shangguan.
+_ARXIV_FIELD_RE = re.compile(
+    r"(?:^|\s)(all|ti|au|abs|co|jr|cat|rn|submittedDate):", re.I)
+_ARXIV_OPERATOR_RE = re.compile(r"\s(?:AND|OR|ANDNOT)\s")
+
+
+def build_arxiv_search_query(query):
+    """Return the search_query value for the arXiv API.
+
+    Plain keywords are wrapped in the all: prefix (every field). A query
+    that already scopes terms with field prefixes (au:, ti:, abs:, cat:,
+    submittedDate:, …) or boolean operators (AND / OR / ANDNOT) is passed
+    through raw, with known prefixes normalized to the documented lowercase
+    form.
+    """
+    query = (query or "").strip()
+    if not query:
+        return query
+    if _ARXIV_FIELD_RE.search(query) or _ARXIV_OPERATOR_RE.search(query):
+        return _ARXIV_FIELD_RE.sub(lambda m: m.group(0).lower(), query)
+    return "all:" + query
+
+
+# ADS's id: is an internal record id that never matches a paper identifier
+# (id:1802.08364 finds nothing); the field users mean is identifier:.
+_ADS_ID_FIELD_RE = re.compile(r"(^|\s)id:(?=\S)", re.I)
+
+
+def build_ads_query(query):
+    """Return the q value for the ADS / SciX API.
+
+    ADS natively understands space-separated field:value clauses (implicit
+    AND), quoted phrases, dash year ranges (year:2018-2020), and explicit
+    AND / OR / ANDNOT, so the query is passed through as typed — except the
+    id: prefix, which is remapped to identifier: so the Saved-Papers-style
+    id: token does the expected thing here too.
+    """
+    query = (query or "").strip()
+    if not query:
+        return query
+    return _ADS_ID_FIELD_RE.sub(lambda m: m.group(1) + "identifier:", query)
+
+
 def search_arxiv_api(query, max_results=20):
     """Search arXiv API and return list of paper dicts."""
     import xml.etree.ElementTree as ET
-    encoded_q = urllib.parse.quote(query)
+    search_q = build_arxiv_search_query(query)
     url = (
         f"https://export.arxiv.org/api/query?"
-        f"search_query=all:{encoded_q}&max_results={max_results}"
+        f"search_query={urllib.parse.quote(search_q, safe=':')}&max_results={max_results}"
         f"&sortBy=relevance&sortOrder=descending"
     )
     data = _fetch_with_retries(url, headers={'User-Agent': 'Mozilla/5.0'}, label="arXiv")
@@ -489,9 +740,12 @@ def search_ads_api(query, token, max_results=20):
     """Search ADS API and return list of paper dicts."""
     url = "https://api.adsabs.harvard.edu/v1/search/query"
     params = {
-        'q': query,
+        'q': build_ads_query(query),
         'rows': max_results,
-        'fl': 'title,author,abstract,bibcode,year,arxiv,doi,citation_count,pubdate',
+        # 'identifier' feeds the storage-key rule: papers with an arXiv
+        # version are keyed by their arXiv ID, the rest by bibcode.
+        'fl': 'title,author,abstract,bibcode,year,arxiv,identifier,doi,'
+              'citation_count,pubdate',
         'sort': 'score desc'
     }
     query_str = urllib.parse.urlencode(params)
@@ -508,14 +762,13 @@ def search_ads_api(query, token, max_results=20):
         abstract = doc.get('abstract', '') or ''
         bibcode = doc.get('bibcode', '')
         year = str(doc.get('year', ''))
-        arxiv = doc.get('arxiv', '')
         doi = doc.get('doi', [''])[0] if isinstance(doc.get('doi'), list) else doc.get('doi', '')
         citation_count = doc.get('citation_count', 0)
         pubdate = doc.get('pubdate', '')
 
-        arxiv_id = ''
-        if arxiv:
-            arxiv_id = arxiv if '.' in arxiv else ''
+        # Storage key: arXiv ID when the record has one, else the bibcode —
+        # the same rule scixplorer-saved papers follow.
+        arxiv_id = paper_key_for_doc(doc)
 
         papers.append({
             'id': arxiv_id,
@@ -527,7 +780,8 @@ def search_ads_api(query, token, max_results=20):
             'doi': doi,
             'citation_count': citation_count,
             'pubdate': pubdate,
-            'source': 'ads'
+            'source': 'ads',
+            'is_arxiv': is_arxiv_id(arxiv_id),
         })
 
     return papers
@@ -1080,6 +1334,31 @@ def _llm_http_error(code):
     return msg
 
 
+def _llm_net_error(exc):
+    """Translate a network-level LLM failure into an actionable message.
+
+    Providers behind load balancers (e.g. Aliyun MaaS) often drop the TCP
+    connection when the Authorization header is empty, which urllib reports
+    as a confusing 'Connection refused'. Detect that case explicitly.
+    """
+    text = str(exc)
+    low = text.lower()
+    if "connection refused" in low:
+        return ("Could not connect to the LLM provider. If the API key was "
+                "just added or changed, restart the ArXistant server so it "
+                "picks up the new key. If the key is unchanged, the provider "
+                "endpoint may be down or blocking this machine.")
+    if "connection reset" in low or "broken pipe" in low:
+        return ("The LLM provider closed the connection. This often means "
+                "the request was not authenticated — re-check the API key in "
+                "the extension's LLM Settings, then restart the server.")
+    if "timed out" in low or "timeout" in low:
+        return "The LLM provider did not respond in time — try again."
+    if "name or service not known" in low or "getaddrinfo" in low:
+        return "Could not resolve the LLM provider's address — check the base URL."
+    return text
+
+
 def _chat_completion(base_url, model, messages, temperature, api_key, tools=None):
     """One non-streaming OpenAI-compatible chat completion; returns parsed JSON."""
     url = base_url.strip().rstrip("/")
@@ -1144,6 +1423,158 @@ def search_library(query, limit=12):
     return out
 
 
+# --- Fielded search over saved papers (Saved Papers page) --------------------
+#
+# The Saved Papers search box accepts plain keywords (substring match across
+# title, authors, abstract, notes, and the paper ID) plus field:value tokens
+# that scope a term to one category:
+#
+#   tag:lrd            papers tagged exactly "lrd"
+#   author:shangguan   substring of the author list
+#   title:quasar       substring of the title
+#   abs:feedback       substring of the abstract
+#   note:followup      substring of your notes
+#   year:2023          publication year derived from the arXiv ID or bibcode
+#                      (year:2020-2024 selects an inclusive range)
+#   id:1802.08364      substring of the storage key (arXiv ID or bibcode;
+#                      arXiv:1802.08364 works as an alias)
+#
+# Values may be quoted (title:"dark matter"), multiple tokens AND together,
+# and unknown prefixes (e.g. https: in a URL) fall back to plain terms.
+
+SEARCH_FIELDS = ("tag", "author", "title", "abs", "note", "year", "id")
+_FIELD_ALIASES = {"arxiv": "id"}
+
+# field:"quoted value" | field:value | plain-term ("quoted" or bare)
+_QUERY_TOKEN_RE = re.compile(
+    r"([A-Za-z]+):(?:\"([^\"]*)\"|(\S*))|(\"[^\"]*\"|\S+)")
+
+_YEAR_VALUE_RE = re.compile(r"^(\d{4})(?:\s*-\s*(\d{4}))?$")
+
+
+def parse_fielded_query(query):
+    """Split a query into field-scoped values and plain terms.
+
+    Returns (fields, plain): fields is {field: [values]} for every known
+    field (empty lists when unused); plain is the list of unscoped terms.
+    Tolerant of partial input while typing ("tag:" with no value yet is
+    dropped, an unbalanced quote falls back to whitespace splitting).
+    """
+    fields = {f: [] for f in SEARCH_FIELDS}
+    plain = []
+    for match in _QUERY_TOKEN_RE.finditer(query or ""):
+        field, quoted, raw, plain_token = match.groups()
+        if field is not None:
+            value = (quoted if quoted is not None else (raw or "")).strip()
+            if not value:
+                continue  # a bare prefix — user is still typing
+            key = _FIELD_ALIASES.get(field.lower(), field.lower())
+            if key in fields:
+                fields[key].append(value)
+            else:
+                plain.append(match.group(0))  # e.g. a URL's https: prefix
+        elif plain_token:
+            term = plain_token.strip('"').strip()
+            if term:
+                plain.append(term)
+    return fields, plain
+
+
+def paper_year_from_key(key):
+    """Best-effort publication year from a paper's storage key.
+
+    New-style arXiv IDs (2609.12040 → 2026), old-style IDs
+    (math/0102001 → 2001), and ADS bibcodes (2020A&A...641A...6P → 2020,
+    including arXiv bibcodes like 2023arXiv230711273V) all encode the year.
+    Returns None when the key carries no year.
+    """
+    key = str(key or "").strip()
+    m = re.match(r"^(\d{4})[A-Za-z]", key)  # ADS bibcode: year + journal code
+    if m:
+        year = int(m.group(1))
+        if 1800 <= year <= 2100:
+            return year
+    m = re.match(r"^(\d{2})\d{2}\.\d{4,5}", key)  # new-style arXiv ID
+    if m:
+        yy = int(m.group(1))
+        return (1900 if yy >= 95 else 2000) + yy
+    m = re.match(r"^[A-Za-z\-]+/(\d{2})\d{4}", key)  # old-style arXiv ID
+    if m:
+        yy = int(m.group(1))
+        return (1900 if yy >= 95 else 2000) + yy
+    return None
+
+
+def _year_value_matches(year, value):
+    """True when a paper year satisfies year:VALUE (single or inclusive range)."""
+    m = _YEAR_VALUE_RE.match(str(value).strip())
+    if not m:
+        return False
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    if end < start:
+        start, end = end, start
+    return start <= year <= end
+
+
+def _paper_tags_set(paper):
+    return {t.strip().lower()
+            for t in str(paper.get("tags") or "").split(",") if t.strip()}
+
+
+def _paper_matches_fields(paper, fields):
+    """True when the paper satisfies every field-scoped value (AND)."""
+    low = {name: str(paper.get(name) or "").lower()
+           for name in ("title", "authors", "abstract", "notes", "arxiv_id")}
+    for value in fields["tag"]:
+        if value.strip().lower() not in _paper_tags_set(paper):
+            return False
+    for value in fields["author"]:
+        if value.lower() not in low["authors"]:
+            return False
+    for value in fields["title"]:
+        if value.lower() not in low["title"]:
+            return False
+    for value in fields["abs"]:
+        if value.lower() not in low["abstract"]:
+            return False
+    for value in fields["note"]:
+        if value.lower() not in low["notes"]:
+            return False
+    for value in fields["id"]:
+        if value.lower() not in low["arxiv_id"]:
+            return False
+    for value in fields["year"]:
+        year = paper_year_from_key(paper.get("arxiv_id"))
+        if year is None or not _year_value_matches(year, value):
+            return False
+    return True
+
+
+def _paper_matches_plain(paper, terms):
+    """True when every plain term appears in the searchable text (AND)."""
+    haystack = " ".join(
+        str(paper.get(name) or "")
+        for name in ("arxiv_id", "title", "authors", "abstract", "notes")
+    ).lower()
+    return all(term.lower() in haystack for term in terms)
+
+
+def search_saved_papers(query):
+    """Filter saved papers by plain keywords and/or field:value tokens."""
+    fields, plain = parse_fielded_query(query)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM saved_papers ORDER BY date_saved DESC")]
+    conn.close()
+    if not any(fields.values()) and not plain:
+        return rows
+    return [p for p in rows
+            if _paper_matches_fields(p, fields) and
+            (not plain or _paper_matches_plain(p, plain))]
+
+
 def run_tool(name, args):
     """Dispatch a chat tool. Returns (kind, value): kind 'text' or 'papers'."""
     try:
@@ -1202,7 +1633,7 @@ def run_chat_agent(base_url, model, messages, temperature, api_key, max_iters=4)
                 return {"unsupported": True}
             return http_error(e)
         except Exception as e:
-            return {"unsupported": False, "error": str(e)}
+            return {"unsupported": False, "error": _llm_net_error(e)}
         choice = (resp.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         tool_calls = msg.get("tool_calls") or []
@@ -1245,7 +1676,7 @@ def run_chat_agent(base_url, model, messages, temperature, api_key, max_iters=4)
     except urllib.error.HTTPError as e:
         return http_error(e)
     except Exception as e:
-        return {"unsupported": False, "error": str(e)}
+        return {"unsupported": False, "error": _llm_net_error(e)}
     choice = (resp.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
     return {"unsupported": False, "final": _strip_tool_markup(msg.get("content") or ""), "statuses": statuses}
@@ -1631,6 +2062,30 @@ ARXIV_HTML_URLS = (
 
 _SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
 
+# Cached full-text copies record the URL they were fetched from in this meta
+# tag. Copies without it predate the per-source <base> fix and are refreshed
+# once on next open.
+_FULLTEXT_SOURCE_RE = re.compile(
+    r'<meta\s+name="arxistant-fulltext-source"', re.I)
+
+
+def _fulltext_cache_current(path):
+    """True when a cached full-text copy records its source URL.
+
+    Legacy copies were written with an arxiv.org <base> even when the
+    document came from the ar5iv fallback. ar5iv references figures with
+    root-relative paths (/html/<id>/assets/fig.png) that resolve against
+    the <base> host, so those figures 404'd at arxiv.org — the reader
+    showed text without figures. Copies without the source meta are
+    refreshed once; if every source is unreachable, the stale copy is
+    still served rather than an error page.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return bool(_FULLTEXT_SOURCE_RE.search(f.read(8192)))
+    except OSError:
+        return False
+
 
 _TITLE_H1_RE = re.compile(r'<h1\b[^>]*ltx_title_document[^>]*>.*?</h1>', re.S | re.I)
 _FIRST_H1_RE = re.compile(r'<h1\b[^>]*>.*?</h1>', re.S | re.I)
@@ -1662,8 +2117,10 @@ def fetch_paper_fulltext(arxiv_id):
     """Return a local path to a sanitized HTML copy of the paper's full text.
 
     Prefers arxiv.org/html, falling back to ar5iv. Scripts are stripped, the
-    document title is cleaned of inline thanks/notes, and a <base> tag is
-    injected so relative assets resolve at the source. Cached.
+    document title is cleaned of inline thanks/notes, and a <base> tag
+    pointing at the URL that actually served the document is injected so
+    relative AND root-relative assets (figures) resolve exactly as they
+    would in a browser on the source site. Cached.
     """
     base = _safe_pdf_filename(arxiv_id)
     if base is None:
@@ -1671,8 +2128,11 @@ def fetch_paper_fulltext(arxiv_id):
     filename = base[:-4] + ".html"
     os.makedirs(FULLTEXT_CACHE_DIR, exist_ok=True)
     path = os.path.join(FULLTEXT_CACHE_DIR, filename)
+    stale_copy = None
     if os.path.exists(path) and os.path.getsize(path) > 0:
-        return path
+        if _fulltext_cache_current(path):
+            return path
+        stale_copy = path  # legacy format: refresh once, keep as a fallback
     last_err = None
     for tmpl in ARXIV_HTML_URLS:
         url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
@@ -1681,6 +2141,11 @@ def fetch_paper_fulltext(arxiv_id):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
+                # The exact document URL (after redirects). Root-relative
+                # asset paths resolve against its host: basing the document
+                # here is what makes ar5iv-served figures load instead of
+                # 404ing at arxiv.org.
+                final_url = getattr(resp, "geturl", lambda: url)()
         except Exception as e:
             last_err = e
             continue
@@ -1690,20 +2155,103 @@ def fetch_paper_fulltext(arxiv_id):
             continue
         html = _SCRIPT_RE.sub("", html)
         html = clean_fulltext_title(html)
-        base_href = "https://arxiv.org/html/" + urllib.parse.quote(arxiv_id, safe="/")
+        meta_tag = ('<meta name="arxistant-fulltext-source" content="'
+                    + html_escape(final_url, quote=True) + '">')
+        if re.search(r"<base\b[^>]*\shref\s*=", html, re.I):
+            # The source declares its own base. The first <base href> in a
+            # document wins, so injecting one in front of it would break
+            # the source's own asset resolution; only record the source.
+            inject = meta_tag
+        else:
+            inject = ('<base href="' + html_escape(final_url, quote=True)
+                      + '">' + meta_tag)
         if re.search(r"<head\b[^>]*>", html, re.I):
             html = re.sub(r"<head\b[^>]*>",
-                          lambda m: m.group(0) + '<base href="' + base_href + '">',
+                          lambda m: m.group(0) + inject,
                           html, count=1, flags=re.I)
         else:
-            html = '<base href="' + base_href + '">' + html
+            html = inject + html
         temp_path = f"{path}.{threading.get_ident()}.tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(html)
         os.replace(temp_path, path)
         return path
+    if stale_copy is not None:
+        return stale_copy
     raise ValueError("Could not fetch full text for " + arxiv_id +
                      (": " + str(last_err) if last_err else ""))
+
+
+def scix_abstract_card_html(key, paper=None, error=None):
+    """Build the reader page for a non-arXiv (bibcode-keyed) paper.
+
+    The Chat page loads this in its reader iframe instead of the arXiv full
+    text: same-origin, selectable, highlightable — grounding and highlights
+    work on the abstract. The body carries data-arx-abstract="true" so the
+    chat page's load-poll accepts it regardless of abstract length.
+    """
+    key = (key or "").strip()
+    safe_key = html_escape(key, quote=True)
+    bibcode = html_escape(((paper or {}).get("bibcode") or key), quote=True)
+    if error:
+        body = ("<p class='error'><strong>Could not load this SciX paper.</strong></p>"
+                f"<p>{html_escape(str(error))}</p>")
+    else:
+        p = paper or {}
+        title = html_escape(p.get("title") or ("SciX paper " + key))
+        authors = p.get("authors") or ""
+        if isinstance(authors, list):
+            authors = ", ".join(authors)
+        authors_html = ""
+        if authors:
+            authors_html = f"<p class='authors'>{html_escape(authors)}</p>"
+        abstract = (p.get("abstract") or "").strip()
+        abs_html = (f"<p class='abstract'>{html_escape(abstract)}</p>" if abstract
+                    else "<p class='abstract missing'>No abstract is available for this "
+                         "record on SciX.</p>")
+        year = html_escape(str(p.get("year") or ""))
+        year_html = f"<span class='badge'>{year}</span> " if year else ""
+        citations = p.get("citation_count") or 0
+        cite_html = (f"<span class='badge blue'>{int(citations)} citations</span> "
+                     if citations else "")
+        body = (
+            "<h1>" + title + "</h1>"
+            + authors_html
+            + "<p class='badges'>" + year_html + cite_html
+            + f"<span class='badge gray'>{bibcode}</span></p>"
+            + abs_html
+            + "<p class='hint'>Abstract-only record — ArXistant has no full text for "
+              "non-arXiv papers. Select any text to highlight it; ask the assistant "
+              "about this abstract.</p>"
+        )
+    link = ('https://scixplorer.org/abs/' + bibcode)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SciX {safe_key} — ArXistant</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         max-width: 720px; margin: 0 auto; padding: 28px 24px; line-height: 1.65; color: #333; }}
+  h1 {{ color: #1a1a1a; font-size: 1.25em; margin: 0 0 6px; }}
+  .authors {{ color: #555; margin: 0 0 10px; }}
+  .badges {{ margin: 0 0 16px; }}
+  .badge {{ display: inline-block; background: #b31b1b; color: white; padding: 2px 8px;
+            border-radius: 12px; font-size: 0.75em; font-weight: bold; margin-right: 4px; }}
+  .badge.blue {{ background: #1976d2; }}
+  .badge.gray {{ background: #555; }}
+  .abstract {{ font-size: 0.98em; }}
+  .abstract.missing {{ color: #888; font-style: italic; }}
+  .hint {{ margin-top: 20px; padding-top: 12px; border-top: 1px dashed #ccc;
+           color: #888; font-size: 0.85em; }}
+  .error {{ color: #c62828; }}
+</style>
+</head>
+<body data-arx-abstract="true">
+{body}
+<p class='hint'><a href="{link}" target="_blank" rel="noopener">Open this paper on scixplorer ↗</a></p>
+</body>
+</html>"""
 
 # --- End chat helpers --------------------------------------------------------
 
@@ -2206,13 +2754,21 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/chat.html":
             self._send_html(CHAT_PAGE_HTML)
 
-        elif path == "/search-arxiv.html":
-            html = SEARCH_ARXIV_HTML
+        elif path == "/search.html":
+            html = SEARCH_HTML
             if '<!-- save-button-embedded -->' not in html:
                 html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
             if '<!-- chat-link-embedded -->' not in html:
                 html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
             self._send_html(html)
+
+        elif path == "/search-arxiv.html":
+            # Old name from when the page only searched arXiv; keep bookmarks
+            # working with a permanent redirect to /search.html.
+            self.send_response(301)
+            self.send_header("Location", "/search.html")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
 
         elif path == "/api/arxiv/search":
             q = query.get("q", [""])[0]
@@ -2265,17 +2821,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"success": True, "paper": dict(row)})
 
         elif path == "/api/search":
-            q = query.get("q", [""])[0].lower()
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("""
-                SELECT * FROM saved_papers 
-                WHERE LOWER(title) LIKE ? OR LOWER(authors) LIKE ? OR LOWER(abstract) LIKE ? OR LOWER(notes) LIKE ?
-                ORDER BY date_saved DESC
-            """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
-            rows = [dict(r) for r in c.fetchall()]
-            conn.close()
+            # Plain keywords (title/authors/abstract/notes/id) plus optional
+            # field:value tokens: tag:, author:, title:, abs:, note:, year:,
+            # id: — see parse_fielded_query. Multiple tokens AND together.
+            q = query.get("q", [""])[0]
+            try:
+                rows = search_saved_papers(q)
+            except sqlite3.Error as e:
+                self._send_json({"papers": [], "count": 0, "query": q,
+                                 "error": str(e)}, 500)
+                return
             self._send_json({"papers": rows, "count": len(rows), "query": q})
 
         elif path == "/api/publications":
@@ -2349,6 +2904,46 @@ class Handler(BaseHTTPRequestHandler):
                 "key_storage": chat_key_storage(),
                 "keychain_available": arxistant_secrets.is_available(),
             })
+
+        elif path == "/api/ads/token":
+            self._send_json({
+                "success": True,
+                "has_token": bool(load_ads_token()),
+            })
+
+        elif path == "/api/scix/resolve":
+            # Accept ?q= plus the aliases callers naturally reach for.
+            ident = (query.get("q", [""])[0] or
+                     query.get("identifier", [""])[0] or
+                     query.get("bibcode", [""])[0] or
+                     query.get("arxiv_id", [""])[0]).strip()
+            # A stray arXiv bibcode is canonicalized before resolving so the
+            # response key always follows the storage-key rule.
+            converted = arxiv_id_from_bibcode(ident)
+            if converted:
+                ident = converted
+            if not ident:
+                self._send_json({"success": False,
+                                 "error": "No identifier provided (?q=...)"}, 400)
+                return
+            try:
+                paper = scix_resolve(ident)
+            except ValueError as e:
+                self._send_json({"success": False, "error": str(e)}, 400)
+                return
+            except RuntimeError as e:
+                # Missing token is a configuration problem (503); network
+                # failures are upstream (502).
+                self._send_json({"success": False, "error": str(e)},
+                                503 if "No ADS token" in str(e) else 502)
+                return
+            if paper is None or not paper.get("id"):
+                self._send_json({
+                    "success": False,
+                    "error": "SciX has no record for identifier " + ident,
+                }, 404)
+                return
+            self._send_json({"success": True, "paper": paper})
 
         elif path == "/api/chat/library":
             try:
@@ -2480,7 +3075,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "chunks": chunks})
 
         elif path == "/api/chat/fulltext":
-            arxiv_id = query.get("arxiv_id", [""])[0]
+            arxiv_id = (query.get("arxiv_id", [""])[0] or "").strip()
+            # arXiv-bibcode keys are canonicalized to the arXiv ID first.
+            converted = arxiv_id_from_bibcode(arxiv_id)
+            if converted:
+                arxiv_id = converted
+            if arxiv_id and not is_arxiv_id(arxiv_id):
+                # Non-arXiv paper (SciX bibcode key): the reader shows an
+                # abstract-only card. Prefer stored metadata (saved paper,
+                # no network); resolve via SciX when it is not saved yet.
+                paper = None
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    row = conn.execute(
+                        "SELECT title, authors, abstract FROM saved_papers "
+                        "WHERE arxiv_id = ?", (arxiv_id,)).fetchone()
+                    conn.close()
+                except sqlite3.Error:
+                    row = None
+                if row and (row[2] or "").strip():
+                    paper = {"title": row[0], "authors": row[1],
+                             "abstract": row[2], "bibcode": arxiv_id,
+                             "citation_count": 0}
+                if paper is None:
+                    try:
+                        paper = scix_resolve(arxiv_id)
+                    except RuntimeError as e:
+                        self._send_html(
+                            scix_abstract_card_html(arxiv_id, error=str(e)), 200)
+                        return
+                if paper is None:
+                    self._send_html(scix_abstract_card_html(
+                        arxiv_id,
+                        error="SciX has no record for " + arxiv_id + "."), 200)
+                    return
+                self._send_html(scix_abstract_card_html(arxiv_id, paper=paper))
+                return
             try:
                 ft_path = fetch_paper_fulltext(arxiv_id)
             except Exception as e:
@@ -2613,7 +3243,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._sse_write(b"data: [DONE]\n\n")
                 return
             except Exception as e:
-                self._sse_write({"error": str(e)})
+                self._sse_write({"error": _llm_net_error(e)})
                 self._sse_write(b"data: [DONE]\n\n")
                 return
             if not tool_calls:
@@ -2787,7 +3417,20 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             try:
-                arxiv_id = data.get("arxiv_id", "")
+                arxiv_id = (data.get("arxiv_id", "") or "").strip()
+                # Key-rule guard: an ADS arXiv bibcode is re-keyed to the
+                # arXiv ID so one paper can never be stored twice (once
+                # saved by arXiv ID from the Daily page, once by bibcode
+                # from scixplorer). idempotent for arXiv-ID keys.
+                converted = arxiv_id_from_bibcode(arxiv_id)
+                if converted:
+                    data = dict(data)
+                    data["arxiv_id"] = arxiv_id = converted
+                if not arxiv_id:
+                    self._send_json(
+                        {"success": False,
+                         "error": "No paper identifier provided"}, 400)
+                    return
                 c.execute("SELECT notes, tags, highlights FROM saved_papers WHERE arxiv_id = ?", (arxiv_id,))
                 existing = c.fetchone()
                 was_saved = existing is not None
@@ -3031,6 +3674,31 @@ class Handler(BaseHTTPRequestHandler):
             arxistant_sync.save_config(config)
             self._send_json({"success": True, "config": config})
 
+        elif path == "/api/ads/token":
+            # Save (non-empty) or clear (empty) the ADS / SciX token.
+            token = str(data.get("token") or "")
+            save_ads_token(token)
+            self._send_json({
+                "success": True,
+                "has_token": bool(load_ads_token()),
+                "message": ("Token saved." if token.strip()
+                            else "Token removed."),
+            })
+
+        elif path == "/api/ads/token/test":
+            # Validate the stored token with a minimal SciX query so a stale
+            # or mistyped token surfaces here, not as a cryptic failure later.
+            try:
+                num_found = test_ads_token()
+                self._send_json({
+                    "success": True,
+                    "num_found": num_found,
+                    "message": "Token accepted — SciX answered with "
+                               f"{num_found:,} records.",
+                })
+            except RuntimeError as e:
+                self._send_json({"success": False, "error": str(e)}, 502)
+
         elif path == "/api/chat/config":
             config = load_chat_config()
             if "base_url" in data:
@@ -3098,7 +3766,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(
                     {"success": False, "error": _llm_http_error(e.code)}, 502)
             except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 502)
+                self._send_json(
+                    {"success": False, "error": _llm_net_error(e)}, 502)
 
         elif path == "/api/chat":
             messages = data.get("messages") or []
@@ -3138,7 +3807,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass  # The browser closed the chat.
             except Exception as exc:
                 try:
-                    self._sse_write({"error": str(exc)})
+                    self._sse_write({"error": _llm_net_error(exc)})
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                 except Exception:
@@ -3414,7 +4083,7 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
     var ITEMS = [
         toggleItem,
         { icon: '📂', label: 'Saved Papers', href: '/database.html', desc: 'Search, annotate, and remove saved papers' },
-        { icon: '🔍', label: 'Search arXiv', href: '/search-arxiv.html', desc: 'Find papers and save them' },
+        { icon: '🔍', label: 'Search', href: '/search.html', desc: 'Find papers and save them' },
         { icon: '💬', label: 'Chat', href: '/chat.html', desc: 'Read and discuss your papers with an LLM' },
         { icon: '📚', label: 'My Publications', href: '/publications.html', desc: 'Import and manage your publications' },
         { icon: '🧠', label: 'ML Features', href: '/ml-features.html', desc: 'Inspect training and ranking features' },
@@ -3499,18 +4168,49 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
 """
 
 
-SEARCH_ARXIV_HTML = """<!DOCTYPE html>
+SEARCH_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Search arXiv / ADS</title>
+  <title>Search Papers</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
     h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
     h2 { font-size: 1.1em; margin-top: 0; }
     h2 a { color: #b31b1b; text-decoration: none; }
     h2 a:hover { text-decoration: underline; }
+    /* Token notice: explains how to enable search before the user tries it. */
+    .token-banner { margin: 20px 0 0; padding: 13px 16px; border: 1px solid #efd08a; border-left: 4px solid #e0a52f; background: #fffbef; border-radius: 8px; }
+    .token-banner > strong { color: #7a5400; font-size: 0.92em; }
+    .token-banner p, .token-banner ol { font-size: 0.84em; color: #6d5622; margin: 9px 0 0; line-height: 1.65; }
+    .token-banner ol { padding-left: 20px; }
+    .token-banner li { margin: 4px 0; }
+    .token-banner code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.95em; background: #fff; border: 1px solid #ecd9ae; border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+    .token-banner a { color: #b31b1b; }
+
+    /* Search syntax: a foldable card with an aligned field table instead of
+       one run-on paragraph, and clear space below the search box. */
+    .syntax-card { margin: 20px 0 24px; border: 1px solid #e4e4e4; border-radius: 8px; background: #fafafa; }
+    .syntax-card > summary { cursor: pointer; list-style: none; padding: 10px 14px; font-size: 0.86em; font-weight: 600; color: #555; user-select: none; }
+    .syntax-card > summary::-webkit-details-marker { display: none; }
+    .syntax-card > summary::before { content: "▸ "; color: #b31b1b; }
+    .syntax-card[open] > summary::before { content: "▾ "; }
+    .syntax-card > summary:hover { color: #b31b1b; }
+    .syntax-body { padding: 2px 14px 14px; border-top: 1px solid #ececec; }
+    .syntax-lead { font-size: 0.84em; color: #666; margin: 11px 0 13px; }
+    .syntax-lead code, .syntax-note code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.95em; background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 0 5px; color: #555; }
+    .syntax-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 9px 20px; margin: 0 0 13px; }
+    /* Fixed first column so every description starts at the same x — a
+       reference table, not a row of differently-sized chips. */
+    .syntax-row { display: grid; grid-template-columns: 120px 1fr; gap: 9px; align-items: baseline; font-size: 0.84em; }
+    .syntax-row code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.95em; color: #b31b1b; white-space: nowrap; }
+    .syntax-row span { color: #666; }
+    .syntax-note { font-size: 0.8em; color: #888; margin: 0 0 13px; }
+    .syntax-example { font-size: 0.84em; color: #666; background: #fff; border: 1px dashed #ccc; border-radius: 6px; padding: 9px 11px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .syntax-example > code { font-family: "SF Mono", Monaco, Consolas, monospace; color: #333; word-break: break-word; }
+    .syntax-try { margin-left: auto; flex: 0 0 auto; background: #b31b1b; color: #fff; border: none; border-radius: 5px; padding: 4px 13px; font-size: 0.95em; cursor: pointer; }
+    .syntax-try:hover { background: #8a1515; }
     .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
     .paper:hover { background: #f5f5f5; }
     .score-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
@@ -3527,10 +4227,7 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
     .save-btn:hover { opacity: 0.9; }
     .search-box { flex: 1; min-width: 200px; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; box-sizing: border-box; }
     .search-box:focus { outline: none; border-color: #b31b1b; }
-    .search-row { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-    .source-toggle { display: flex; gap: 16px; align-items: center; margin-bottom: 20px; }
-    .source-toggle label { cursor: pointer; font-size: 0.95em; }
-    .source-toggle input { margin-right: 4px; cursor: pointer; }
+    .search-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .search-btn { padding: 8px 20px; background: #b31b1b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95em; font-weight: bold; }
     .search-btn:hover { background: #8a1515; }
     .search-btn:disabled { background: #ccc; cursor: not-allowed; }
@@ -3550,16 +4247,33 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>🔍 Search arXiv / ADS</h1>
+  <h1>🔍 Search Papers</h1>
 
   <div class="search-row">
-    <input type="text" class="search-box" id="searchInput" placeholder="Enter keywords, title, author, arXiv ID..." onkeydown="if(event.key==='Enter')doSearch()">
+    <input type="text" class="search-box" id="searchInput" placeholder="Keywords, or field:value — e.g. first_author:Greene author:Ho year:2005" onkeydown="if(event.key==='Enter')doSearch()">
     <button class="search-btn" id="searchBtn" onclick="doSearch()">🔍 Search</button>
   </div>
-  <div class="source-toggle">
-    <label><input type="radio" name="source" value="arxiv" checked> arXiv API</label>
-    <label><input type="radio" name="source" value="ads"> ADS / SciX</label>
-  </div>
+  <div id="tokenBanner"></div>
+
+  <details class="syntax-card" id="syntaxCard" open>
+    <summary>Search syntax</summary>
+    <div class="syntax-body">
+      <p class="syntax-lead">
+        Plain words search every field, and a space between terms means
+        <strong>AND</strong>. Scope a term with <code>field:value</code>:
+      </p>
+      <div class="syntax-grid" id="syntaxGrid"></div>
+      <p class="syntax-note">
+        Quote multi-word phrases (<code>abs:"AGN feedback"</code>). Combine
+        clauses with <code>AND</code> / <code>OR</code> / <code>ANDNOT</code>.
+      </p>
+      <div class="syntax-example">
+        <span>Example:</span>
+        <code id="syntaxExample">first_author:Greene author:Ho year:2005</code>
+        <button class="syntax-try" id="syntaxTry" type="button">Try it</button>
+      </div>
+    </div>
+  </details>
 
   <p class="stats" id="stats">Enter a query and click Search.</p>
   <div id="results"></div>
@@ -3572,20 +4286,88 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
     // use the search date.
     document.querySelector('h1').setAttribute('data-date', new Date().toISOString().slice(0, 10));
 
+    // ADS / SciX is the single search source. Its fielded syntax covers
+    // everything the old arXiv option did (ADS indexes arXiv papers) and it
+    // adds journal-only records, metadata, and citation counts. The
+    // /api/arxiv/search endpoint remains for the Chat page lookup.
+    const SYNTAX_FIELDS = [
+      ['first_author:', 'first (lead) author'],
+      ['author:', 'any author'],
+      ['title:', 'title words'],
+      ['abs:', 'abstract words'],
+      ['year:', '2018, or a range: 2018-2020'],
+      ['arXiv:', 'by arXiv ID'],
+      ['bibcode:', 'by ADS bibcode'],
+      ['doi:', 'by DOI'],
+      ['keyword:', 'author keywords'],
+      ['property:', 'e.g. refereed']
+    ];
+    document.getElementById('syntaxGrid').innerHTML = SYNTAX_FIELDS.map(function (f) {
+      return '<div class="syntax-row"><code>' + f[0] + '</code><span>' + f[1] + '</span></div>';
+    }).join('');
+
+    document.getElementById('syntaxTry').addEventListener('click', function () {
+      document.getElementById('searchInput').value =
+        document.getElementById('syntaxExample').textContent;
+      doSearch();
+    });
+
+    // Searching needs the ADS / SciX token. Explain how to add one up front
+    // instead of letting the first search fail with an API error.
+    function renderTokenBanner(state) {
+      const el = document.getElementById('tokenBanner');
+      const stats = document.getElementById('stats');
+      if (state === 'ok') { el.innerHTML = ''; return; }
+      if (state === 'offline') {
+        el.innerHTML =
+          '<div class="token-banner">' +
+          '<strong>Cannot reach the ArXistant server</strong>' +
+          '<p>Start the server from the extension popup, then reload this page.</p>' +
+          '</div>';
+        stats.textContent = 'Search is unavailable until the server is running.';
+        return;
+      }
+      el.innerHTML =
+        '<div class="token-banner">' +
+        '<strong>ADS / SciX token not set — search will not work until you add one</strong>' +
+        '<ol>' +
+        '<li>Get a free token at ' +
+        '<a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">ui.adsabs.harvard.edu</a> ' +
+        '(sign in, then Account → API Token).</li>' +
+        '<li>Open the ArXistant extension Settings — from the popup, or by ' +
+        'right-clicking the toolbar icon and choosing Options.</li>' +
+        '<li>Expand <strong>ADS / SciX</strong>, paste the token, and click ' +
+        '<strong>Save Token</strong>. It is verified immediately.</li>' +
+        '</ol>' +
+        '<p>Then reload this page. The token stays in your local data ' +
+        'directory with owner-only file permissions.</p>' +
+        '</div>';
+      stats.textContent = 'Search is unavailable until the ADS / SciX token is set (see above).';
+    }
+
+    (async function checkToken() {
+      try {
+        const resp = await fetch('/api/ads/token');
+        const data = await resp.json();
+        renderTokenBanner(data && data.has_token === true ? 'ok' : 'missing');
+      } catch (e) {
+        renderTokenBanner('offline');
+      }
+    })();
+
     async function doSearch() {
       const q = document.getElementById('searchInput').value.trim();
       if (!q) return;
-      const source = document.querySelector('input[name="source"]:checked').value;
       const btn = document.getElementById('searchBtn');
       const stats = document.getElementById('stats');
       const results = document.getElementById('results');
 
       btn.disabled = true;
-      stats.textContent = 'Searching ' + source.toUpperCase() + '...';
+      stats.textContent = 'Searching ADS / SciX...';
       results.innerHTML = '<p class="loading">Loading results...</p>';
 
       try {
-        const resp = await fetch('/api/' + source + '/search?q=' + encodeURIComponent(q));
+        const resp = await fetch('/api/ads/search?q=' + encodeURIComponent(q));
         const data = await resp.json();
 
         if (data.error) {
@@ -3595,8 +4377,8 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
           return;
         }
 
-        stats.textContent = data.count + ' result' + (data.count !== 1 ? 's' : '') + ' from ' + source.toUpperCase();
-        await renderResults(data.papers, source);
+        stats.textContent = data.count + ' result' + (data.count !== 1 ? 's' : '') + ' from ADS / SciX';
+        await renderResults(data.papers, 'ads');
       } catch (e) {
         stats.textContent = 'Search failed.';
         results.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
@@ -3612,8 +4394,12 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
       }
 
       container.innerHTML = papers.map((p, i) => {
-        const arxivId = p.id || '';
-        const hasArxiv = arxivId && arxivId.includes('.');
+        // Storage key: the server applies the key rule (arXiv ID when the
+        // record has one, else the ADS bibcode) so ADS/SciX results can be
+        // saved, tagged, and discussed exactly like daily-page papers.
+        const paperId = p.id || '';
+        const hasArxiv = p.is_arxiv !== undefined ? !!p.is_arxiv
+          : /^\\d{4}\\.\\d{4,5}(v\\d+)?$/.test(paperId);
         const title = escapeHtml(p.title || '');
         const abstract = escapeHtml(p.abstract || '');
         const authors = Array.isArray(p.authors) ? p.authors : (p.authors || '').split(',').map(a => a.trim()).filter(Boolean);
@@ -3621,21 +4407,22 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
           ? escapeHtml(authors.join(', '))
           : escapeHtml(authors.slice(0, 5).join(', ')) + '<span class="et-al">, et al. (' + authors.length + ' authors)</span>';
         const year = p.year || '';
-        const bibcode = p.bibcode || '';
+        const bibcode = p.bibcode || (paperId && !hasArxiv ? paperId : '');
         const citationCount = p.citation_count || 0;
         const doi = p.doi || '';
 
         // Title row matches the daily page: "N. arXiv:ID — Title (→ alphaxiv)".
-        // Papers without an arXiv ID get no .arxiv-id anchor, so the shared
-        // save/chat/tag buttons skip them.
+        // Bibcode-keyed (journal-only) papers link to their scixplorer page
+        // instead, and the .paper card carries data-paper-id so the shared
+        // save/chat/tag buttons bind to the storage key.
         let idHtml = '';
         let titleHref = '#';
         if (hasArxiv) {
-          idHtml = `<span class="arxiv-id"><a href="https://arxiv.org/abs/${arxivId}" target="_blank">arXiv:${arxivId}</a></span> — `;
-          titleHref = `https://alphaxiv.org/abs/${arxivId}`;
+          idHtml = `<span class="arxiv-id"><a href="https://arxiv.org/abs/${escapeHtml(paperId)}" target="_blank">arXiv:${escapeHtml(paperId)}</a></span> — `;
+          titleHref = `https://alphaxiv.org/abs/${escapeHtml(paperId)}`;
         } else if (bibcode) {
-          idHtml = `<span class="arxiv-id">${escapeHtml(bibcode)}</span> — `;
-          titleHref = `https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract`;
+          idHtml = `<span class="arxiv-id"><a href="https://scixplorer.org/abs/${escapeHtml(bibcode)}" target="_blank">${escapeHtml(bibcode)}</a></span> — `;
+          titleHref = `https://scixplorer.org/abs/${escapeHtml(bibcode)}`;
         } else if (doi) {
           titleHref = `https://doi.org/${escapeHtml(doi)}`;
         }
@@ -3650,11 +4437,11 @@ SEARCH_ARXIV_HTML = """<!DOCTYPE html>
         if (bibcode) extraLinks.push(`<a href="https://ui.adsabs.harvard.edu/abs/${escapeHtml(bibcode)}/abstract" target="_blank">ADS</a>`);
         const extraHtml = extraLinks.length ? `<span class="meta-links">${extraLinks.join(' · ')}</span>` : '';
 
-        const noArxiv = hasArxiv ? '' : '<span class="no-arxiv">No arXiv ID — cannot save to DB</span>';
+        const noArxiv = paperId ? '' : '<span class="no-arxiv">No identifier — cannot save to DB</span>';
 
         const absId = 'abs-search-' + i;
         return `
-          <div class="paper">
+          <div class="paper" data-paper-id="${escapeHtml(paperId)}">
             <h2>${i + 1}. ${idHtml}<a href="${titleHref}" target="_blank">${title}</a></h2>
             <p class="authors"><strong>Authors:</strong> ${authorStr}</p>
             <div class="score-row">
@@ -3751,7 +4538,7 @@ async function togglePaper(arxivId, title, authors, abstract, score, dateFetched
 
 // Re-runnable so pages that render papers dynamically (e.g. search results)
 // can attach buttons after each render. Idempotent: skips papers that have no
-// arXiv ID or already have a save button.
+// storage key or already have a save button.
 window.arxistantAttachSaveButtons = async function () {
     let savedIds = new Set();
     try {
@@ -3768,7 +4555,15 @@ window.arxistantAttachSaveButtons = async function () {
     papers.forEach((paper) => {
         const arxivLink = paper.querySelector('.arxiv-id a');
         const titleLink = paper.querySelector('h2 > a');
-        const arxivId = arxivLink ? arxivLink.href.split('/abs/')[1] : '';
+        // Storage key: explicit data-paper-id (search results) or the
+        // identifier in the /abs/ link (arXiv IDs on the daily page, ADS
+        // bibcodes on SciX cards). Works for arXiv- and bibcode-keyed
+        // papers alike.
+        let arxivId = paper.dataset.paperId || '';
+        if (!arxivId && arxivLink) {
+            const raw = arxivLink.href.split('/abs/')[1] || '';
+            try { arxivId = decodeURIComponent(raw); } catch (e) { arxivId = raw; }
+        }
         if (!arxivId) return;
         if (document.getElementById('save-btn-' + arxivId)) return;
         const title = titleLink ? titleLink.textContent : '';
@@ -3881,8 +4676,17 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
         const scoreEl = paper.querySelector('.score');
         const scoreText = scoreEl ? scoreEl.textContent.replace('Relevance: ', '') : '0';
         const h1 = document.querySelector('h1');
+        // The storage key: the explicit data-paper-id attribute when the
+        // renderer set one (search results), else the identifier embedded in
+        // the /abs/ link (arXiv IDs on the daily page, bibcodes on SciX
+        // cards) — both are the key /api/save understands.
+        let paperId = paper.dataset.paperId || '';
+        if (!paperId && arxivLink) {
+            const raw = arxivLink.href.split('/abs/')[1] || '';
+            try { paperId = decodeURIComponent(raw); } catch (e) { paperId = raw; }
+        }
         return {
-            arxivId: arxivLink ? arxivLink.href.split('/abs/')[1] : '',
+            arxivId: paperId,
             title: titleLink ? titleLink.textContent : '',
             authors: authorsEl ? authorsEl.textContent.replace('Authors:', '').trim() : '',
             abstract: abstractEl ? abstractEl.textContent : '',
@@ -4120,13 +4924,17 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
 CHAT_LINK_SCRIPT = """<!-- chat-link-embedded -->
 <script>
 // Re-runnable for pages that render papers dynamically (search results);
-// skips papers that already have a chat button or have no arXiv ID.
+// skips papers that already have a chat button or have no storage key
+// (arXiv ID or ADS bibcode).
 window.arxistantAttachChatLinks = function () {
     document.querySelectorAll('.paper').forEach((paper) => {
         if (paper.querySelector('.chat-link-btn')) return;
         const arxivLink = paper.querySelector('.arxiv-id a');
-        if (!arxivLink) return;
-        const arxivId = arxivLink.href.split('/abs/')[1];
+        let arxivId = paper.dataset.paperId || '';
+        if (!arxivId && arxivLink) {
+            const raw = arxivLink.href.split('/abs/')[1] || '';
+            try { arxivId = decodeURIComponent(raw); } catch (e) { arxivId = raw; }
+        }
         if (!arxivId) return;
         const link = document.createElement('a');
         link.href = '/chat.html?paper=' + encodeURIComponent(arxivId);
@@ -4224,6 +5032,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .badge.daily { background: #b31b1b; }
     .badge.recent { background: #1976d2; }
     .badge.arxiv { background: #555; }
+    .badge.scix { background: #5e35b1; }
 
     .pdf-wrap { position: relative; flex: 1; min-width: 0; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background: #525659; }
     .pdf-wrap iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; }
@@ -4355,7 +5164,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
     <a href="/database.html">📂 Saved Papers</a>
-    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/search.html">🔍 Search</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
     <a href="/cloud-sync.html">☁️ Cloud Sync</a>
@@ -4476,7 +5285,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv', local: '📄 Local PDF' };
+    const SOURCE_LABELS = { saved: '💾 Saved', daily: '📅 Daily', recent: '📆 Recent', arxiv: '🌐 arXiv', scix: '🛰️ SciX', local: '📄 Local PDF' };
     const HIGHLIGHT_COLORS = ['#9be7ff', '#ffe08a', '#b9f6ca', '#ffccbc', '#e1bee7', '#d7ccc8'];
 
     let library = [];
@@ -4503,6 +5312,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     function $(id) { return document.getElementById(id); }
 
     function normalizeId(id) { return (id || '').replace(/v\\d+$/, ''); }
+    // Storage keys are arXiv IDs for arXiv papers and ADS bibcodes for
+    // journal-only SciX papers; only the former have arXiv-side affordances.
+    function isArxivId(id) { return /^(\\d{4}\\.\\d{4,5}|[a-z\\-]+\\/\\d{7})$/.test(normalizeId(id || '')); }
 
     function escapeHtml(text) {
       if (text === null || text === undefined) return '';
@@ -4739,11 +5551,15 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       $('readerView').classList.remove('hidden');
       $('paperInfo').classList.remove('hidden');
       const local = p.source === 'local' || p.local;
-      $('paperIdText').textContent = local ? 'Local PDF' : 'arXiv:' + p.arxiv_id;
-      $('paperAbsLink').classList.toggle('hidden', !!local);
+      const arxivKey = !local && isArxivId(p.arxiv_id);
+      $('paperIdText').textContent = local ? 'Local PDF'
+        : (arxivKey ? 'arXiv:' + p.arxiv_id : 'SciX:' + p.arxiv_id);
+      $('paperAbsLink').classList.toggle('hidden', !arxivKey);
       $('paperScixLink').classList.toggle('hidden', !!local);
       if (!local) {
-        $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
+        if (arxivKey) {
+          $('paperAbsLink').href = 'https://arxiv.org/abs/' + encodeURIComponent(p.arxiv_id);
+        }
         $('paperScixLink').href = scixUrlFor(p);
       }
       userHighlights = Array.isArray(p.highlights) ? p.highlights.slice() : [];
@@ -4798,11 +5614,13 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     }
 
     function scixUrlFor(p) {
-      // SciXplorer record pages use ADS-style bibcodes; for arXiv papers the
-      // bibcode is <year>arXiv<digits><first-author-surname-initial>, the same
-      // convention arXiv itself uses for its ADS links. Fall back to a SciX
-      // search when the ID or author list does not fit the pattern.
+      // Bibcode-keyed papers (journal-only SciX records) link straight to
+      // their scixplorer page; arXiv-keyed papers build the ADS-style arXiv
+      // bibcode from the ID and first author, as before.
       const id = (p.arxiv_id || '').trim();
+      if (id && !isArxivId(id)) {
+        return 'https://scixplorer.org/abs/' + encodeURIComponent(id);
+      }
       const authors = (p.authors || '').trim();
       const m = id.match(/^(\\d{2})\\d{2}\\.(\\d{4,5})(v\\d+)?$/);
       if (m && authors) {
@@ -4992,7 +5810,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
         try { doc = frame.contentDocument; } catch (e) {}
         if (!doc || !doc.body || doc.readyState === 'loading') return;
         if ((p.source === 'local' || p.local) && doc.body.dataset.pdfReady !== 'true') return;
-        if ((doc.body.innerText || '').length < 200) return;
+        // SciX abstract cards are marked by the server; they can be shorter
+        // than the full-text threshold yet are ready to select/highlight.
+        if (doc.body.dataset.arxAbstract !== 'true' && (doc.body.innerText || '').length < 200) return;
         clearInterval(poll);
         textLoadingFor = null;
         fullText = doc.body.innerText;
@@ -5728,8 +6548,9 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     async function pinFromUrl(id) {
       const norm = normalizeId(id);
       let p = libraryById[norm] || libraryById[id];
-      if (!p) {
-        // Not in the local library — look it up on the arXiv API.
+      if (!p && isArxivId(norm)) {
+        // Not in the local library and shaped like an arXiv ID — look it
+        // up on the arXiv API.
         try {
           const resp = await fetch('/api/arxiv/search?q=' + encodeURIComponent(id));
           const data = await resp.json();
@@ -5746,6 +6567,27 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
             };
           }
         } catch (e) { console.warn('arXiv lookup failed:', e); }
+      }
+      if (!p) {
+        // Bibcode keys from scixplorer (or an arXiv ID the arXiv API could
+        // not find) resolve through the server's SciX endpoint.
+        try {
+          const resp = await fetch('/api/scix/resolve?q=' + encodeURIComponent(id));
+          const data = await resp.json();
+          if (data.success && data.paper) {
+            const hit = data.paper;
+            p = {
+              arxiv_id: hit.id || id,
+              title: hit.title || '',
+              authors: Array.isArray(hit.authors) ? hit.authors.join(', ') : (hit.authors || ''),
+              abstract: hit.abstract || '',
+              source: 'scix',
+              bibcode: hit.bibcode || '',
+              year: hit.year || '',
+              score: 0
+            };
+          }
+        } catch (e) { console.warn('SciX lookup failed:', e); }
       }
       if (p) {
         if (!libraryById[normalizeId(p.arxiv_id)]) {
@@ -6173,8 +7015,10 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
     h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 10px; }
-    .search-box { width: 100%; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; margin-bottom: 20px; box-sizing: border-box; }
+    .search-box { width: 100%; padding: 10px 14px; font-size: 1em; border: 2px solid #ddd; border-radius: 6px; margin-bottom: 8px; box-sizing: border-box; }
     .search-box:focus { outline: none; border-color: #b31b1b; }
+    .search-hint { font-size: 0.75em; color: #888; margin: 0 2px 18px 2px; line-height: 1.6; }
+    .search-hint code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.92em; background: #f0f0f0; border: 1px solid #e2e2e2; border-radius: 4px; padding: 0 4px; color: #555; white-space: nowrap; }
     .stats { color: #666; margin-bottom: 20px; }
     .paper { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 16px; background: #fafafa; }
     .paper:hover { background: #f5f5f5; }
@@ -6196,9 +7040,13 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     .notes { margin-top: 10px; }
     .notes textarea { width: 100%; min-height: 60px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 0.9em; box-sizing: border-box; }
     .notes button { margin-top: 6px; padding: 4px 12px; background: #b31b1b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
-    .tag-bar { margin: 0 0 16px 0; padding: 10px 12px; background: #f0f7f6; border: 1px solid #d5e8e5; border-radius: 6px; }
-    .tag-bar-title { font-size: 0.8em; font-weight: bold; color: #00695c; margin-bottom: 6px; }
+    .tag-bar { margin: 0 0 16px 0; padding: 8px 12px; background: #f0f7f6; border: 1px solid #d5e8e5; border-radius: 6px; }
+    .tag-bar-title { font-size: 0.8em; font-weight: bold; color: #00695c; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
     .tag-bar-title .hint { font-weight: normal; color: #888; }
+    .tag-bar-title::before { content: "▸ "; color: #00695c; font-size: 0.9em; }
+    .tag-bar[open] > .tag-bar-title::before { content: "▾ "; }
+    .tag-bar-selected { background: #e0f2f1; color: #00695c; border: 1px solid #b2dfdb; border-radius: 10px; padding: 1px 8px; font-size: 0.95em; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tag-bar-body { margin-top: 6px; }
     .tag-bar-chips { display: flex; flex-wrap: wrap; gap: 6px; }
     .tag-bar-chips:empty::after { content: 'No tags yet. Add tags with the 🏷️ button on a paper below, or from the Daily/Recent pages.'; color: #888; font-size: 0.8em; }
     .tag-filter-chip { display: inline-flex; align-items: center; gap: 5px; background: white; color: #00695c; border: 1px solid #b2dfdb; border-radius: 12px; padding: 2px 10px; font-size: 0.8em; cursor: pointer; user-select: none; }
@@ -6233,21 +7081,29 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
-    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/search.html">🔍 Search</a>
     <a href="/chat.html">💬 Chat</a>
     <a href="/publications.html">📚 My Publications</a>
     <a href="/ml-features.html">🧠 ML Features</a>
     <a href="/cloud-sync.html">☁️ Cloud Sync</a>
   </div>
   <h1>My arXiv Paper Database</h1>
-  <input type="text" class="search-box" id="searchInput" placeholder="Search by title, author, abstract, or notes..." oninput="searchPapers()">
-  <div id="tagBar" class="tag-bar"></div>
+  <input type="text" class="search-box" id="searchInput" placeholder="Search — e.g. tag:lrd author:shangguan, or plain keywords" oninput="searchPapers()">
+  <p class="search-hint">
+    Scope a term with <code>tag:</code> <code>author:</code> <code>title:</code>
+    <code>abs:</code> <code>note:</code> <code>year:</code> <code>id:</code>
+    (ranges like <code>year:2020-2024</code> work; quoted values too:
+    <code>title:"dark matter"</code>). Terms combine — all must match.
+    Plain keywords search the title, authors, abstract, notes, and ID.
+  </p>
+  <details id="tagBar" class="tag-bar"></details>
   <p class="stats" id="stats">Loading...</p>
   <div id="paperList"></div>
 
   <script>
     let allPapers = [];
     let selectedTags = new Set();  // lowercased tag keys; papers must carry ALL of them
+    let tagBarOpen = false;        // the tag list is folded until the user opens it
     let openEditorId = null;
     let tagDbSaveQueue = Promise.resolve();  // serializes tag auto-saves
 
@@ -6267,8 +7123,12 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
       applyFilters();
     }
 
+    let searchDebounceTimer = null;
     function searchPapers() {
-      applyFilters();
+      // Fielded queries are longer than plain words; debounce so one query
+      // is one request instead of one per keystroke.
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(applyFilters, 250);
     }
 
     // ── Tag filtering (issue #3) ──
@@ -6289,28 +7149,50 @@ DATABASE_VIEWER_HTML = """<!DOCTYPE html>
     }
 
     function renderTagBar() {
+      // The tag list is folded by default; clicking the title shows every
+      // tag. Selected tags stay visible in the title while folded so the
+      // active filter is always obvious. tagBarOpen survives re-renders.
       const bar = document.getElementById('tagBar');
       const entries = allTagCounts();
-      let html = '<div class="tag-bar-title">🏷️ Filter by tags <span class="hint">(papers must have ALL selected tags)</span>' +
-        (selectedTags.size ? '<button class="tag-clear" data-action="clear">Clear filter</button>' : '') +
-        '</div>';
-      html += '<div class="tag-bar-chips">' + entries.map(([k, e]) =>
+      const selectedLabels = entries.filter(([k]) => selectedTags.has(k)).map(([, e]) => e.label);
+      let title = '<summary class="tag-bar-title"><span>🏷️ Filter by tags</span>';
+      if (entries.length) {
+        title += '<span class="hint">(' + entries.length + ' tag' + (entries.length !== 1 ? 's' : '') +
+          (tagBarOpen ? '' : ' — click to show') + ')</span>';
+      } else {
+        title += '<span class="hint">(no tags yet)</span>';
+      }
+      if (selectedTags.size) {
+        title += '<span class="tag-bar-selected" title="' + escapeAttr(selectedLabels.join(', ')) + '">' +
+          escapeHtml(selectedLabels.join(', ')) + '</span>' +
+          '<button class="tag-clear" data-action="clear">Clear</button>';
+      }
+      title += '</summary>';
+      const chips = entries.map(([k, e]) =>
         `<span class="tag-filter-chip${selectedTags.has(k) ? ' selected' : ''}" data-tag="${escapeAttr(k)}">${escapeHtml(e.label)} <span class="count">${e.count}</span></span>`
-      ).join('') + '</div>';
-      bar.innerHTML = html;
+      ).join('');
+      bar.innerHTML = title + '<div class="tag-bar-body"><div class="tag-bar-chips">' + chips + '</div></div>';
+      bar.open = tagBarOpen;
     }
 
+    document.getElementById('tagBar').addEventListener('toggle', (e) => {
+      tagBarOpen = e.target.open;
+    });
+
     document.getElementById('tagBar').addEventListener('click', (e) => {
-      const chip = e.target.closest('.tag-filter-chip');
-      if (chip) {
-        const k = chip.dataset.tag;
-        if (selectedTags.has(k)) selectedTags.delete(k); else selectedTags.add(k);
+      // Clear sits inside the summary; without preventDefault the same click
+      // would also fold/unfold the list.
+      if (e.target.closest('[data-action="clear"]')) {
+        e.preventDefault();
+        selectedTags.clear();
         renderTagBar();
         applyFilters();
         return;
       }
-      if (e.target.closest('[data-action="clear"]')) {
-        selectedTags.clear();
+      const chip = e.target.closest('.tag-filter-chip');
+      if (chip) {
+        const k = chip.dataset.tag;
+        if (selectedTags.has(k)) selectedTags.delete(k); else selectedTags.add(k);
         renderTagBar();
         applyFilters();
       }
@@ -6596,7 +7478,7 @@ PUBLICATIONS_VIEWER_HTML = """<!DOCTYPE html>
   <div class="nav">
     <a href="/daily.html">← Daily Papers</a>
     <a href="/recent.html">📅 Recent Papers</a>
-    <a href="/search-arxiv.html">🔍 Search arXiv</a>
+    <a href="/search.html">🔍 Search</a>
     <a href="/chat.html">💬 Chat</a>
     <a href="/database.html">📂 Saved Papers</a>
     <a href="/ml-features.html">🧠 ML Features</a>
@@ -6864,7 +7746,7 @@ def run_server(port=8765):
     print(f"  Saved papers:     http://{bind_host}:{port}/database.html")
     print(f"  My publications:  http://{bind_host}:{port}/publications.html")
     print(f"  My ML features:   http://{bind_host}:{port}/ml-features.html")
-    print(f"  Search arXiv/ADS: http://{bind_host}:{port}/search-arxiv.html")
+    print(f"  Search: http://{bind_host}:{port}/search.html")
     print(f"  Chat with papers: http://{bind_host}:{port}/chat.html")
     print("Press Ctrl+C to stop")
     try:

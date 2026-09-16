@@ -16,6 +16,8 @@ ranking, and page generation.
 ```mermaid
 flowchart TD
     EXT["Chrome extension"] -->|"HTTP on localhost:8765"| SERVER["Python HTTP server"]
+    SCIXPAGE["scixplorer.org pages"] -->|"content-script panel (URL bibcode)"| EXT
+    EXT -->|"relay requests"| SERVER
     SERVER --> DB["SQLite paper database"]
     SERVER --> RANKER["Daily ranking pipeline"]
     RANKER --> ARXIV["arXiv"]
@@ -38,10 +40,20 @@ network configuration is deliberately changed.
 The Manifest V3 extension contains:
 
 - A popup for server status and page navigation.
-- An options page for reminder times, weekend behavior, server URL, and model
-  retraining threshold.
+- An options page for reminder times, weekend behavior, server URL, model
+  retraining threshold, cloud sync, the ADS / SciX token, and LLM settings.
 - A background service worker for alarms, notifications, and automatic daily
-  refresh requests.
+  refresh requests. It also relays the scixplorer.org panel's requests to the
+  local server.
+- A content script on `https://scixplorer.org/*` — the project's first
+  third-party-page injection. scixplorer.org is an AWS-WAF-protected React
+  SPA, so the Python server cannot fetch its pages; the content script runs
+  inside the rendered page instead. It reads the paper's ADS bibcode from the
+  URL (never from the page's own markup) and shows a panel with the abstract,
+  save, and chat actions. All its requests go through the service worker, so
+  page-level mixed-content and private-network restrictions never apply. The
+  permission is read-only; a scixplorer.org redesign can at most make the
+  panel disappear, never break the page.
 - A macOS custom-URL launcher integration. Linux relies on its systemd user
   service instead.
 
@@ -83,6 +95,23 @@ and JSON endpoints. It:
   lists.
 - Injects the shared save / tag / chat button scripts into the Daily, Recent,
   Saved Papers, and Search pages, so every paper card offers the same actions.
+- Resolves SciX papers: `GET /api/scix/resolve` maps an ADS bibcode or arXiv
+  ID to a paper record through `api.scixplorer.org` (a public mirror of the
+  ADS API sharing the same token), with bounded retries and exact-match
+  validation. The saved-paper storage key follows one rule everywhere: the
+  arXiv ID when the record has one, otherwise the bibcode. The key lives in
+  the existing `saved_papers.arxiv_id` column, so the schema and the cloud
+  sync format are unchanged, and a paper saved from the daily list by arXiv
+  ID can never duplicate one saved from scixplorer by bibcode. `/api/save`
+  additionally re-keys stray arXiv bibcodes as a guard.
+- Serves the Chat reader for bibcode-keyed (journal-only) papers as a
+  same-origin abstract card — selectable, highlightable, and marked so the
+  Chat page's load-poll accepts it — instead of attempting an arXiv full-text
+  fetch. The Chat page falls back to `/api/scix/resolve` when pinning a
+  paper key that is neither in the library nor shaped like an arXiv ID.
+- Stores and verifies the ADS / SciX token (`GET/POST /api/ads/token`,
+  `POST /api/ads/token/test`) for the extension's Settings page; the token
+  lives in the owner-only `ads_token.txt`.
 
 Requests are handled on separate threads (a threading HTTP server) so a slow
 or streaming LLM response cannot block the rest of the app.
@@ -187,7 +216,11 @@ URL and host permission.
 
 SciX publication import extracts the library identifier from a shared library
 URL, retrieves its bibcodes, and batch-fetches full metadata through NASA ADS.
-ADS search uses the same token. The token remains in the local data directory.
+ADS search uses the same token, applies the storage-key rule (arXiv ID when
+the record has one, else bibcode), and gains save/tag/chat buttons for
+journal-only records. The scixplorer.org paper panel resolves bibcodes through
+`api.scixplorer.org` with the identical token, which the extension's Settings
+page can save and verify. The token remains in the local data directory.
 
 Imported publications are deduplicated by bibcode, normalized title, and arXiv
 ID before insertion into SQLite.

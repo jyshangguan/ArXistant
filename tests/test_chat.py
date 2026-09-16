@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -231,9 +232,13 @@ class LocalPdfReaderTests(unittest.TestCase):
 
 
 class _FakePdfResponse:
-    def __init__(self, data):
+    def __init__(self, data, url="https://example.com/doc"):
         self._data = data
         self._pos = 0
+        self._url = url
+
+    def geturl(self):
+        return self._url
 
     def __enter__(self):
         return self
@@ -391,6 +396,123 @@ class FulltextTests(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1).strip(), "Real Paper Title")
         self.assertNotIn("Thanks", m.group(1))
+
+
+class FulltextFigureTests(unittest.TestCase):
+    """Figures must resolve at the host that actually served the document.
+
+    The ar5iv fallback references figures with root-relative paths
+    (/html/<id>/assets/fig.png); those resolve against the <base> host.
+    The old code injected an arxiv.org base unconditionally, so any paper
+    fetched through the fallback rendered text without figures
+    (e.g. arXiv:1802.08364 when arxiv.org was unreachable at fetch time).
+    """
+
+    AR5IV_HTML = (b"<html><head><title>[1802.08364] Quasar feedback</title>"
+                  b"</head><body>"
+                  b'<figure><img src="/html/1802.08364/assets/fig2a.png"></figure>'
+                  b"<p>Gas content of low-redshift quasar hosts.</p></body></html>")
+
+    def _fetch(self, tmp, responses):
+        """Run fetch_paper_fulltext with per-URL fake responses.
+
+        responses: list of (url-fragment, _FakePdfResponse | Exception).
+        Fragments must be scheme-prefixed ("://arxiv.org/html/",
+        "://ar5iv.") so the ar5iv URL — which also contains
+        "arxiv.org/html/" — cannot match the native fragment.
+        Returns (path, list of requested URLs).
+        """
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            for frag, resp in responses:
+                if frag in req.full_url:
+                    if isinstance(resp, Exception):
+                        raise resp
+                    return resp
+            raise AssertionError("unexpected URL: " + req.full_url)
+
+        with mock.patch.object(arxiv_db_server, "FULLTEXT_CACHE_DIR", tmp), \
+             mock.patch.object(arxiv_db_server.urllib.request, "urlopen",
+                               side_effect=fake_urlopen):
+            path = arxiv_db_server.fetch_paper_fulltext("1802.08364")
+        return path, calls
+
+    def test_ar5iv_fallback_bases_the_document_at_ar5iv(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        err = urllib.error.URLError("arxiv.org is down")
+        resp = _FakePdfResponse(
+            self.AR5IV_HTML,
+            url="https://ar5iv.labs.arxiv.org/html/1802.08364")
+        path, calls = self._fetch(
+            tmp, [("://arxiv.org/html/", err), ("://ar5iv.", resp)])
+        html = open(path, encoding="utf-8").read()
+        self.assertIn(
+            '<base href="https://ar5iv.labs.arxiv.org/html/1802.08364">', html)
+        self.assertNotIn('href="https://arxiv.org/html/1802.08364"', html)
+        # Native arXiv was tried first, the fallback second.
+        self.assertEqual(len(calls), 2)
+
+    def test_native_bases_the_document_at_final_url(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        # arxiv.org redirected the unversioned URL to a versioned one.
+        resp = _FakePdfResponse(
+            self.AR5IV_HTML, url="https://arxiv.org/html/1802.08364v2")
+        path, calls = self._fetch(tmp, [("://arxiv.org/html/", resp)])
+        html = open(path, encoding="utf-8").read()
+        self.assertEqual(len(calls), 1)
+        self.assertIn('<base href="https://arxiv.org/html/1802.08364v2">', html)
+
+    def test_source_declared_base_is_preserved(self):
+        # The first <base href> in a document wins, so the fetcher must not
+        # inject its own in front of the source's declaration.
+        import re
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        doc = (b'<html><head><base href="https://source.example/paper/">'
+               b"<title>t</title></head><body><p>text</p></body></html>")
+        resp = _FakePdfResponse(doc, url="https://arxiv.org/html/1802.08364")
+        path, _ = self._fetch(tmp, [("://arxiv.org/html/", resp)])
+        html = open(path, encoding="utf-8").read()
+        self.assertIn('href="https://source.example/paper/"', html)
+        self.assertEqual(len(re.findall(r"<base\b", html)), 1)
+        self.assertIn("arxistant-fulltext-source", html)
+
+    def test_legacy_cache_is_refreshed_once(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        legacy = os.path.join(tmp, "1802.08364.html")
+        with open(legacy, "w", encoding="utf-8") as f:
+            f.write('<html><head><base href="https://arxiv.org/html/1802.08364">'
+                    "<title>stale</title></head><body><p>stale text</p></body></html>")
+        resp = _FakePdfResponse(
+            self.AR5IV_HTML, url="https://arxiv.org/html/1802.08364")
+        # First open: the legacy copy (no source meta) triggers a re-fetch.
+        path, calls = self._fetch(tmp, [("://arxiv.org/html/", resp)])
+        self.assertEqual(len(calls), 1)
+        html = open(path, encoding="utf-8").read()
+        self.assertIn("arxistant-fulltext-source", html)
+        self.assertNotIn("stale", html)
+        # Second open: current cache, no network at all.
+        path2, calls2 = self._fetch(tmp, [("://arxiv.org/html/", resp)])
+        self.assertEqual(calls2, [])
+        self.assertEqual(path2, path)
+
+    def test_legacy_cache_served_when_all_sources_fail(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        legacy = os.path.join(tmp, "1802.08364.html")
+        with open(legacy, "w", encoding="utf-8") as f:
+            f.write("<html><head><title>stale</title></head>"
+                    "<body><p>old but readable</p></body></html>")
+        err = urllib.error.URLError("everything is down")
+        path, calls = self._fetch(
+            tmp, [("://arxiv.org/html/", err), ("://ar5iv.", err)])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(path, legacy)
 
 
 class WebSearchTests(unittest.TestCase):

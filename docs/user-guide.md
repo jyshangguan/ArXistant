@@ -28,7 +28,7 @@ The server health endpoint is
 | Saved Papers | `/database.html` | Search, annotate, and remove saved papers |
 | Chat | `/chat.html` | Read papers (tabs, highlights) and ask an LLM about them |
 | My Publications | `/publications.html` | Import and manage your publication list |
-| Search arXiv/ADS | `/search-arxiv.html` | Find papers; save, tag, or open them in Chat |
+| Search | `/search.html` | Find papers via ADS / SciX; save, tag, or open them in Chat |
 | ML Features | `/ml-features.html` | Inspect training state and ranking features |
 
 All addresses are served from `http://localhost:8765`.
@@ -192,9 +192,34 @@ never needs a hosted ArXistant account.
 Paper rows match the Daily page: the arXiv ID sits before the title, the ID
 links to arXiv, and the title links to AlphaXiv. Every paper card shows its
 tags, and **🏷️ Edit tags** opens the same tag editor as the Daily/Recent pages.
-The **Filter by tags** bar above the list shows every tag in your library with
-a count; click one or more tags to show only papers that carry *all* selected
-tags. Tag filtering combines with the text search box.
+
+The **Filter by tags** bar is folded by default — the title shows how many
+tags your library has, and clicking it shows every tag with a count. Click
+one or more tags to show only papers that carry *all* selected tags; the
+selected tags stay visible in the folded title so the active filter is always
+obvious, and **Clear** resets it. Tag filtering combines with the text search
+box.
+
+### Search format
+
+Plain keywords match the title, authors, abstract, notes, and paper ID. A
+term can also be scoped to one category with `field:value`:
+
+| Token | Matches |
+|---|---|
+| `tag:lrd` | papers tagged exactly `lrd` |
+| `author:shangguan` | substring of the author list |
+| `title:quasar` | substring of the title |
+| `abs:feedback` | substring of the abstract |
+| `note:followup` | substring of your notes |
+| `year:2023` | publication year (also ranges: `year:2020-2024`) |
+| `id:1802.08364` | substring of the paper ID (`arXiv:` is an alias) |
+
+Multiple terms combine — every term must match, so
+`tag:lrd author:shangguan year:2020-2024` lists papers that carry the tag
+**and** the author **and** fall in the years. Values containing spaces can be
+quoted (`title:"dark matter"`). The publication year is derived from the
+arXiv ID or ADS bibcode, so it works for bibcode-keyed SciX papers too.
 
 ## Cloud sync
 
@@ -236,35 +261,106 @@ folder you already sync with Dropbox/iCloud/OneDrive or the Nutstore desktop app
 
 ## Search
 
-The Search page queries two sources:
-
-- **arXiv search**, which does not require an ADS token.
-- **ADS / SciX search**, which adds ADS metadata (year, citation count,
-  bibcode, DOI) and requires a token.
+The Search page queries **ADS / SciX**, which indexes arXiv papers *and*
+journal-only records, and adds metadata (year, citation count, bibcode, DOI).
+It requires an
+[ADS token](https://ui.adsabs.harvard.edu/user/settings/token) — set it from
+the extension's **Settings → ADS / SciX** section (see
+[Installation](installation.html#ads-api-token)). Without a token, the page
+says so before you search.
 
 Results use the same card layout as the Daily page: the arXiv ID sits before
 the title, the ID links to arXiv, and the title links to AlphaXiv — or, for
-ADS-only records without an arXiv ID, to the ADS abstract page or the DOI.
-Year and citation-count badges plus **DOI** / **ADS** links summarize each
-record, and every card carries the same action buttons as the daily list:
+ADS-only records without an arXiv version, the bibcode and title link to the
+paper's page on [scixplorer.org](https://scixplorer.org/). Year and
+citation-count badges plus **DOI** / **ADS** links summarize each record, and
+every card carries the same action buttons as the daily list:
 
 - **💾** saves the paper into the local database (click again to remove it),
 - **💬** opens the paper directly in the Chat reader,
 - **🏷️** tags it (the paper is saved first if needed).
 
-Records without an arXiv ID — some ADS-only entries — are marked "No arXiv
-ID — cannot save to DB": the database is keyed by arXiv ID, so those records
-can be read but not saved, tagged, or opened in Chat.
+Saving from the search page and saving from the Daily page produce the same
+record: a paper with an arXiv version is always stored under its arXiv ID —
+the same key the daily list uses — and journal-only papers are stored under
+their ADS bibcode. Saving a paper you already saved from the daily list
+updates that row instead of duplicating it, keeping its notes, tags, and
+highlights. Only the two informational fields differ: `date_fetched` records
+where the save came from (the list date on the Daily page, the search date
+here), and `relevance_score` is 0 when saved from search (the daily-page
+ranking score; the ML model trains on title and abstract only, so this does
+not affect learning).
 
-Requests to arXiv and ADS are retried automatically when a source is slow or
+All of the save/tag/chat actions work for ADS-only records too (Chat grounds
+those discussions in the abstract — see
+[SciXplorer papers](#papers-from-scixplorerorg)). Only records with neither
+an arXiv ID nor a bibcode, which are rare, cannot be saved.
+
+Requests to ADS are retried automatically when the source is slow or
 rate-limits the query, with the provider's `Retry-After` hint respected; if
 the source stays unavailable, the page shows a clear error message instead of
 a silent failure. A floating **▲** button at the bottom right returns you to
 the top of a long result list.
 
+### Search syntax
+
+Plain keywords search every field; a space between terms means AND. A term
+can be scoped to one category with `field:value` — the **Search syntax** card
+under the search box lists the same fields:
+
+| Example | Meaning |
+|---|---|
+| `first_author:Greene` | first (lead) author |
+| `author:Ho` | any author |
+| `title:quasar` | title |
+| `abs:"AGN feedback"` | abstract phrase |
+| `year:2005` | year (or `year:2005-2010`, `year:[2005 TO 2010]`) |
+| `arXiv:1802.08364` | paper by its arXiv ID |
+| `bibcode:2018ApJ...854..158S` | paper by its bibcode |
+| `property:refereed` | only refereed papers |
+| `first_author:Greene author:Ho year:2005` | all must match |
+
+Single-word values need no quotes; quote any value that contains spaces. The
+Saved-Papers-style `id:` token is remapped to ADS's `identifier:` field
+automatically; `tag:` and `note:` have no ADS equivalent (they filter your
+local library only).
+
+## Papers from scixplorer.org
+
+While you browse [scixplorer.org](https://scixplorer.org/), the ArXistant
+extension shows a small panel on paper pages (`/abs/<bibcode>`). The panel
+reads the paper's bibcode from the page URL and resolves the record through
+your local server, so it works even though scixplorer.org itself cannot be
+accessed by the server.
+
+The panel offers:
+
+- **▸ Show abstract** — the paper's abstract, fetched once per paper.
+- **💾 Save / ✓ Saved** — save the paper to (or remove it from) your library;
+  the same unified key rule applies, so a paper saved from the Daily page
+  and the same paper saved from scixplorer are one record, never a
+  duplicate.
+- **💬 Chat** — opens the paper in the Chat reader on your local server.
+  Journal-only papers get an abstract-only reader you can highlight and
+  annotate; papers with an arXiv version load the full text as usual.
+
+The panel needs the **ADS / SciX token**. Set it once from the extension's
+**Settings → ADS / SciX** section: paste the token from
+[NASA ADS API settings](https://ui.adsabs.harvard.edu/user/settings/token),
+click **Save Token** (it is verified immediately), and reload any open
+scixplorer.org tabs. The token is stored by your local server with
+owner-only file permissions.
+
+If the panel does not appear: confirm you are on a paper page, check that the
+server is running (the extension popup shows its status), and that the
+extension was reloaded after gaining the new scixplorer.org permission —
+Chrome asks you to re-approve host permissions when an unpacked extension is
+reloaded.
+
 ## Publications from SciX/ADS
 
-1. Add an ADS API token as described in the installation guide.
+1. Add an ADS API token — either from the extension's **Settings → ADS /
+   SciX** section or as described in the installation guide.
 2. Open **My Publications**.
 3. Paste a SciX library URL such as
    `https://scixplorer.org/user/libraries/...`.

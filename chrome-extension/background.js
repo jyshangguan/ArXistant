@@ -322,6 +322,101 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           })
         };
       }
+      // ── SciXplorer panel relays ──
+      // The content script on scixplorer.org cannot fetch the local server
+      // directly (https page → http localhost would be mixed content / PNA),
+      // so the worker — covered by the localhost host permission — relays.
+      case 'scixSavedPapers': {
+        const settings = await getSettings();
+        try {
+          const data = await fetchJson(serverApiUrl(settings.serverUrl, '/api/papers'));
+          return { success: true, ids: data.papers.map(p => p.arxiv_id) };
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'scixResolve': {
+        const settings = await getSettings();
+        try {
+          return await fetchJson(serverApiUrl(settings.serverUrl,
+            '/api/scix/resolve?q=' + encodeURIComponent(message.identifier || '')));
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'scixSavePaper': {
+        const settings = await getSettings();
+        const p = message.paper || {};
+        try {
+          return await fetchJson(serverApiUrl(settings.serverUrl, '/api/save'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              arxiv_id: p.id,
+              title: p.title || '',
+              authors: Array.isArray(p.authors) ? p.authors.join(', ') : (p.authors || ''),
+              abstract: p.abstract || '',
+              relevance_score: 0,
+              date_fetched: new Date().toISOString().slice(0, 10)
+            })
+          });
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'scixDeletePaper': {
+        const settings = await getSettings();
+        try {
+          return await fetchJson(serverApiUrl(settings.serverUrl, '/api/delete'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ arxiv_id: message.key })
+          });
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+
+      // ── ADS / SciX token settings ──
+      case 'getAdsToken': {
+        const settings = await getSettings();
+        try {
+          return { success: true, state: await fetchJson(serverApiUrl(settings.serverUrl, '/api/ads/token')) };
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'saveAdsToken': {
+        const settings = await getSettings();
+        try {
+          return {
+            success: true,
+            result: await fetchJson(serverApiUrl(settings.serverUrl, '/api/ads/token'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: message.token || '' })
+            })
+          };
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'testAdsToken': {
+        const settings = await getSettings();
+        try {
+          return {
+            success: true,
+            result: await fetchJson(serverApiUrl(settings.serverUrl, '/api/ads/token/test'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}'
+            })
+          };
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+
       default:
         return { success: false, error: 'Unknown action' };
     }

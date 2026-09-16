@@ -11,11 +11,20 @@
     "tabs"
   ],
   "host_permissions": [
-    "http://localhost:8765/*"
+    "http://localhost:8765/*",
+    "https://scixplorer.org/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://scixplorer.org/*"],
+      "js": ["content-scix.js"],
+      "css": ["content-scix.css"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
