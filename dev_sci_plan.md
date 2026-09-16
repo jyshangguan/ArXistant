@@ -1,9 +1,15 @@
 # dev_sci — SciXplorer (scixplorer.org) integration plan
 
-Status: **proposed, awaiting approval** · Branch: `dev_sci` (from `master` @ 836af23)
+Status: **implemented and merged to master** · Branch: `dev_sci` (from `master` @ 836af23)
 Decisions confirmed with the user: scope = **both** (overlay on scixplorer.org **and** in-app
 search), saved SciX papers keep today's fields with the **bibcode stored in `arxiv_id`** as the
 key when no arXiv ID exists (no new columns).
+
+Two follow-up changes landed after this plan was written and are not reflected in the phases
+below: the Search page was renamed `/search-arxiv.html` → `/search.html` and reduced to the
+single ADS / SciX source (the arXiv API option was dropped, since ADS indexes arXiv papers and
+adds metadata; `/api/arxiv/search` remains for the Chat page lookup), and the Saved Papers page
+gained a folded tag bar plus `field:value` search.
 
 ---
 
