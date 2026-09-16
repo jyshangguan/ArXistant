@@ -212,7 +212,7 @@ Chrome extension.
 If you previously installed a debug build, uninstall it first: the debug and
 release builds use different signing keys, so they cannot be upgraded in place.
 Building the APK from source is covered in the
-[Android app guide](android.html).
+[Android app guide]({{ '/android/' | relative_url }}).
 
 ## ADS API token
 
@@ -245,7 +245,7 @@ The Chat page needs an OpenAI-compatible LLM (OpenAI, DeepSeek, OpenRouter,
 Moonshot, Zhipu, or a local Ollama). Nothing else requires one. After the
 extension is loaded, open its **Settings** page, expand the **LLM (Chat)**
 section, and save a base URL, model, and API key — see
-[Configure an LLM](user-guide.html#configure-an-llm) in the user guide. The
+[Configure an LLM]({{ '/user-guide/' | relative_url }}#configure-an-llm) in the user guide. The
 key is kept in ArXistant's data directory with owner-only file permissions
 (plus a best-effort keychain copy), never inside the repository.
 

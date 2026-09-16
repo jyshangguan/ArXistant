@@ -275,7 +275,7 @@ but tasks run in-process and secrets are stored via an Android Keystore backend.
 On Android the server injects a mobile menu (a floating ⋯ button replacing the
 desktop nav), enables pull-to-refresh with a sync-first refresh, and runs
 periodic Nutstore auto-sync every 30 minutes. See the
-[Android app guide](android.html).
+[Android app guide]({{ '/android/' | relative_url }}).
 
 ## Repository structure
 

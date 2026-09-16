@@ -266,7 +266,7 @@ journal-only records, and adds metadata (year, citation count, bibcode, DOI).
 It requires an
 [ADS token](https://ui.adsabs.harvard.edu/user/settings/token) — set it from
 the extension's **Settings → ADS / SciX** section (see
-[Installation](installation.html#ads-api-token)). Without a token, the page
+[Installation]({{ '/installation/' | relative_url }}#ads-api-token)). Without a token, the page
 says so before you search.
 
 Results use the same card layout as the Daily page: the arXiv ID sits before
