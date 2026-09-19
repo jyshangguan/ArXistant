@@ -43,6 +43,7 @@ which runs CPython (plus NumPy and scikit-learn) inside the Android process:
   │                ├─ SQLite paper DB (app-private storage)
   │                └─ Nutstore WebDAV sync (periodic auto-sync)
   └─ MainActivity
+        ├─ TextToSpeech engine (native voice for the Listen button)
         └─ WebView -> http://127.0.0.1:8765/daily.html
 ```
 
@@ -77,6 +78,19 @@ WebView. It adds:
   page instead of leaving the app, and the same works as an edge swipe inside
   the page (swipe right from the left edge, or swipe left from the right
   edge).
+- **Voice digest (🔊 Listen)**: the Daily and Recent pages' Listen button
+  works on the phone too. The WebView has no speechSynthesis, so the app
+  exposes its native TextToSpeech engine through the `ArxistantAndroid`
+  bridge (`ttsSpeak` speaks one sentence chunk at a time and reports
+  completion back into the page). The same LLM digests, paper announcements
+  ("Paper N. *Title*. By *author* and colleagues."), pauses, transcript,
+  batch Continue, Pause/Skip/Stop all work — Pause stops the current
+  sentence and Resume re-speaks it, since Android's engine cannot pause
+  mid-utterance. Because the phone has no extension settings page, the
+  Listen panel itself shows a small voice / rate / papers-per-reading row
+  that saves to the server (`/api/tts/config`), so the settings stay in
+  sync with the desktop. If no TTS engine is installed (or the engine is
+  still binding), the panel falls back to showing the digest as text.
 - **Check for Updates** (⬆️ in the ⋯ menu): the app compares its version with
   the latest GitHub release, offers to download the release APK, and hands it
   to the package installer. Android asks once for the "install unknown apps"
@@ -104,6 +118,12 @@ compatible with the desktop app):
    stored in plaintext.
 3. **Configurable bind address** — `run_server()` honors `ARXISTANT_BIND`
    (default `localhost`); the Android bootstrap sets it to `127.0.0.1`.
+4. **Native voice bridge** — the Listen script injected into the Daily and
+   Recent pages checks `window.ArxistantAndroid.ttsSpeak` at runtime: when
+   present it drives the app's TextToSpeech engine (same sentence chunking,
+   announcements, and pauses as the desktop's speechSynthesis path) and
+   offers the inline voice settings row; when absent (older APK, desktop
+   browser) the behavior is unchanged.
 
 ## Prerequisites
 

@@ -5481,10 +5481,21 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
   .arx-listen-continue.open { display: block; }
   .arx-listen-continue .cq { font-size: 12px; color: #555; margin-bottom: 6px; }
   .paper.arx-listen-current { outline: 3px solid #b31b1b; outline-offset: 2px; }
+  .arx-listen-msettings { display: flex; gap: 6px; margin: 0 0 8px; }
+  .arx-listen-msettings select, .arx-listen-msettings input { flex: 1; min-width: 0; border: 1px solid #ddd; border-radius: 6px; padding: 4px 6px; font-size: 12px; font-family: inherit; background: #fff; color: #333; }
+  .arx-listen-msettings input[type="number"] { max-width: 64px; }
 </style>
 <script>
 (function () {
     var synth = (typeof speechSynthesis !== 'undefined') ? speechSynthesis : null;
+    // Android WebView has no speechSynthesis; the app exposes a native TTS
+    // engine through the same window.ArxistantAndroid bridge the "..." menu
+    // uses. Checking for ttsSpeak also keeps older APKs (without the TTS
+    // bridge) on the transcript-only path.
+    var bridge = (typeof window.ArxistantAndroid === 'object' &&
+                  window.ArxistantAndroid !== null &&
+                  typeof window.ArxistantAndroid.ttsSpeak === 'function')
+                 ? window.ArxistantAndroid : null;
 
     var btn = document.createElement('button');
     btn.className = 'arx-listen-btn';
@@ -5496,11 +5507,33 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
     panel.className = 'arx-listen-panel';
     panel.id = 'arx-listen-panel';
     panel.style.display = 'none';
+    // The settings row exists only on Android: the desktop settings live in
+    // the extension's options page, which the app has no equivalent of, and
+    // the page can POST to /api/tts/config directly (same origin).
+    var settingsRow = '';
+    if (bridge) {
+        settingsRow =
+        '  <div class="arx-listen-msettings">' +
+        '    <select class="ms-voice" title="Voice">' +
+        '      <option value="">Default voice</option>' +
+        '      <option value="male">Man</option>' +
+        '      <option value="female">Woman</option>' +
+        '    </select>' +
+        '    <select class="ms-rate" title="Speaking rate">' +
+        '      <option value="0.75">0.75×</option>' +
+        '      <option value="1.0">1.0×</option>' +
+        '      <option value="1.25">1.25×</option>' +
+        '      <option value="1.5">1.5×</option>' +
+        '    </select>' +
+        '    <input class="ms-papers" type="number" min="1" max="50" step="1" value="5" title="Papers per reading">' +
+        '  </div>';
+    }
     panel.innerHTML =
         '<div class="arx-listen-head"><span class="t">🔊 Voice digest</span>' +
         '<button class="arx-listen-close" title="Close">×</button></div>' +
         '<div class="arx-listen-body">' +
         '  <div class="arx-listen-status"></div>' +
+        settingsRow +
         '  <div class="arx-listen-now" style="display:none;">' +
         '    <div class="np-title"></div><div class="np-progress"></div>' +
         '  </div>' +
@@ -5524,6 +5557,7 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
     };
 
     var $status, $now, $transcript, $continue, $pauseBtn, $skipBtn, $stopBtn;
+    var $settingsRow = null;  // Android-only inline voice/rate/papers row
     // Bumped by every cancel() (stop / skip / close / new paper) so stale
     // utterance events from before the cancel are ignored.
     var speakToken = 0;
@@ -5659,15 +5693,66 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
         return chunks;
     }
 
+    // ── native bridge engine (Android app) ──
+    // Mirrors the speechSynthesis path: one sentence chunk at a time, each
+    // with a numeric id. Java signals completion by calling
+    // window.__arxTtsOnEnd(id) / __arxTtsOnError(id) (via evaluateJavascript),
+    // so the chunk chain continues exactly like the utterance events do.
+    var bridgeUtter = { id: 0, cb: null };
+    window.__arxTtsOnEnd = function (id) {
+        if (bridgeUtter.id !== id || !bridgeUtter.cb) return;
+        var cb = bridgeUtter.cb;
+        bridgeUtter.cb = null;
+        S.ci++;
+        cb();
+    };
+    // A stopped/interrupted utterance (Skip/Stop/Pause also fires onError) is
+    // dropped by the id/cb check; real engine errors continue the reading.
+    window.__arxTtsOnError = window.__arxTtsOnEnd;
+
+    function bridgeSpeak(text, tok, cb) {
+        bridgeUtter.id++;
+        var id = bridgeUtter.id;
+        bridgeUtter.cb = cb;
+        var ok = false;
+        try {
+            ok = bridge.ttsSpeak(S.voice ? String(S.voice.name) : '',
+                                 text, String(S.rate), String(id));
+        } catch (e) { ok = false; }
+        if (!ok) {
+            // Engine refused (not ready / no engine / dead): drop the
+            // callback so a late completion cannot re-enter, and move on.
+            bridgeUtter.cb = null;
+            S.ci++;
+            cb();
+        }
+    }
+
+    function bridgeCancel() {
+        // Drop the pending completion BEFORE stopping, so the onError the
+        // stop triggers is ignored by __arxTtsOnError.
+        bridgeUtter.cb = null;
+        try { bridge.ttsStop(); } catch (e) {}
+    }
+
+    // The engine binds asynchronously; wait a few seconds for readiness so a
+    // freshly opened app does not silently fall back to transcript-only.
+    async function bridgeEngineReady() {
+        for (var i = 0; i < 8; i++) {
+            var ok = false;
+            try { ok = !!bridge.ttsAvailable(); } catch (e) { ok = false; }
+            if (ok) return true;
+            await new Promise(function (r) { setTimeout(r, 400); });
+        }
+        return false;
+    }
+
     function speakNextChunk() {
         if (S.mode !== 'speaking') return;
         if (S.ci >= S.chunks.length) { advancePaper(); return; }
         var item = S.chunks[S.ci];
-        var u = new SpeechSynthesisUtterance(item.text);
-        if (S.voice) { u.voice = S.voice; u.lang = S.voice.lang || 'en-US'; }
-        u.rate = S.rate;
         // Generation token: cancel() (stop/skip/close/new paper) can leave a
-        // stale onend/onerror in the event queue; if the token moved on, the
+        // stale completion in the event queue; if the token moved on, the
         // event belongs to an abandoned utterance and must be ignored.
         var tok = speakToken;
         var after = function () {
@@ -5675,19 +5760,28 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
             if (item.pauseAfter > 0) gapWait(tok, item.pauseAfter);
             else speakNextChunk();
         };
-        u.onend = function () {
-            if (tok !== speakToken) return;
-            S.ci++;
-            after();
-        };
-        u.onerror = function (ev) {
-            if (tok !== speakToken) return;
-            // cancel() during pause/skip/stop surfaces here — not an error.
-            if (ev && (ev.error === 'interrupted' || ev.error === 'canceled')) return;
-            S.ci++;
-            after();
-        };
-        try { synth.speak(u); } catch (e) { advancePaper(); }
+        if (synth) {
+            var u = new SpeechSynthesisUtterance(item.text);
+            if (S.voice) { u.voice = S.voice; u.lang = S.voice.lang || 'en-US'; }
+            u.rate = S.rate;
+            u.onend = function () {
+                if (tok !== speakToken) return;
+                S.ci++;
+                after();
+            };
+            u.onerror = function (ev) {
+                if (tok !== speakToken) return;
+                // cancel() during pause/skip/stop surfaces here — not an error.
+                if (ev && (ev.error === 'interrupted' || ev.error === 'canceled')) return;
+                S.ci++;
+                after();
+            };
+            try { synth.speak(u); } catch (e) { advancePaper(); }
+        } else if (bridge) {
+            bridgeSpeak(item.text, tok, after);
+        } else {
+            advancePaper();  // no engine at all (guarded earlier)
+        }
     }
 
     // A short silence between chunks (after the announcement / at the end of
@@ -5709,7 +5803,7 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
         highlightPaper(p.id);
         showNow(p);
         markTranscriptCurrent();
-        S.chunks = synth ? buildSpokenChunks(p, i) : [];
+        S.chunks = (synth || bridge) ? buildSpokenChunks(p, i) : [];
         S.ci = 0;
         speakNextChunk();
     }
@@ -5732,6 +5826,44 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
     }
 
     // ── data flow ──
+    // Android has no extension settings page, so the panel itself offers the
+    // three options; changes are POSTed to the same /api/tts/config the
+    // extension uses (same origin) and applied from the next batch.
+    function syncSettingsRow() {
+        if (!$settingsRow) return;
+        $settingsRow.querySelector('.ms-voice').value = S.voiceRole || '';
+        $settingsRow.querySelector('.ms-rate').value = String(S.rate || 1.0);
+        $settingsRow.querySelector('.ms-papers').value = String(S.perRead || 5);
+    }
+
+    function initSettingsRow() {
+        syncSettingsRow();
+        var save = function (cfg) {
+            fetch('/api/tts/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cfg)
+            }).then(function (r) { return r.json(); })
+              .catch(function () { return null; });
+        };
+        $settingsRow.querySelector('.ms-voice').addEventListener('change', function () {
+            S.voiceRole = this.value;
+            S.voice = resolveVoice(S.voiceRole);
+            save({ voice: S.voiceRole });
+        });
+        $settingsRow.querySelector('.ms-rate').addEventListener('change', function () {
+            S.rate = parseFloat(this.value) || 1.0;
+            save({ rate: S.rate });
+        });
+        var papers = $settingsRow.querySelector('.ms-papers');
+        papers.addEventListener('change', function () {
+            var n = parseInt(this.value, 10);
+            if (!n || n < 1 || n > 50) { this.value = String(S.perRead); return; }
+            S.perRead = n;
+            save({ papers_per_read: n });
+        });
+    }
+
     async function refreshSettings() {
         // Settings (voice role, N papers per batch, rate) live on the server
         // so they are shared across devices; each device resolves the role
@@ -5746,6 +5878,7 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
                 S.llmReady = !!cfg.llm_ready;
                 S.voiceRole = cfg.voice || '';
                 S.voice = resolveVoice(S.voiceRole);
+                syncSettingsRow();
             }
         } catch (e) { /* defaults are fine */ }
     }
@@ -5796,15 +5929,23 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
             setStatus('No papers to read — refresh the list first.');
             return;
         }
-        if (!synth) {
-            // No speechSynthesis (common in Android WebView): show the digest
-            // as text and offer Continue for the next batch.
+        var engineReady = synth ? true : (bridge ? await bridgeEngineReady() : false);
+        if (!engineReady) {
+            // No usable voice engine (no speechSynthesis, or the Android TTS
+            // bridge never became ready): show the digest as text and offer
+            // Continue for the next batch.
             S.mode = 'batchdone';
             setControls('batchdone');
             $transcript.classList.add('open');
-            setStatus('⚠️ This browser has no voice playback; showing the digest as text.');
+            setStatus('⚠️ This device has no voice playback; showing the digest as text.');
             if (S.remaining > 0) showContinue();
             return;
+        }
+        if (bridge && S.voiceRole && !S.voice) {
+            // The engine just finished binding; the voices list is available
+            // now even if it was empty when the settings were read.
+            loadVoices();
+            S.voice = resolveVoice(S.voiceRole);
         }
         var note = '';
         if (!data.llm_used) {
@@ -5839,7 +5980,18 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
     // so its gendered voices are UK English and rank below US ones.
     // NOTE: kept in sync with the resolver in the extension's options.js.
     var voices = [];
-    function loadVoices() { if (synth) voices = synth.getVoices() || []; }
+    function loadVoices() {
+        if (synth) {
+            voices = synth.getVoices() || [];
+        } else if (bridge) {
+            // The Android app reports its TTS engine's voices as JSON
+            // [{name, lang}]; same shape as speechSynthesis voices.
+            try { voices = JSON.parse(bridge.ttsVoices() || '[]'); }
+            catch (e) { voices = []; }
+        } else {
+            voices = [];
+        }
+    }
     var FEMALE_VOICE_HINTS = ['female', 'samantha', 'karen', 'moira', 'tessa',
         'fiona', 'victoria', 'serena', 'allison', 'ava', 'susan', 'zoe',
         'nicky', 'catherine', 'charlotte', 'shelley', 'flo', 'kate', 'zira',
@@ -5894,7 +6046,7 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
     }
 
     function resolveVoice(role) {
-        if (!synth) return null;
+        if (!synth && !bridge) return null;
         if (role === 'male' || role === 'female') return findGenderedVoice(role);
         return null;  // "" (or unknown role) = system default
     }
@@ -5912,12 +6064,47 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
         } else if ('onvoiceschanged' in synth) {
             synth.onvoiceschanged = onVoicesReady;
         }
+    } else if (bridge) {
+        // The Android engine reports its voices synchronously; call once at
+        // load (the engine may still be binding — see bridgeEngineReady()).
+        loadVoices();
     }
 
     // ── controls ──
+    function cancelSpeech() {
+        // One cancel helper for both engines; bridgeCancel() drops the
+        // pending completion first so the stop's own onError is ignored.
+        if (synth) { try { synth.cancel(); } catch (e) {} }
+        else if (bridge) bridgeCancel();
+    }
+
+    function pauseSpeaking() {
+        if (synth) { try { synth.pause(); } catch (e) {} }
+        else if (bridge) {
+            // Android TTS has no pause: stop the current sentence now; the
+            // pending gap (if any) is held by gapWait's paused check, and
+            // Resume re-speaks the interrupted sentence from its start.
+            S.paused = true;
+            bridgeCancel();
+        }
+    }
+
+    function resumeSpeaking() {
+        if (synth) { try { synth.resume(); } catch (e) {} }
+        else if (bridge && S.mode === 'speaking') {
+            // Kill any inter-paper gap timeout armed before the pause
+            // (otherwise it would ALSO release and speak again, skipping
+            // ahead). S.ci already points at the right chunk in both pause
+            // cases: mid-gap (incremented on completion) or mid-sentence
+            // (its completion was dropped), so re-speaking is correct.
+            speakToken++;
+            speakNextChunk();
+        }
+    }
+
     function stopAll() {
         speakToken++;
-        if (synth) { try { synth.cancel(); } catch (e) {} }
+        cancelSpeech();
         S.mode = 'idle';
         S.paused = false;
         setControls('idle');
@@ -5927,7 +6114,7 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
         panel.style.display = 'block';
         if (S.mode === 'idle' || S.mode === 'done') start();
         else if (S.mode === 'speaking' && S.paused) {
-            if (synth) { try { synth.resume(); } catch (e) {} }
+            resumeSpeaking();
             S.paused = false;
             setControls('speaking');
         }
@@ -5955,16 +6142,17 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
         $pauseBtn = panel.querySelector('.ctl-pause');
         $skipBtn = panel.querySelector('.ctl-skip');
         $stopBtn = panel.querySelector('.ctl-stop');
+        $settingsRow = panel.querySelector('.arx-listen-msettings');
+        if ($settingsRow) initSettingsRow();
 
         panel.querySelector('.arx-listen-close').addEventListener('click', close);
         $pauseBtn.addEventListener('click', function () {
-            if (!synth) return;
             if (S.paused) {
-                try { synth.resume(); } catch (e) {}
+                resumeSpeaking();
                 S.paused = false;
                 $pauseBtn.textContent = '⏸ Pause';
             } else {
-                try { synth.pause(); } catch (e) {}
+                pauseSpeaking();
                 S.paused = true;
                 $pauseBtn.textContent = '▶ Resume';
             }
@@ -5973,7 +6161,7 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
             if (S.mode !== 'speaking') return;
             // Also invalidates any pending inter-paper gap timeout.
             speakToken++;
-            if (synth) { try { synth.cancel(); } catch (e) {} }
+            cancelSpeech();
             S.chunks = []; S.ci = 0;
             advancePaper();
         });
@@ -5992,11 +6180,14 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
             if (panel.contains(e.target) || btn.contains(e.target)) return;
             close();
         });
-        // Speech must not continue after leaving the page.
-        window.addEventListener('beforeunload', function () {
+        // Speech must not continue after leaving the page. pagehide fires
+        // more reliably than beforeunload in mobile WebViews.
+        var onPageHide = function () {
             speakToken++;
-            if (synth) { try { synth.cancel(); } catch (e) {} }
-        });
+            cancelSpeech();
+        };
+        window.addEventListener('beforeunload', onPageHide);
+        window.addEventListener('pagehide', onPageHide);
     }
 
     if (document.readyState === 'loading') {

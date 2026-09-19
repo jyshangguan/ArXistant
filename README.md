@@ -90,7 +90,8 @@ flowchart LR
 ArXistant is currently at version **0.3.2**. The Chrome extension is loaded as
 an unpacked extension. macOS has a bundled launcher, and Debian/Ubuntu has an
 experimental `.deb` package with a systemd user service. A standalone **Android
-app (v0.3.2)** runs the full pipeline on the phone via Chaquopy.
+app (v0.3.2)** runs the full pipeline on the phone via Chaquopy — including
+the 🔊 voice digest, spoken by the phone's own text-to-speech engine.
 
 ## License
 

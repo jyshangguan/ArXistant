@@ -136,6 +136,12 @@ and JSON endpoints. It:
   stop at the end of each paper, settings re-read on every batch so a
   change applies without a page reload, and a generation token so
   Stop/Skip can never leave stale utterance events or pending gaps behind.
+  On Android the WebView has no speechSynthesis; the app exposes its
+  native TextToSpeech engine through the ArxistantAndroid bridge
+  (ttsSpeak/ttsStop plus completion callbacks), the same script drives it
+  chunk by chunk with identical announcements and pauses, and the panel
+  shows an inline voice / rate / batch-size row (POSTed to the same
+  /api/tts/config) since the phone has no extension settings page.
 
 Requests are handled on separate threads (a threading HTTP server) so a slow
 or streaming LLM response cannot block the rest of the app.

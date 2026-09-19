@@ -72,9 +72,11 @@ panel shows progress plus a transcript you can expand (**📜 Transcript**).
 
 When the batch finishes, the panel asks whether to **Continue** with the next
 papers of the list, so a long reading list can be consumed in batches; at
-the end of the list it reports that all papers have been read. Browsers
-without speech synthesis (some Android WebViews) show the digest as text
-instead.
+the end of the list it reports that all papers have been read. On the
+Android app the Listen button works the same way through the phone's own
+speech engine, and the panel itself shows the voice / rate / papers
+settings (there is no extension settings page there); a browser or device
+without any voice engine shows the digest as text instead.
 
 The digests are written by the same LLM as the Chat page (see
 [Configure an LLM](#configure-an-llm)). Without a configured LLM the title
