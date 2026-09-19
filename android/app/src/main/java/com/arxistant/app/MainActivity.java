@@ -42,6 +42,12 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
     // engine through the ArxistantAndroid bridge below.
     private TextToSpeech tts;
     private volatile boolean ttsReady = false;
+    // True when the last init attempt FAILED (typically: no text-to-speech
+    // engine installed or enabled on the device — common on Xiaomi/MIUI).
+    // Distinct from "still initializing": the page shows different guidance.
+    private volatile boolean ttsInitError = false;
+    // Throttles re-init attempts so polling cannot spin the engine.
+    private volatile long lastTtsInitAt = 0L;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -111,38 +117,85 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
         updateChecker.check(false);
     }
 
-    /** Start the native TTS engine used by the Listen (voice digest) feature. */
+    /**
+     * (Re)start the native TTS engine used by the Listen (voice digest)
+     * feature. Always called on the main thread. Safe to call again after a
+     * failed init — e.g. after the user installed/enabled an engine in the
+     * system settings — because the old instance is shut down first.
+     */
     private void initTts() {
+        lastTtsInitAt = SystemClock.uptimeMillis();
+        ttsInitError = false;
+        if (tts != null) {
+            try {
+                tts.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                tts.shutdown();
+            } catch (Exception ignored) {
+            }
+            tts = null;
+        }
+        ttsReady = false;
         try {
             tts = new TextToSpeech(getApplicationContext(), status -> {
                 ttsReady = (status == TextToSpeech.SUCCESS);
-                if (ttsReady) {
+                ttsInitError = (status != TextToSpeech.SUCCESS);
+                // The callback can run before the constructor assigns the
+                // field, so re-read it instead of capturing; guard everything.
+                TextToSpeech engine = tts;
+                if (ttsReady && engine != null) {
                     try {
-                        tts.setLanguage(Locale.US);
+                        engine.setLanguage(Locale.US);
                     } catch (Exception ignored) {
                     }
-                    tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                        @Override
-                        public void onStart(String utteranceId) {
-                        }
+                    try {
+                        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                            @Override
+                            public void onStart(String utteranceId) {
+                            }
 
-                        @Override
-                        public void onDone(String utteranceId) {
-                            notifyTtsDone(utteranceId, false);
-                        }
+                            @Override
+                            public void onDone(String utteranceId) {
+                                notifyTtsDone(utteranceId, false);
+                            }
 
-                        @Override
-                        public void onError(String utteranceId) {
-                            // Also fired when stop() interrupts an utterance
-                            // (Skip/Stop/Pause); the page drops those by id.
-                            notifyTtsDone(utteranceId, true);
-                        }
-                    });
+                            @Override
+                            public void onError(String utteranceId) {
+                                // Also fired when stop() interrupts an utterance
+                                // (Skip/Stop/Pause); the page drops those by id.
+                                notifyTtsDone(utteranceId, true);
+                            }
+                        });
+                    } catch (Exception ignored) {
+                    }
                 }
             });
         } catch (Exception e) {
             ttsReady = false;
+            ttsInitError = true;
         }
+    }
+
+    /**
+     * Best-effort engine recovery, called when the page finds the engine
+     * unavailable. The first attempt may have failed because no engine was
+     * installed/enabled yet (the user then fixed it in the system settings)
+     * or because the bind silently stalled; a throttled re-init on the main
+     * thread lets the next poll see a working engine without an app restart.
+     */
+    private void maybeReinitTts() {
+        if (ttsReady) {
+            return;
+        }
+        long now = SystemClock.uptimeMillis();
+        // At most one attempt every 3s; also give a freshly started attempt
+        // (whose onInit callback may still be pending) time to complete.
+        if (now - lastTtsInitAt < 3000L) {
+            return;
+        }
+        mainHandler.post(this::initTts);
     }
 
     /**
@@ -171,6 +224,12 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
         // permission, launch the installer now that the user is back.
         if (updateChecker != null) {
             updateChecker.resumePendingInstall();
+        }
+        // The user may have just installed/enabled a TTS engine in the
+        // system settings (the Listen panel offers a direct link); recover
+        // without requiring an app restart.
+        if (!ttsReady) {
+            maybeReinitTts();
         }
     }
 
@@ -244,7 +303,47 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
 
         @JavascriptInterface
         public boolean ttsAvailable() {
+            if (ttsReady) {
+                return true;
+            }
+            // Recovery hook: the engine may have become usable since the
+            // last check (installed/enabled in settings, or a stalled bind).
+            maybeReinitTts();
             return ttsReady;
+        }
+
+        /**
+         * Why the engine is unavailable, for actionable guidance in the
+         * Listen panel: "ok" (ready), "no_engine" (last init failed —
+         * typically no TTS engine installed/enabled on the device), or
+         * "starting" (initializing; worth waiting/retrying).
+         */
+        @JavascriptInterface
+        public String ttsProblem() {
+            if (ttsReady) {
+                return "ok";
+            }
+            return ttsInitError ? "no_engine" : "starting";
+        }
+
+        /**
+         * Open the system text-to-speech settings so the user can
+         * install/enable an engine (e.g. "Speech Services by Google") —
+         * the fix for the common no-engine case on Xiaomi and similar.
+         */
+        @JavascriptInterface
+        public void openTtsSettings() {
+            mainHandler.post(() -> {
+                try {
+                    startActivity(new Intent("com.android.settings.TTS_SETTINGS"));
+                    return;
+                } catch (Exception ignored) {
+                }
+                try {
+                    startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS));
+                } catch (Exception ignored) {
+                }
+            });
         }
 
         @JavascriptInterface
@@ -270,51 +369,67 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
          * Speak one chunk of text. {@code voiceName} selects the engine
          * voice by name (empty = the engine's default for US English);
          * {@code rate} is a 0.5–2.0 multiplier; {@code utteranceId} is the
-         * numeric id echoed back on completion.
+         * numeric id echoed back on completion. Engine calls run on the main
+         * thread (this method is invoked on the WebView's bridge thread);
+         * if the state changes before the chunk is queued, a completion is
+         * synthesized so the page's chunk chain can never stall.
          */
         @JavascriptInterface
         public boolean ttsSpeak(String voiceName, String text, String rate, String utteranceId) {
             if (!ttsReady || tts == null || text == null || text.isEmpty()) {
                 return false;
             }
-            try {
-                float r;
-                try {
-                    r = Float.parseFloat(rate);
-                } catch (NumberFormatException e) {
-                    r = 1f;
+            mainHandler.post(() -> {
+                TextToSpeech engine = tts;
+                if (engine == null || !ttsReady) {
+                    // Engine went away between the check and the post (e.g.
+                    // re-init): report the chunk as errored so the page
+                    // moves on instead of waiting forever.
+                    notifyTtsDone(utteranceId, true);
+                    return;
                 }
-                tts.setSpeechRate(Math.max(0.5f, Math.min(2f, r)));
-                boolean matched = false;
-                if (voiceName != null && !voiceName.isEmpty()) {
-                    for (Voice v : tts.getVoices()) {
-                        if (voiceName.equals(v.getName())) {
-                            tts.setVoice(v);
-                            matched = true;
-                            break;
+                try {
+                    float r;
+                    try {
+                        r = Float.parseFloat(rate);
+                    } catch (NumberFormatException e) {
+                        r = 1f;
+                    }
+                    engine.setSpeechRate(Math.max(0.5f, Math.min(2f, r)));
+                    boolean matched = false;
+                    if (voiceName != null && !voiceName.isEmpty()) {
+                        for (Voice v : engine.getVoices()) {
+                            if (voiceName.equals(v.getName())) {
+                                engine.setVoice(v);
+                                matched = true;
+                                break;
+                            }
                         }
                     }
+                    if (!matched) {
+                        // No (or empty) voice name: fall back to plain US
+                        // English with the engine's default voice.
+                        engine.setLanguage(Locale.US);
+                    }
+                    engine.speak(text, TextToSpeech.QUEUE_FLUSH, new Bundle(), utteranceId);
+                } catch (Exception e) {
+                    notifyTtsDone(utteranceId, true);
                 }
-                if (!matched) {
-                    // No (or empty) voice name: fall back to plain US English
-                    // with the engine's default voice.
-                    tts.setLanguage(Locale.US);
-                }
-                tts.speak(text, TextToSpeech.QUEUE_FLUSH, new Bundle(), utteranceId);
-                return true;
-            } catch (Exception e) {
-                return false;
-            }
+            });
+            return true;
         }
 
         @JavascriptInterface
         public void ttsStop() {
-            if (tts != null) {
-                try {
-                    tts.stop();
-                } catch (Exception ignored) {
+            mainHandler.post(() -> {
+                TextToSpeech engine = tts;
+                if (engine != null) {
+                    try {
+                        engine.stop();
+                    } catch (Exception ignored) {
+                    }
                 }
-            }
+            });
         }
     }
 

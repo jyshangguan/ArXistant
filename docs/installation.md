@@ -95,7 +95,7 @@ From a repository checkout:
 
 ```bash
 ./packaging/linux/build-deb.sh
-sudo apt install ./dist/arxistant_0.4.0_all.deb
+sudo apt install ./dist/arxistant_0.4.1_all.deb
 ```
 
 The dependency installation is relatively large because Debian's scientific

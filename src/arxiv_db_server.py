@@ -614,7 +614,7 @@ def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote
     last_error = "unknown network error"
     for attempt in range(1, attempts + 1):
         try:
-            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.0 (personal arXiv reader)'})
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.1 (personal arXiv reader)'})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read().decode('utf-8')
         except urllib.error.HTTPError as e:
@@ -1323,7 +1323,7 @@ def build_chat_request(base_url, model, messages, temperature, api_key):
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
-        "User-Agent": "ArXistant/0.4.0",
+        "User-Agent": "ArXistant/0.4.1",
     }
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -1547,7 +1547,7 @@ def s2_search(query, limit=10):
     """Semantic Scholar keyword search with citation counts + TLDR (keyless)."""
     url = ("https://api.semanticscholar.org/graph/v1/paper/search?query="
            + urllib.parse.quote(query) + f"&limit={limit}&fields=" + S2_FIELDS)
-    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.1"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return [_s2_to_item(p) for p in (data.get("data") or [])]
@@ -1558,7 +1558,7 @@ def s2_related(arxiv_id, limit=10):
     url = f"https://api.semanticscholar.org/recommendations/v1/papers/?limit={limit}&fields={S2_FIELDS}"
     req = urllib.request.Request(
         url, data=json.dumps({"positivePaperIds": ["arXiv:" + arxiv_id]}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.0"},
+        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.1"},
         method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -1750,7 +1750,7 @@ def _chat_completion(base_url, model, messages, temperature, api_key, tools=None
         payload["temperature"] = temperature
     if tools:
         payload["tools"] = tools
-    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.0"}
+    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.1"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -2095,7 +2095,7 @@ def fetch_paper_pdf(arxiv_id):
         return path
     url = ARXIV_PDF_URL.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
     req = urllib.request.Request(
-        url, headers={"User-Agent": "ArXistant/0.4.0 (local research assistant)"})
+        url, headers={"User-Agent": "ArXistant/0.4.1 (local research assistant)"})
     temp_path = f"{path}.{threading.get_ident()}.tmp"
     try:
         # Stream straight to disk in chunks so large PDFs never sit in memory.
@@ -2518,7 +2518,7 @@ def fetch_paper_fulltext(arxiv_id):
     for tmpl in ARXIV_HTML_URLS:
         url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
         req = urllib.request.Request(
-            url, headers={"User-Agent": "ArXistant/0.4.0 (local research assistant)"})
+            url, headers={"User-Agent": "ArXistant/0.4.1 (local research assistant)"})
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
@@ -3593,7 +3593,7 @@ class Handler(BaseHTTPRequestHandler):
         if use_tools:
             payload["tools"] = CHAT_TOOLS
         headers = {"Content-Type": "application/json",
-                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.0"}
+                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.1"}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -5491,11 +5491,21 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
     // Android WebView has no speechSynthesis; the app exposes a native TTS
     // engine through the same window.ArxistantAndroid bridge the "..." menu
     // uses. Checking for ttsSpeak also keeps older APKs (without the TTS
-    // bridge) on the transcript-only path.
-    var bridge = (typeof window.ArxistantAndroid === 'object' &&
-                  window.ArxistantAndroid !== null &&
-                  typeof window.ArxistantAndroid.ttsSpeak === 'function')
-                 ? window.ArxistantAndroid : null;
+    // bridge) on the transcript-only path. Resolved lazily (and re-resolved
+    // per batch) so a bridge injected late still works, and typed tolerantly
+    // because some WebView versions report the injected object as something
+    // other than 'object'.
+    function getBridge() {
+        try {
+            var b = window.ArxistantAndroid;
+            if (b && typeof b.ttsSpeak !== 'undefined' &&
+                typeof b.ttsAvailable !== 'undefined') {
+                return b;
+            }
+        } catch (e) {}
+        return null;
+    }
+    var bridge = getBridge();
 
     var btn = document.createElement('button');
     btn.className = 'arx-listen-btn';
@@ -5735,16 +5745,68 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
         try { bridge.ttsStop(); } catch (e) {}
     }
 
-    // The engine binds asynchronously; wait a few seconds for readiness so a
-    // freshly opened app does not silently fall back to transcript-only.
+    // The engine binds asynchronously; wait for readiness so a freshly
+    // opened app does not silently fall back to transcript-only. The wait is
+    // generous (engine start-up is slow on some devices) and reports the
+    // problem class via the status line. Each poll also nudges the app to
+    // re-init the engine (ttsAvailable triggers a throttled recovery), so an
+    // engine installed while the panel is open is picked up automatically.
     async function bridgeEngineReady() {
-        for (var i = 0; i < 8; i++) {
+        for (var i = 0; i < 40; i++) {   // ~24s at 600ms
             var ok = false;
             try { ok = !!bridge.ttsAvailable(); } catch (e) { ok = false; }
             if (ok) return true;
-            await new Promise(function (r) { setTimeout(r, 400); });
+            if (i === 6 || i === 20) {
+                var problem = 'starting';
+                try { problem = String(bridge.ttsProblem ? bridge.ttsProblem() : 'starting'); }
+                catch (e) { problem = 'starting'; }
+                if (problem === 'no_engine') {
+                    // No TTS engine on the device: waiting will not help;
+                    // show the actionable guidance immediately.
+                    return false;
+                }
+                setStatus('⏳ The speech engine is still starting…');
+            }
+            await new Promise(function (r) { setTimeout(r, 600); });
         }
         return false;
+    }
+
+    // Actionable panel for a device with no usable speech engine: retry,
+    // a direct link to the system TTS settings, and reading as text.
+    function showEngineNotReady() {
+        S.mode = 'batchdone';
+        setControls('batchdone');
+        $transcript.classList.add('open');
+        var problem = 'starting';
+        try { problem = String(bridge.ttsProblem ? bridge.ttsProblem() : 'starting'); }
+        catch (e) { problem = 'starting'; }
+        var html = '';
+        if (problem === 'no_engine' && bridge.openTtsSettings) {
+            html = 'This phone has no text-to-speech engine (common on Xiaomi and similar). ' +
+                   'Open the system speech settings and install/enable one (e.g. "Speech Services by Google"), ' +
+                   'then press Retry — no app restart needed.';
+        } else {
+            html = 'The speech engine could not be started on this device.';
+        }
+        setStatus('⚠️ ' + html);
+        $continue.innerHTML =
+            '<div class="cq">The digest is ready — read it as text while the voice is unavailable?</div>' +
+            '<button class="primary">📜 Read as text</button> <button class="ctl-retry">⟳ Retry voice</button>' +
+            (problem === 'no_engine' && bridge.openTtsSettings
+                ? ' <button class="ctl-tts-set">⚙️ Speech settings</button>' : '');
+        $continue.classList.add('open');
+        $continue.querySelector('.primary').onclick = function () {
+            $continue.classList.remove('open');
+            setStatus('📜 Showing the digest as text.');
+        };
+        var retry = $continue.querySelector('.ctl-retry');
+        if (retry) retry.onclick = function () { fetchBatch(S.start); };
+        var setBtn = $continue.querySelector('.ctl-tts-set');
+        if (setBtn) setBtn.onclick = function () {
+            try { bridge.openTtsSettings(); } catch (e) {}
+        };
+        // The transcript (already rendered) is the text fallback.
     }
 
     function speakNextChunk() {
@@ -5929,16 +5991,16 @@ LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
             setStatus('No papers to read — refresh the list first.');
             return;
         }
+        // Re-resolve the bridge per batch: some WebView versions inject it
+        // late, and an app update can add it to an already-loaded page.
+        if (!bridge && !synth) bridge = getBridge();
         var engineReady = synth ? true : (bridge ? await bridgeEngineReady() : false);
         if (!engineReady) {
             // No usable voice engine (no speechSynthesis, or the Android TTS
-            // bridge never became ready): show the digest as text and offer
-            // Continue for the next batch.
-            S.mode = 'batchdone';
-            setControls('batchdone');
-            $transcript.classList.add('open');
-            setStatus('⚠️ This device has no voice playback; showing the digest as text.');
-            if (S.remaining > 0) showContinue();
+            // engine is missing or failed to start): show the digest as
+            // text with actionable guidance — the old behavior was a dead
+            // end with no diagnosis.
+            showEngineNotReady();
             return;
         }
         if (bridge && S.voiceRole && !S.voice) {
