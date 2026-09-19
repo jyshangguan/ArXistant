@@ -200,7 +200,7 @@ The Android app is self-contained: it runs the server, ML ranking, paper
 database, and cloud sync on the phone, so it needs no desktop install and no
 Chrome extension.
 
-1. Download `arxistant-release.v0.3.1.apk` from the
+1. Download `arxistant-release.v0.4.0.apk` from the
    [latest GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
 2. Copy the APK to the phone and open it. Android asks you to allow "install
    unknown apps" for the file manager or browser you used.

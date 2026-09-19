@@ -16,9 +16,9 @@ server or a desktop Mac.
 
 Prebuilt, signed APKs are attached to each
 [GitHub release](https://github.com/jyshangguan/ArXistant/releases/latest).
-For the latest published release (v0.3.1) the direct download is:
+For the latest published release (v0.4.0) the direct download is:
 
-<https://github.com/jyshangguan/ArXistant/releases/download/v0.3.1/arxistant-release.v0.3.1.apk>
+<https://github.com/jyshangguan/ArXistant/releases/download/v0.4.0/arxistant-release.v0.4.0.apk>
 
 Once an APK is installed, the app can update itself: **⋯ → Check for
 Updates** downloads the newest release APK and opens the installer.
@@ -144,7 +144,7 @@ cd android
 
 # Release APK (signed; see "Release build" below):
 ./gradlew :app:assembleRelease
-#   -> app/build/outputs/apk/release/arxistant-release.v0.3.1.apk
+#   -> app/build/outputs/apk/release/arxistant-release.v0.4.0.apk
 ```
 
 The first build downloads Chaquopy, NumPy, and scikit-learn wheels for the
@@ -211,7 +211,7 @@ existing tag.
 ## Install and run
 
 - **Phone:** install the release APK
-  (`app/build/outputs/apk/release/arxistant-release.v0.3.1.apk`) or the debug APK
+  (`app/build/outputs/apk/release/arxistant-release.v0.4.0.apk`) or the debug APK
   (`app/build/outputs/apk/debug/app-debug.apk`) and launch it. The daily page
   appears in the WebView after the server starts.
 - **Emulator:** use an arm64 system image on Apple Silicon. The
