@@ -97,6 +97,12 @@ and JSON endpoints. It:
   Saved Papers, and Search pages, so every paper card offers the same actions.
   The Daily and Recent pages additionally get the Listen script (pill, panel,
   and speech engine) at serve time.
+- Serves the ⚙️ Settings page (`/settings.html`) with the three server-side
+  settings surfaces in folded sections — the LLM (Chat + voice digests),
+  Voice Reading, and Cloud Sync (the form is a shared section also used by
+  the standalone `/cloud-sync.html`). It is the settings entry point for
+  the Android app, which has no extension options page, and a fallback in
+  any browser; everything it saves lives on that device's server.
 - Resolves SciX papers: `GET /api/scix/resolve` maps an ADS bibcode or arXiv
   ID to a paper record through `api.scixplorer.org` (a public mirror of the
   ADS API sharing the same token), with bounded retries and exact-match

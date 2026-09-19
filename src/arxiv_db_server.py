@@ -614,7 +614,7 @@ def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote
     last_error = "unknown network error"
     for attempt in range(1, attempts + 1):
         try:
-            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.1 (personal arXiv reader)'})
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.2 (personal arXiv reader)'})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read().decode('utf-8')
         except urllib.error.HTTPError as e:
@@ -1323,7 +1323,7 @@ def build_chat_request(base_url, model, messages, temperature, api_key):
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
-        "User-Agent": "ArXistant/0.4.1",
+        "User-Agent": "ArXistant/0.4.2",
     }
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -1547,7 +1547,7 @@ def s2_search(query, limit=10):
     """Semantic Scholar keyword search with citation counts + TLDR (keyless)."""
     url = ("https://api.semanticscholar.org/graph/v1/paper/search?query="
            + urllib.parse.quote(query) + f"&limit={limit}&fields=" + S2_FIELDS)
-    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.2"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return [_s2_to_item(p) for p in (data.get("data") or [])]
@@ -1558,7 +1558,7 @@ def s2_related(arxiv_id, limit=10):
     url = f"https://api.semanticscholar.org/recommendations/v1/papers/?limit={limit}&fields={S2_FIELDS}"
     req = urllib.request.Request(
         url, data=json.dumps({"positivePaperIds": ["arXiv:" + arxiv_id]}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.1"},
+        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.2"},
         method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -1750,7 +1750,7 @@ def _chat_completion(base_url, model, messages, temperature, api_key, tools=None
         payload["temperature"] = temperature
     if tools:
         payload["tools"] = tools
-    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.1"}
+    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.2"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -2095,7 +2095,7 @@ def fetch_paper_pdf(arxiv_id):
         return path
     url = ARXIV_PDF_URL.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
     req = urllib.request.Request(
-        url, headers={"User-Agent": "ArXistant/0.4.1 (local research assistant)"})
+        url, headers={"User-Agent": "ArXistant/0.4.2 (local research assistant)"})
     temp_path = f"{path}.{threading.get_ident()}.tmp"
     try:
         # Stream straight to disk in chunks so large PDFs never sit in memory.
@@ -2518,7 +2518,7 @@ def fetch_paper_fulltext(arxiv_id):
     for tmpl in ARXIV_HTML_URLS:
         url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
         req = urllib.request.Request(
-            url, headers={"User-Agent": "ArXistant/0.4.1 (local research assistant)"})
+            url, headers={"User-Agent": "ArXistant/0.4.2 (local research assistant)"})
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
@@ -3127,6 +3127,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/cloud-sync.html":
             self._send_html(CLOUD_SYNC_HTML)
 
+        elif path == "/settings.html":
+            # Server-side settings (LLM, Voice Reading, Cloud Sync) — the
+            # Android app's equivalent of the extension's options page.
+            self._send_html(SETTINGS_HTML)
+
         elif path == "/publications.html":
             self._send_html(PUBLICATIONS_VIEWER_HTML)
 
@@ -3593,7 +3598,7 @@ class Handler(BaseHTTPRequestHandler):
         if use_tools:
             payload["tools"] = CHAT_TOOLS
         headers = {"Content-Type": "application/json",
-                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.1"}
+                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.2"}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -4314,7 +4319,12 @@ CLOUD_SYNC_HTML = """<!DOCTYPE html>
   </div>
   <h1>☁️ Cloud Sync</h1>
 
-  <label for="provider">Provider</label>
+"""
+
+# The Cloud Sync form + logic, shared by /cloud-sync.html (standalone page)
+# and the /settings.html page (embedded section). Ids and functions are
+# unique to this section, so it can be dropped into either page as-is.
+CLOUD_SYNC_SECTION = """  <label for="provider">Provider</label>
   <select id="provider">
     <option value="webdav">Nutstore WebDAV (坚果云)</option>
     <option value="local_folder">Local folder</option>
@@ -4407,6 +4417,267 @@ CLOUD_SYNC_HTML = """<!DOCTYPE html>
     }
 
     loadStatus();
+  </script>
+"""
+
+CLOUD_SYNC_HTML = CLOUD_SYNC_HTML + CLOUD_SYNC_SECTION + """</body>
+</html>
+"""
+
+
+# Server-rendered settings page (/settings.html). The Chrome extension's
+# options page covers the desktop, but Android (and any browser without the
+# extension) has no equivalent — the LLM used by Chat and the 🔊 Listen
+# digests could not be configured on the phone at all. This page offers the
+# three server-side settings surfaces in one place: LLM (Chat), Voice
+# Reading, and Cloud Sync (the shared section above). It works everywhere
+# the server is reachable, same-origin, no extension needed.
+SETTINGS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings — ArXistant</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 16px; line-height: 1.5; color: #333; }
+    h1 { color: #1a1a1a; border-bottom: 2px solid #b31b1b; padding-bottom: 8px; font-size: 1.3em; }
+    .nav { margin-bottom: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+    .nav a { color: #b31b1b; text-decoration: none; font-size: 0.9em; }
+    label { display: block; font-size: 0.85em; color: #555; margin: 12px 0 4px; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 1em; box-sizing: border-box; background: white; }
+    .row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    button { padding: 10px 16px; border: none; border-radius: 6px; font-size: 0.95em; cursor: pointer; background: #f0f0f0; color: #333; }
+    button.primary { background: #b31b1b; color: white; }
+    .hint { font-size: 0.8em; color: #888; margin-top: 4px; }
+    .hint.ok { color: #2e7d32; }
+    .hint.warn { color: #b26a00; }
+    #status { background: #f8f9fa; border-radius: 6px; padding: 10px; font-size: 0.8em; white-space: pre-wrap; margin-top: 16px; color: #555; min-height: 1.2em; }
+    details.sec { border: 1px solid #e8e8e8; border-radius: 8px; margin-bottom: 12px; background: white; overflow: hidden; }
+    details.sec summary { padding: 12px 14px; font-size: 0.95em; font-weight: 600; color: #333; cursor: pointer; list-style: none; user-select: none; }
+    details.sec summary::-webkit-details-marker { display: none; }
+    details.sec summary::before { content: "▸"; color: #b31b1b; margin-right: 8px; font-size: 0.8em; }
+    details.sec[open] summary::before { content: "▾"; }
+    details.sec[open] summary { border-bottom: 1px solid #f0e6e6; }
+    .sec-body { padding: 2px 14px 14px; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="/daily.html">← Daily Papers</a>
+    <a href="/database.html">📂 Saved Papers</a>
+  </div>
+  <h1>⚙️ Settings</h1>
+  <p class="hint" style="margin: 0 0 12px;">These settings live on this device's ArXistant server and apply to every browser using it.</p>
+
+  <details class="sec" id="sec-llm" open>
+    <summary>💬 LLM (Chat &amp; voice digests)</summary>
+    <div class="sec-body">
+      <label for="llm-preset">Provider preset</label>
+      <select id="llm-preset">
+        <option value="custom">Custom / keep my values</option>
+        <option value="openai">OpenAI</option>
+        <option value="deepseek">DeepSeek</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="moonshot">Moonshot (Kimi)</option>
+        <option value="zhipu">Zhipu (GLM)</option>
+        <option value="ollama">Local Ollama</option>
+      </select>
+      <label for="llm-base-url">Base URL</label>
+      <input type="text" id="llm-base-url" placeholder="https://api.openai.com/v1">
+      <label for="llm-model">Model</label>
+      <input type="text" id="llm-model" placeholder="deepseek-chat, glm-4-flash, …">
+      <label for="llm-api-key">API key</label>
+      <input type="password" id="llm-api-key" placeholder="API key">
+      <div class="row">
+        <button class="primary" id="btn-llm-save">Save LLM Settings</button>
+        <button id="btn-llm-test">Test Connection</button>
+      </div>
+      <div class="hint" id="llm-status">Loading…</div>
+      <div class="hint">Used by the Chat page and the 🔊 Listen voice digests. The key is stored in the app's private data directory (owner-only file, plus the secure keystore when available).</div>
+    </div>
+  </details>
+
+  <details class="sec" id="sec-voice">
+    <summary>🔊 Voice Reading (Listen)</summary>
+    <div class="sec-body">
+      <label for="voice-role">Voice</label>
+      <select id="voice-role">
+        <option value="">System default</option>
+        <option value="male">Man</option>
+        <option value="female">Woman</option>
+      </select>
+      <div class="hint">American English is preferred when the device offers it.</div>
+      <label for="voice-rate">Speaking rate</label>
+      <select id="voice-rate">
+        <option value="0.75">0.75× (slower)</option>
+        <option value="1.0" selected>1.0× (normal)</option>
+        <option value="1.25">1.25× (faster)</option>
+        <option value="1.5">1.5× (fastest)</option>
+      </select>
+      <label for="voice-papers">Papers per reading</label>
+      <input type="number" id="voice-papers" min="1" max="50" step="1" value="5">
+      <div class="hint">How many papers the 🔊 Listen button reads per batch; it then offers to continue with the next papers.</div>
+      <div class="row">
+        <button class="primary" id="btn-voice-save">Save Voice Settings</button>
+      </div>
+      <div class="hint" id="voice-status">Loading…</div>
+    </div>
+  </details>
+
+  <details class="sec" id="sec-cloud">
+    <summary>☁️ Cloud Sync</summary>
+    <div class="sec-body">
+""" + CLOUD_SYNC_SECTION + """    </div>
+  </details>
+
+  <script>
+    // ── LLM (Chat & voice digests) ──
+    (function () {
+      var PRESETS = {
+        openai:     ['https://api.openai.com/v1', 'gpt-4o-mini'],
+        deepseek:   ['https://api.deepseek.com/v1', 'deepseek-chat'],
+        openrouter: ['https://openrouter.ai/api/v1', 'openai/gpt-4o-mini'],
+        moonshot:   ['https://api.moonshot.cn/v1', 'moonshot-v1-8k'],
+        zhipu:      ['https://open.bigmodel.cn/api/paas/v4', 'glm-4-flash'],
+        ollama:     ['http://localhost:11434/v1', 'llama3.1']
+      };
+      var presetEl = document.getElementById('llm-preset');
+      var baseUrlEl = document.getElementById('llm-base-url');
+      var modelEl = document.getElementById('llm-model');
+      var apiKeyEl = document.getElementById('llm-api-key');
+      var statusEl = document.getElementById('llm-status');
+
+      presetEl.addEventListener('change', function () {
+        var p = PRESETS[presetEl.value];
+        if (p) { baseUrlEl.value = p[0]; modelEl.value = p[1]; }
+      });
+
+      async function load() {
+        try {
+          var r = await fetch('/api/chat/config');
+          var c = await r.json();
+          baseUrlEl.value = c.base_url || '';
+          modelEl.value = c.model || '';
+          apiKeyEl.value = '';
+          apiKeyEl.placeholder = c.has_api_key ? 'API key saved — leave blank to keep' : 'API key';
+          var missing = [];
+          if (!c.base_url) missing.push('base URL');
+          if (!c.model) missing.push('model');
+          if (!c.has_api_key) missing.push('API key');
+          if (missing.length) {
+            statusEl.textContent = '⚠️ Missing: ' + missing.join(', ') + '.';
+            statusEl.className = 'hint warn';
+          } else {
+            statusEl.textContent = '✅ Ready: ' + c.model + ' (use Test Connection to verify).';
+            statusEl.className = 'hint ok';
+          }
+        } catch (e) {
+          statusEl.textContent = '⚠️ ' + e.message;
+          statusEl.className = 'hint warn';
+        }
+      }
+
+      async function save() {
+        var payload = { base_url: baseUrlEl.value.trim(), model: modelEl.value.trim() };
+        var k = apiKeyEl.value.trim();
+        if (k) payload.api_key = k;
+        if (!payload.base_url || !payload.model) {
+          statusEl.textContent = '⚠️ Base URL and model cannot be empty.';
+          statusEl.className = 'hint warn';
+          return;
+        }
+        try {
+          var r = await fetch('/api/chat/config', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          var d = await r.json();
+          if (!d.success) throw new Error(d.error || 'Failed to save');
+          await load();
+          await test();
+        } catch (e) {
+          statusEl.textContent = '⚠️ ' + e.message;
+          statusEl.className = 'hint warn';
+        }
+      }
+
+      async function test() {
+        statusEl.textContent = '⏳ Testing connection…';
+        statusEl.className = 'hint';
+        try {
+          var r = await fetch('/api/chat/config/test', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+          });
+          var d = await r.json();
+          if (!d.success) throw new Error(d.error || 'Test failed');
+          statusEl.textContent = '✅ Connection OK' + (d.model ? ' (' + d.model + ')' : '') + '.';
+          statusEl.className = 'hint ok';
+        } catch (e) {
+          statusEl.textContent = '⚠️ ' + e.message;
+          statusEl.className = 'hint warn';
+        }
+      }
+
+      document.getElementById('btn-llm-save').addEventListener('click', save);
+      document.getElementById('btn-llm-test').addEventListener('click', test);
+      load();
+    })();
+
+    // ── Voice Reading ──
+    (function () {
+      var roleEl = document.getElementById('voice-role');
+      var rateEl = document.getElementById('voice-rate');
+      var papersEl = document.getElementById('voice-papers');
+      var statusEl = document.getElementById('voice-status');
+
+      async function load() {
+        try {
+          var r = await fetch('/api/tts/config');
+          var c = await r.json();
+          if (c && c.success) {
+            roleEl.value = c.voice || '';
+            rateEl.value = String(c.rate || 1.0);
+            papersEl.value = c.papers_per_read || 5;
+            statusEl.textContent = c.llm_model
+              ? '✅ Digests will be written by ' + c.llm_model + '.'
+              : '⚠️ No LLM configured (see the section above) — Listen reads titles and abstracts.';
+            statusEl.className = c.llm_model ? 'hint ok' : 'hint warn';
+          }
+        } catch (e) {
+          statusEl.textContent = '⚠️ ' + e.message;
+          statusEl.className = 'hint warn';
+        }
+      }
+
+      async function save() {
+        var n = parseInt(papersEl.value, 10);
+        if (!n || n < 1 || n > 50) {
+          statusEl.textContent = '⚠️ Papers per reading must be between 1 and 50.';
+          statusEl.className = 'hint warn';
+          return;
+        }
+        try {
+          var r = await fetch('/api/tts/config', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              voice: roleEl.value,
+              rate: parseFloat(rateEl.value) || 1.0,
+              papers_per_read: n
+            })
+          });
+          var d = await r.json();
+          if (!d.success) throw new Error(d.error || 'Failed to save');
+          statusEl.textContent = '✅ Saved.';
+          statusEl.className = 'hint ok';
+        } catch (e) {
+          statusEl.textContent = '⚠️ ' + e.message;
+          statusEl.className = 'hint warn';
+        }
+      }
+
+      document.getElementById('btn-voice-save').addEventListener('click', save);
+      load();
+    })();
   </script>
 </body>
 </html>
@@ -4547,7 +4818,8 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
         { icon: '💬', label: 'Chat', href: '/chat.html', desc: 'Read and discuss your papers with an LLM' },
         { icon: '📚', label: 'My Publications', href: '/publications.html', desc: 'Import and manage your publications' },
         { icon: '🧠', label: 'ML Features', href: '/ml-features.html', desc: 'Inspect training and ranking features' },
-        { icon: '☁️', label: 'Cloud Sync', href: '/cloud-sync.html', desc: 'Sync your library across devices via Nutstore' }
+        { icon: '☁️', label: 'Cloud Sync', href: '/cloud-sync.html', desc: 'Sync your library across devices via Nutstore' },
+        { icon: '⚙️', label: 'Settings', href: '/settings.html', desc: 'LLM, voice reading, and cloud sync settings' }
     ];
 
     // APK self-update only exists inside the Android app, which exposes the

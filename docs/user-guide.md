@@ -94,6 +94,19 @@ settings live on the local server (`tts_config.json`) so every browser
 reading the same server shares them, and each device resolves the chosen
 voice from its own installed voices.
 
+## The ⚙️ Settings page
+
+Every installation also has a server-rendered **⚙️ Settings** page (the
+**⋯ → Settings** menu entry, or `/settings.html` directly) with three
+folded sections: the **LLM** used by Chat and the voice digests (base URL,
+model, API key, provider presets, and a connection test — exactly what the
+extension's LLM section configures), **Voice Reading** (voice, rate,
+papers per reading), and **Cloud Sync** (the same configuration as the
+[Cloud Sync](#cloud-sync) page). It is the settings surface for the
+Android app — which has no Chrome extension — and a convenient fallback
+in any browser: everything it saves lives on the device's own server, so
+the same settings apply to every client of that server.
+
 ## Chat: the paper reading helper
 
 The Chat page lets you read papers with an LLM: open one or more papers as

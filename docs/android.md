@@ -86,11 +86,17 @@ WebView. It adds:
   ("Paper N. *Title*. By *author* and colleagues."), pauses, transcript,
   batch Continue, Pause/Skip/Stop all work — Pause stops the current
   sentence and Resume re-speaks it, since Android's engine cannot pause
-  mid-utterance. Because the phone has no extension settings page, the
-  Listen panel itself shows a small voice / rate / papers-per-reading row
-  that saves to the server (`/api/tts/config`), so the settings stay in
-  sync with the desktop. If no TTS engine is installed (or the engine is
-  still binding), the panel falls back to showing the digest as text.
+  mid-utterance. The Listen panel shows a small voice / rate / papers row
+  that saves to the server (`/api/tts/config`). If no TTS engine is
+  installed, the panel explains the problem and offers a direct link to
+  the system speech settings plus a retry.
+- **⚙️ Settings page** (⋯ → Settings): the app has no Chrome extension, so
+  the server renders a settings page (`/settings.html`) with the **LLM**
+  used by Chat and the voice digests (base URL, model, API key, provider
+  presets, connection test), **Voice Reading** (voice / rate / papers per
+  reading), and **Cloud Sync** (identical to the desktop's cloud-sync
+  page). This is how the LLM is configured on the phone — without it,
+  Listen reads the raw titles and abstracts.
 - **Check for Updates** (⬆️ in the ⋯ menu): the app compares its version with
   the latest GitHub release, offers to download the release APK, and hands it
   to the package installer. Android asks once for the "install unknown apps"
@@ -184,7 +190,7 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android version is
-**v0.4.1** (`versionName "0.4.1"`, `versionCode 9` in `app/build.gradle`);
+**v0.4.2** (`versionName "0.4.2"`, `versionCode 10` in `app/build.gradle`);
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 

@@ -8,6 +8,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.TextToSpeech.EngineInfo;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import android.webkit.JavascriptInterface;
@@ -54,8 +55,12 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
         super.onCreate(savedInstanceState);
 
         // Start (or keep alive) the foreground service that hosts the Python
-        // server on 127.0.0.1:8765.
-        startService(new Intent(this, ServerService.class));
+        // server on 127.0.0.1:8765. startForegroundService (not startService):
+        // the service promotes itself to foreground in onCreate, and plain
+        // startService throws BackgroundServiceStartNotAllowedException when
+        // the app is not foreground at that moment (observed on MIUI when the
+        // activity is launched from adb or a restricted context).
+        startForegroundService(new Intent(this, ServerService.class));
 
         updateChecker = new UpdateChecker(this);
 
@@ -63,6 +68,11 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        // Debug builds expose the WebView to Chrome DevTools (inspect via
+        // chrome://inspect on a connected computer); release builds do not.
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
         // Keep navigation inside the WebView so the save-button JavaScript
         // works against the local server.
         webView.setWebViewClient(new WebViewClient());
@@ -145,24 +155,47 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
                 // The callback can run before the constructor assigns the
                 // field, so re-read it instead of capturing; guard everything.
                 TextToSpeech engine = tts;
+                android.util.Log.i("ArxistantTTS", "onInit status=" + status
+                        + " ready=" + ttsReady + " engine=" + (engine != null));
                 if (ttsReady && engine != null) {
+                    int langResult = engine.setLanguage(Locale.US);
+                    android.util.Log.i("ArxistantTTS", "setLanguage(Locale.US) -> " + langResult
+                            + " (0=AVAILABLE 1=COUNTRY_AVAILABLE 2=COUNTRY_VAR_AVAILABLE "
+                            + "-1=MISSING_DATA -2=NOT_SUPPORTED)");
                     try {
-                        engine.setLanguage(Locale.US);
+                        Locale best = engine.getLanguage();
+                        android.util.Log.i("ArxistantTTS", "engine.getLanguage() -> " + best);
+                    } catch (Exception ignored) {
+                    }
+                    try {
+                        int n = engine.getVoices() == null ? 0 : engine.getVoices().size();
+                        android.util.Log.i("ArxistantTTS", "voices count = " + n);
+                        if (n > 0) {
+                            StringBuilder sb = new StringBuilder();
+                            for (Voice v : engine.getVoices()) {
+                                sb.append(v.getName()).append(" [")
+                                        .append(v.getLocale()).append("] ");
+                            }
+                            android.util.Log.i("ArxistantTTS", "voices: " + sb);
+                        }
                     } catch (Exception ignored) {
                     }
                     try {
                         engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                             @Override
                             public void onStart(String utteranceId) {
+                                android.util.Log.i("ArxistantTTS", "onStart " + utteranceId);
                             }
 
                             @Override
                             public void onDone(String utteranceId) {
+                                android.util.Log.i("ArxistantTTS", "onDone " + utteranceId);
                                 notifyTtsDone(utteranceId, false);
                             }
 
                             @Override
                             public void onError(String utteranceId) {
+                                android.util.Log.i("ArxistantTTS", "onError " + utteranceId);
                                 // Also fired when stop() interrupts an utterance
                                 // (Skip/Stop/Pause); the page drops those by id.
                                 notifyTtsDone(utteranceId, true);
@@ -175,6 +208,7 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
         } catch (Exception e) {
             ttsReady = false;
             ttsInitError = true;
+            android.util.Log.e("ArxistantTTS", "constructor threw", e);
         }
     }
 
@@ -310,6 +344,58 @@ public class MainActivity extends Activity implements SwipeBackWebView.OnSwipeBa
             // last check (installed/enabled in settings, or a stalled bind).
             maybeReinitTts();
             return ttsReady;
+        }
+
+        /**
+         * Full TTS diagnostics as JSON (for the Listen panel's status line
+         * and for remote debugging on a connected computer): init status,
+         * problem class, current language mode, and the engine's voices.
+         */
+        @JavascriptInterface
+        public String ttsDiag() {
+            JSONObject o = new JSONObject();
+            try {
+                o.put("ready", ttsReady);
+                o.put("problem", ttsReady ? "ok" : (ttsInitError ? "no_engine" : "starting"));
+                o.put("hasEngine", tts != null);
+                if (tts != null) {
+                    o.put("defaultEngine", tts.getDefaultEngine() == null ? "" : tts.getDefaultEngine());
+                    try {
+                        java.util.List<EngineInfo> engines = tts.getEngines();
+                        JSONArray arr = new JSONArray();
+                        for (EngineInfo e : engines) {
+                            arr.put(e.name == null ? "" : e.name);
+                        }
+                        o.put("engines", arr);
+                    } catch (Exception e) {
+                        o.put("engines", new JSONArray());
+                    }
+                    try {
+                        o.put("currentLanguage", String.valueOf(tts.getLanguage()));
+                    } catch (Exception e) {
+                        o.put("currentLanguage", "?");
+                    }
+                    try {
+                        o.put("languageStatus", tts.isLanguageAvailable(Locale.US));
+                    } catch (Exception e) {
+                        o.put("languageStatus", -99);
+                    }
+                    try {
+                        JSONArray voices = new JSONArray();
+                        for (Voice v : tts.getVoices()) {
+                            JSONObject vo = new JSONObject();
+                            vo.put("name", v.getName());
+                            vo.put("locale", String.valueOf(v.getLocale()));
+                            voices.put(vo);
+                        }
+                        o.put("voices", voices);
+                    } catch (Exception e) {
+                        o.put("voices", new JSONArray());
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            return o.toString();
         }
 
         /**
