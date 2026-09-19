@@ -8,7 +8,7 @@ PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="${ARXISTANT_PYTHON:-/usr/bin/python3}"
 LOG_FILE="$PROJECT_ROOT/local/server.log"
 SERVER_SCRIPT="$PROJECT_ROOT/src/arxiv_db_server.py"
-SERVER_API_VERSION="3"
+SERVER_API_VERSION="4"
 SERVER_PORT="${ARXISTANT_PORT:-8765}"
 
 # Platform tooling.  macOS wraps Python in `arch` to force the native slice;
