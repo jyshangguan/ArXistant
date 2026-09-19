@@ -417,6 +417,35 @@
       </div>
     </details>
 
+    <details class="section" id="section-voice">
+      <summary class="section-title">Voice Reading (Listen)</summary>
+      <div class="section-body">
+
+        <div class="form-group">
+          <label for="tts-voice">Voice</label>
+          <select id="tts-voice"></select>
+          <p class="hint">System default, or a man's / woman's voice — American English is preferred: Google's US English voice when Chrome offers it (the woman's voice), otherwise a US system voice (e.g. Alex or David) for the man's. Resolved on each computer from the voices installed there, so the choice also works on other machines. Voice and rate changes save immediately.</p>
+          <label for="tts-papers" style="margin-top:10px;">Papers per reading</label>
+          <input type="number" id="tts-papers" min="1" max="50" step="1" value="5">
+          <p class="hint">How many papers (from the top of the daily/recent list) the 🔊 Listen button reads in one go. When the batch finishes, the panel offers to continue with the next papers.</p>
+          <label for="tts-rate" style="margin-top:10px;">Speaking rate</label>
+          <select id="tts-rate">
+            <option value="0.75">0.75× (slower)</option>
+            <option value="1.0" selected>1.0× (normal)</option>
+            <option value="1.25">1.25× (faster)</option>
+            <option value="1.5">1.5× (fastest)</option>
+          </select>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;">
+            <button id="btn-tts-save" class="btn btn-secondary">Save Voice Settings</button>
+            <button id="btn-tts-test" class="btn btn-secondary">▶ Test Voice</button>
+          </div>
+          <p class="hint" id="tts-status">Loading…</p>
+          <p class="hint">The 🔊 Listen button on the Daily and Recent pages reads an audio digest of the top-ranked papers: each paper is announced as "Paper N, title, by first author" and then summarized aloud by the LLM configured above. Without an LLM the title and abstract are read directly. Summaries are cached per paper, so replaying is instant.</p>
+        </div>
+
+      </div>
+    </details>
+
     <details class="section" id="section-debug">
       <summary class="section-title">Debug</summary>
       <div class="section-body">

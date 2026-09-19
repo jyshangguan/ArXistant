@@ -57,6 +57,41 @@ one. Changes save automatically as you make them, and the editor closes when
 you click anywhere else. Tags are stored with the saved paper and sync with
 your library.
 
+### Listen to the daily digest
+
+The **🔊 Listen** pill on the Daily and Recent pages reads the list aloud.
+Click it and ArXistant summarizes the top-ranked papers — title, first
+author, and abstract condensed into a short spoken paragraph each — and plays
+them one after another with the browser's built-in speech synthesis. Each
+paper is announced first — "Paper 12. *Title*. By *first author* and
+colleagues." — then a short pause lets you register that a new paper has
+started, and another brief stop follows the last sentence of each paper. The
+paper currently being read is highlighted and scrolled into view, and the
+panel shows progress plus a transcript you can expand (**📜 Transcript**).
+**⏸ Pause**, **⏭ Skip paper**, and **⏹ Stop** control the reading.
+
+When the batch finishes, the panel asks whether to **Continue** with the next
+papers of the list, so a long reading list can be consumed in batches; at
+the end of the list it reports that all papers have been read. Browsers
+without speech synthesis (some Android WebViews) show the digest as text
+instead.
+
+The digests are written by the same LLM as the Chat page (see
+[Configure an LLM](#configure-an-llm)). Without a configured LLM the title
+and abstract are read directly. Summaries are cached per paper, so listening
+a second time starts immediately.
+
+The extension's Settings page has a **Voice Reading (Listen)** section to
+choose the voice — the **system default**, a **man's**, or a **woman's**
+voice, previewable with **Test Voice** — how many papers each reading
+covers, and the speaking rate. American English is preferred: the woman's
+voice resolves to Google's US English voice when Chrome offers it, and the
+man's to a US system voice such as Alex or David. Voice and rate changes
+save immediately; papers per reading saves with the **Save** button. The
+settings live on the local server (`tts_config.json`) so every browser
+reading the same server shares them, and each device resolves the chosen
+voice from its own installed voices.
+
 ## Chat: the paper reading helper
 
 The Chat page lets you read papers with an LLM: open one or more papers as

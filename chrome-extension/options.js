@@ -42,6 +42,12 @@ const btnAdsSave = document.getElementById('btn-ads-save');
 const btnAdsTest = document.getElementById('btn-ads-test');
 const btnAdsClear = document.getElementById('btn-ads-clear');
 const adsStatus = document.getElementById('ads-status');
+const ttsVoiceInput = document.getElementById('tts-voice');
+const ttsPapersInput = document.getElementById('tts-papers');
+const ttsRateInput = document.getElementById('tts-rate');
+const btnTtsSave = document.getElementById('btn-tts-save');
+const btnTtsTest = document.getElementById('btn-tts-test');
+const ttsStatus = document.getElementById('tts-status');
 
 const LLM_PRESETS = {
   openai:     { baseUrl: 'https://api.openai.com/v1',            model: 'gpt-4o-mini' },
@@ -70,6 +76,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadCloudStatus();
   await loadLlmConfig();
   await loadAdsToken();
+  await loadTtsConfig();
 });
 
 // Folded sections: reveal the one a validation error points at, so the user
@@ -239,6 +246,13 @@ function bindEvents() {
   btnAdsSave.addEventListener('click', saveAdsToken);
   btnAdsTest.addEventListener('click', testAdsToken);
   btnAdsClear.addEventListener('click', clearAdsToken);
+  btnTtsSave.addEventListener('click', saveTtsConfig);
+  btnTtsTest.addEventListener('click', testVoice);
+  // Voice and rate are discrete selects — save them the moment they change
+  // (a separate Save click is easy to miss after using Test Voice, which
+  // left the change unapplied on the Daily page).
+  ttsVoiceInput.addEventListener('change', saveTtsConfig);
+  ttsRateInput.addEventListener('change', saveTtsConfig);
 }
 
 // ── LLM (Chat) ──
@@ -396,6 +410,191 @@ async function clearAdsToken() {
     adsStatus.textContent = '⚠️ ' + error.message;
     adsStatus.className = 'hint warn';
   }
+}
+
+// ── Voice Reading (Listen) ──
+// Voice role, papers-per-batch, and rate live on the ArXistant server (same
+// store the Daily page reads); the background worker relays them to
+// /api/tts/config. The voice is a ROLE ('', 'male', 'female') that every
+// device resolves against its own speechSynthesis voices — keeping only
+// the useful choices instead of a long list of system voices. Resolution
+// prefers AMERICAN ENGLISH (Google's US voice when Chrome offers it).
+// NOTE: kept in sync with the resolver in the Daily page's Listen script.
+
+const TTS_DEFAULT_OPTION = 'System default';
+
+function ttsVoices() {
+  if (typeof speechSynthesis === 'undefined') return [];
+  return speechSynthesis.getVoices() || [];
+}
+
+// Same resolution the Daily page uses, so what you test here is what
+// you will hear there.
+const FEMALE_VOICE_HINTS = ['female', 'samantha', 'karen', 'moira', 'tessa',
+  'fiona', 'victoria', 'serena', 'allison', 'ava', 'susan', 'zoe', 'nicky',
+  'catherine', 'charlotte', 'shelley', 'flo', 'kate', 'zira', 'hazel', 'eva',
+  'michelle', 'google us english'];
+const MALE_VOICE_HINTS = ['male', 'alex', 'daniel', 'david', 'fred', 'tom',
+  'mark', 'matt', 'oliver', 'jacob', 'aaron', 'gordon', 'reed', 'bruce',
+  'junior', 'davis', 'grandpa'];
+
+function voiceMatchesGender(v, gender) {
+  const n = String(v.name || '').toLowerCase();
+  // Names that state their gender ("Google UK English Female"); note
+  // "female" contains "male", so it must be tested first.
+  if (n.includes('female')) return gender === 'female';
+  if (n.includes('male')) return gender === 'male';
+  const hints = gender === 'female' ? FEMALE_VOICE_HINTS : MALE_VOICE_HINTS;
+  return hints.some(h => n.includes(h));
+}
+
+function voicePreferenceScore(v) {
+  const n = String(v.name || '').toLowerCase();
+  const lang = String(v.lang || '').toLowerCase().replace('_', '-');
+  let score = 0;
+  if (n.includes('google')) score += 50;      // Google TTS voice
+  if (lang.startsWith('en-us')) score += 100; // American English
+  else if (lang.startsWith('en')) score += 10; // any other English
+  return score;
+}
+
+function findGenderedVoice(gender) {
+  const all = ttsVoices();
+  // Prefer English voices — the digests are English.
+  let pool = all.filter(v => {
+    const lang = String(v.lang || '').toLowerCase().replace('_', '-');
+    return lang.startsWith('en') || String(v.name || '').toLowerCase().includes('english');
+  });
+  if (!pool.length) pool = all.slice();
+  let best = null, bestScore = -1;
+  for (const v of pool) {
+    if (!voiceMatchesGender(v, gender)) continue;
+    const s = voicePreferenceScore(v);
+    if (s > bestScore) { bestScore = s; best = v; }
+  }
+  return best;
+}
+
+function resolveTtsVoice(role) {
+  if (role === 'male' || role === 'female') return findGenderedVoice(role);
+  return null;  // '' (system default) or unknown role
+}
+
+function renderTtsVoices(selectedRole) {
+  ttsVoiceInput.replaceChildren();
+  const def = document.createElement('option');
+  def.value = '';
+  def.textContent = TTS_DEFAULT_OPTION;
+  ttsVoiceInput.appendChild(def);
+
+  const male = resolveTtsVoice('male');
+  const female = resolveTtsVoice('female');
+  for (const [role, label, voice] of [['male', 'Man', male], ['female', 'Woman', female]]) {
+    const opt = document.createElement('option');
+    opt.value = role;
+    // Show which concrete voice the role resolves to on this computer.
+    opt.textContent = voice ? `${label} (${voice.name})` : `${label} (not found on this computer)`;
+    if (!voice) opt.disabled = true;
+    ttsVoiceInput.appendChild(opt);
+  }
+  ttsVoiceInput.value = selectedRole || '';
+  return ttsVoiceInput.value === (selectedRole || '');
+}
+
+function updateTtsStatus(cfg, voiceFound) {
+  const missing = [];
+  if (!cfg.llm_model) missing.push('LLM (see the section above)');
+  const notes = missing.length
+    ? `⚠️ Without ${missing.join(', ')}, Listen reads the raw title and abstract.`
+    : '✅ Digests will be written by ' + cfg.llm_model + '.';
+  const role = cfg.voice || '';
+  let voiceNote;
+  if (role) {
+    const v = resolveTtsVoice(role);
+    voiceNote = v
+      ? ` Voice: ${role === 'male' ? 'Man' : 'Woman'} (${v.name}) on this computer.`
+      : ` ⚠️ The ${role === 'male' ? 'man' : 'woman'} voice is not available on this computer — the system default will be used.`;
+  } else {
+    voiceNote = ' Using the system default voice.';
+  }
+  ttsStatus.textContent = notes + voiceNote;
+  ttsStatus.className = 'hint ' + (missing.length || (role && !voiceFound) ? 'warn' : 'ok');
+}
+
+async function loadTtsConfig() {
+  ttsStatus.textContent = 'Loading voice settings…';
+  ttsStatus.className = 'hint';
+  let cfg = {};
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getTtsConfig' });
+    if (!response.success) throw new Error(response.error || 'Failed to load voice settings');
+    cfg = response.config || {};
+  } catch (error) {
+    ttsStatus.textContent = '⚠️ Could not load voice settings: ' + error.message;
+    ttsStatus.className = 'hint warn';
+    return;
+  }
+  ttsPapersInput.value = cfg.papers_per_read || 5;
+  ttsRateInput.value = String(cfg.rate || 1.0);
+  const voiceFound = renderTtsVoices(cfg.voice || '');
+  updateTtsStatus(cfg, voiceFound);
+  // getVoices() is often empty on first paint and fills asynchronously.
+  if (typeof speechSynthesis !== 'undefined') {
+    speechSynthesis.addEventListener?.('voiceschanged', () => {
+      const found = renderTtsVoices(cfg.voice || '');
+      updateTtsStatus(cfg, found);
+    });
+  }
+}
+
+async function saveTtsConfig() {
+  const papers = Number.parseInt(ttsPapersInput.value, 10);
+  if (!Number.isInteger(papers) || papers < 1 || papers > 50) {
+    expandSection('section-voice');
+    ttsStatus.textContent = '⚠️ Papers per reading must be between 1 and 50.';
+    ttsStatus.className = 'hint warn';
+    return;
+  }
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'saveTtsConfig',
+      config: {
+        voice: ttsVoiceInput.value || '',
+        papers_per_read: papers,
+        rate: Number.parseFloat(ttsRateInput.value) || 1.0
+      }
+    });
+    if (!response.success) throw new Error(response.error || 'Failed to save voice settings');
+    const saved = response.config || {};
+    ttsStatus.textContent = '✅ Saved. The 🔊 Listen button now reads ' +
+      saved.papers_per_read + ' papers per batch at ' + saved.rate + '× speed' +
+      (saved.voice ? ' with the ' + (saved.voice === 'male' ? 'man' : 'woman') + ' voice.'
+                   : ' with the system default voice.');
+    ttsStatus.className = 'hint ok';
+  } catch (error) {
+    ttsStatus.textContent = '⚠️ ' + error.message;
+    ttsStatus.className = 'hint warn';
+  }
+}
+
+function testVoice() {
+  if (typeof speechSynthesis === 'undefined') {
+    ttsStatus.textContent = '⚠️ This browser has no speech synthesis.';
+    ttsStatus.className = 'hint warn';
+    return;
+  }
+  speechSynthesis.cancel();
+  // Sample mirrors the real reading: announcement, pause, digest.
+  const u = new SpeechSynthesisUtterance(
+    'Paper 1. The Dark-matter Origin of Little Red Dots. By Hua-Peng Gu and colleagues. ' +
+    'This is how every paper is announced before its digest is read aloud.');
+  const voice = resolveTtsVoice(ttsVoiceInput.value);
+  if (voice) { u.voice = voice; u.lang = voice.lang || 'en-US'; }
+  u.rate = Number.parseFloat(ttsRateInput.value) || 1.0;
+  speechSynthesis.speak(u);
+  ttsStatus.textContent = '▶ Playing a sample with ' + (voice ? voice.name : 'the system default voice') +
+    ' at ' + u.rate + '× — adjust above; voice and rate changes save immediately.';
+  ttsStatus.className = 'hint';
 }
 
 // ── Cloud Sync ──

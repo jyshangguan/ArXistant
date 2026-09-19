@@ -95,6 +95,8 @@ and JSON endpoints. It:
   lists.
 - Injects the shared save / tag / chat button scripts into the Daily, Recent,
   Saved Papers, and Search pages, so every paper card offers the same actions.
+  The Daily and Recent pages additionally get the Listen script (pill, panel,
+  and speech engine) at serve time.
 - Resolves SciX papers: `GET /api/scix/resolve` maps an ADS bibcode or arXiv
   ID to a paper record through `api.scixplorer.org` (a public mirror of the
   ADS API sharing the same token), with bounded retries and exact-match
@@ -112,6 +114,28 @@ and JSON endpoints. It:
 - Stores and verifies the ADS / SciX token (`GET/POST /api/ads/token`,
   `POST /api/ads/token/test`) for the extension's Settings page; the token
   lives in the owner-only `ads_token.txt`.
+- Produces spoken digests for the Daily/Recent **🔊 Listen** button
+  (`GET /api/tts/summary?list=daily|recent&start=&count=`): it slices the
+  ranked-list JSON snapshot, asks the Chat LLM to turn each paper's title,
+  first author, and abstract into a short spoken-style paragraph (one
+  request per batch, robustly parsed, falling back to reading the cleaned
+  raw fields when no LLM is configured or the call fails), and caches the
+  result per paper and model in `tts_summaries.json` so replays are
+  instant. Titles are LaTeX-cleaned and the author count is reported so the
+  page can announce each paper ("Paper 7. *Title*. By *author* and
+  colleagues."). Voice settings are stored and served via
+  `GET/POST /api/tts/config` — a voice *role* (system default / man /
+  woman), papers per batch, and speaking rate — relayed by the extension's
+  Settings page; every device resolves the role against its own
+  speechSynthesis voices, preferring American English (Google's US English
+  voice for the woman's role; a US system voice such as Alex or David for
+  the man's, since Google ships no US English male voice), so the choice
+  works across machines. Playback
+  runs in the browser: sentence-chunked (avoiding Chrome's
+  long-utterance stall), with a pause after each announcement and a short
+  stop at the end of each paper, settings re-read on every batch so a
+  change applies without a page reload, and a generation token so
+  Stop/Skip can never leave stale utterance events or pending gaps behind.
 
 Requests are handled on separate threads (a threading HTTP server) so a slow
 or streaming LLM response cannot block the rest of the app.
@@ -185,6 +209,8 @@ arxiv_papers.db                 SQLite papers, publications, tags, highlights
 ads_token.txt                   Optional ADS API token
 scix_config.json                SciX library configuration
 chat_config.json                Chat LLM base URL, model, temperature
+tts_config.json                 Voice-reading settings (voice, batch, rate)
+tts_summaries.json              Cached spoken digests per paper and model
 pdf/                            Bounded LRU cache of arXiv PDFs (on demand)
 local_documents/                Dropped-in PDFs with extracted text and chunks
 fulltext/                       Cached paper full-text HTML for the Text view
@@ -283,7 +309,8 @@ periodic Nutstore auto-sync every 30 minutes. See the
 ArXistant/
 ├── chrome-extension/          Chrome UI, alarms, notifications, and the
 │                              settings page (server, reminders, retraining,
-│                              cloud sync, LLM, debug — folded sections)
+│                              cloud sync, LLM, voice reading, debug —
+│                              folded sections)
 ├── docs/                      User and technical documentation
 ├── packaging/linux/           Debian builder, launcher, and systemd unit
 ├── src/

@@ -859,6 +859,387 @@ def chat_key_storage():
     return ""
 
 
+# --- Voice reading (Listen button on the Daily/Recent pages) ----------------
+#
+# The Daily and Recent pages offer a 🔊 Listen button that reads a spoken
+# digest of the top-ranked papers aloud. Non-secret settings (voice role,
+# papers per batch, speaking rate) live in tts_config.json inside the data
+# directory — the voice is chosen in the extension's Settings page, which
+# relays it through /api/tts/config. The voice is stored as a ROLE
+# ("", "male", "female") rather than a concrete speechSynthesis name: each
+# device resolves the role against its own installed voices, so the setting
+# works across machines and a name mismatch can never silently drop it.
+# The digests themselves are produced by the SAME LLM the Chat page uses
+# (chat_config + API key): the browser asks /api/tts/summary for a slice of
+# the ranked list, the server summarizes title + first author + abstract
+# into short spoken-style paragraphs, caches them per paper and model, and
+# the page plays them with the browser's built-in speechSynthesis — each
+# paper announced ("Paper 7. <title>. By <author> and colleagues.") with a
+# short pause before its digest and a brief stop after it. When no LLM is
+# configured (or the call fails), the server falls back to reading the
+# cleaned raw fields instead, so the feature works out of the box.
+
+TTS_CONFIG_PATH = data_path("tts_config.json")
+TTS_SUMMARY_CACHE_PATH = data_path("tts_summaries.json")
+TTS_CACHE_MAX_ENTRIES = 1000
+TTS_MAX_PAPERS_PER_REQUEST = 50
+
+DEFAULT_TTS_CONFIG = {
+    "voice": "",            # role: "", "male", or "female"; "" = system default
+    "papers_per_read": 5,   # papers per batch
+    "rate": 1.0,            # speechSynthesis speaking rate multiplier
+}
+
+# Well-known stock voices used to migrate legacy concrete voice names
+# (saved before the role redesign) and to resolve roles in the browser.
+_TTS_FEMALE_HINTS = ("female", "samantha", "karen", "moira", "tessa", "fiona",
+                     "victoria", "serena", "allison", "ava", "susan", "zoe",
+                     "nicky", "catherine", "charlotte", "shelley", "flo",
+                     "kate", "zira", "hazel", "eva", "michelle",
+                     "google us english")
+_TTS_MALE_HINTS = ("male", "alex", "daniel", "david", "fred", "tom", "mark",
+                   "matt", "oliver", "jacob", "aaron", "gordon", "reed",
+                   "bruce", "junior", "davis", "grandpa")
+
+
+def _voice_role(value):
+    """Map a stored voice value to a role: '', 'male', or 'female'.
+
+    Accepts the new roles directly and migrates legacy concrete voice names
+    ('Samantha', 'Google UK English Male', ...) via well-known hints, so a
+    choice saved before the role redesign keeps working.
+    """
+    v = str(value or "").strip().lower()
+    if v in ("", "male", "female"):
+        return v
+    if "female" in v:      # must precede the "male" check ("female" ⊃ "male")
+        return "female"
+    if "male" in v:
+        return "male"
+    for hint in _TTS_FEMALE_HINTS:
+        if hint in v:
+            return "female"
+    for hint in _TTS_MALE_HINTS:
+        if hint in v:
+            return "male"
+    return ""
+
+
+TTS_SUMMARY_SYSTEM_PROMPT = (
+    "You are an audio-digest presenter for an astronomy reading list. "
+    "For each paper given, write a short paragraph (2-4 sentences, at most "
+    "about 60 words) that can be read ALOUD: what the paper studies, the key "
+    "method or result, and why it matters. Speak the first author's surname "
+    "naturally (e.g. 'Chen and colleagues'). Rules: plain spoken prose only — "
+    "no LaTeX, no markdown, no asterisks or dollar signs; spell mathematics "
+    "out in words (say 'zero point three Jupiter masses' for 0.3 M_J); read "
+    "acronyms as words when that is how astronomers say them (NASA, Hubble) "
+    "and otherwise letter by letter; do not mention figures or citations; do "
+    "not number the papers and do not add any commentary before or after. "
+    "Return ONLY a JSON array of strings, exactly one entry per input paper, "
+    "in the same order."
+)
+
+
+def _clamp_tts_config(config):
+    """Validate and clamp user-provided TTS settings."""
+    out = dict(DEFAULT_TTS_CONFIG)
+    out["voice"] = _voice_role(config.get("voice"))
+    try:
+        papers = int(config.get("papers_per_read", DEFAULT_TTS_CONFIG["papers_per_read"]))
+    except (TypeError, ValueError):
+        papers = DEFAULT_TTS_CONFIG["papers_per_read"]
+    out["papers_per_read"] = min(50, max(1, papers))
+    try:
+        rate = float(config.get("rate", DEFAULT_TTS_CONFIG["rate"]))
+    except (TypeError, ValueError):
+        rate = DEFAULT_TTS_CONFIG["rate"]
+    out["rate"] = min(2.0, max(0.5, rate))
+    return out
+
+
+def load_tts_config():
+    config = dict(DEFAULT_TTS_CONFIG)
+    try:
+        with open(TTS_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for key in DEFAULT_TTS_CONFIG:
+            if key in data:
+                config[key] = data[key]
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return _clamp_tts_config(config)
+
+
+def save_tts_config(config):
+    """Persist clamped TTS settings; returns the normalized config."""
+    normalized = _clamp_tts_config(config)
+    os.makedirs(os.path.dirname(TTS_CONFIG_PATH), exist_ok=True)
+    temp_path = TTS_CONFIG_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, indent=2)
+    os.replace(temp_path, TTS_CONFIG_PATH)
+    return normalized
+
+
+def _first_author(authors):
+    """First author's name from a comma-joined author string."""
+    for name in str(authors or "").split(","):
+        name = name.strip()
+        if name:
+            return name
+    return ""
+
+
+_LATEX_SPACING_RE = re.compile(r"\\[,;:! ]")
+_LATEX_COMMAND_RE = re.compile(r"\\[a-zA-Z]+\s*")
+_MATH_DELIM_RE = re.compile(r"[$^_~]")
+_BRACE_RE = re.compile(r"[{}]")
+_BACKSLASH_RE = re.compile(r"\\")
+_MULTI_WS_RE = re.compile(r"\s+")
+
+
+def _plain_speech_text(text):
+    """Best-effort cleanup of LaTeX/HTML noise for spoken fallback text.
+
+    The LLM path is instructed to write clean spoken prose, but when no LLM
+    is configured the abstract is read directly; raw LaTeX ('$0.3\\,M_J$',
+    '\\texttt{...}', '$T_{\\\\mathrm{eff}}$') sounds terrible read aloud, so
+    strip what we can: spacing macros, commands, math delimiters, braces,
+    and leftover backslashes.
+    """
+    text = html_unescape(str(text or ""))
+    # \textbf{X} -> X (keep brace content), then drop bare commands like \rm.
+    text = re.sub(r"\\(?:text|mathrm|mathbf|texttt|textit|emph)\{([^{}]*)\}", r"\1", text)
+    text = _LATEX_SPACING_RE.sub(" ", text)      # \, \; \! etc.
+    text = _LATEX_COMMAND_RE.sub(" ", text)
+    text = _MATH_DELIM_RE.sub(" ", text)          # $ ^ _ ~
+    text = _BRACE_RE.sub(" ", text)
+    text = _BACKSLASH_RE.sub(" ", text)           # line breaks \\
+    text = _MULTI_WS_RE.sub(" ", text).strip()
+    return text
+
+
+def _fallback_paper_text(paper):
+    """Spoken text for one paper without an LLM: title, author, abstract."""
+    parts = [_plain_speech_text(paper.get("title"))]
+    author = _first_author(paper.get("authors"))
+    if author:
+        parts.append(f"By {author} and colleagues." if "," in (paper.get("authors") or "")
+                     else f"By {author}.")
+    abstract = _plain_speech_text(paper.get("abstract"))
+    if abstract:
+        parts.append(abstract)
+    return " ".join(p.strip() for p in parts if p and p.strip())
+
+
+def _parse_tts_summaries(content, count):
+    """Parse the LLM's answer into exactly `count` non-empty strings.
+
+    Tolerates the common failure modes: prose wrapped around the JSON array,
+    a plain numbered/blank-line-separated list, or a shorter array than
+    requested. Returns (texts, parsed_ok) — texts is None when nothing
+    usable could be extracted.
+    """
+    if not content:
+        return None, False
+    m = re.search(r"\[.*\]", content, re.S)
+    if m:
+        try:
+            arr = json.loads(m.group(0))
+            if isinstance(arr, list):
+                texts = [str(x).strip() for x in arr if str(x or "").strip()]
+                if texts:
+                    return texts, True
+        except (json.JSONDecodeError, ValueError):
+            pass
+    # Plain text fallback: split on blank lines, or on "Paper N" markers.
+    chunks = re.split(r"(?im)^\s*(?:paper\s+\d+|\d+[\.\)])\s*[:\-]?\s*", content)
+    chunks = [c.strip() for c in chunks if c.strip()]
+    if len(chunks) >= max(1, count - 1):
+        return chunks, True
+    if not chunks and content.strip():
+        return [content.strip()], True
+    return None, False
+
+
+def summarize_papers_for_tts(papers):
+    """Spoken digests for the given ranked papers.
+
+    Uses the Chat LLM (one request for the whole batch). Returns a dict:
+      {"texts": [str], "llm_used": bool, "model": str, "error": str|None}
+    When the LLM is missing or fails, texts fall back to the cleaned raw
+    fields (title + first author + abstract) so the Listen button always
+    has something to read.
+    """
+    result = {"texts": [], "llm_used": False, "model": "", "error": None}
+    if not papers:
+        return result
+    fallback = [_fallback_paper_text(p) for p in papers]
+
+    config = load_chat_config()
+    base_url = config.get("base_url", "").strip()
+    model = config.get("model", "").strip()
+    api_key = get_chat_api_key()
+    if not base_url or not model or not api_key:
+        result["texts"] = fallback
+        return result
+
+    entries = []
+    for i, p in enumerate(papers, 1):
+        author = _first_author(p.get("authors")) or "the authors"
+        abstract = _plain_speech_text(p.get("abstract"))
+        # Trim very long abstracts so a 50-paper batch still fits a context.
+        if len(abstract) > 1500:
+            abstract = abstract[:1500].rsplit(" ", 1)[0] + " …"
+        entries.append(
+            f"Paper {i}\nTitle: {p.get('title', '')}\nFirst author: {author}\n"
+            f"Abstract: {abstract}")
+    msgs = [
+        {"role": "system", "content": TTS_SUMMARY_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(entries)},
+    ]
+    try:
+        resp = _chat_completion(base_url, model, msgs, 0.3, api_key, tools=None)
+    except Exception as exc:  # network / HTTP / parse — fall back to raw fields
+        result["texts"] = fallback
+        result["error"] = (exc if isinstance(exc, str) else
+                           (_llm_http_error(exc.code) if isinstance(exc, urllib.error.HTTPError)
+                            else _llm_net_error(exc)))
+        return result
+    content = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    texts, ok = _parse_tts_summaries(content, len(papers))
+    if not ok or texts is None:
+        result["texts"] = fallback
+        result["error"] = "The LLM answer could not be parsed; read the raw fields instead."
+        return result
+    # Normalize length: pad/truncate to one entry per paper.
+    if len(texts) < len(papers):
+        texts = texts + fallback[len(texts):]
+    elif len(texts) > len(papers):
+        texts = texts[:len(papers)]
+    result["texts"] = texts
+    result["llm_used"] = True
+    result["model"] = model
+    return result
+
+
+def _load_tts_cache():
+    try:
+        with open(TTS_SUMMARY_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_tts_cache(cache):
+    os.makedirs(os.path.dirname(TTS_SUMMARY_CACHE_PATH), exist_ok=True)
+    temp_path = TTS_SUMMARY_CACHE_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
+    os.replace(temp_path, TTS_SUMMARY_CACHE_PATH)
+
+
+def _prune_tts_cache(cache, valid_lists):
+    """Drop entries whose paper is no longer in either ranked list.
+
+    Keeps the cache bounded to papers the user can still listen to. Keys look
+    like "daily:<model>:<arxiv_id>" — models may contain colons, arXiv IDs
+    never do, so the ID is taken with a right-hand split.
+    """
+    valid_ids = set()
+    for path in valid_lists:
+        for paper in _load_ranked_papers(path, ""):
+            valid_ids.add(paper["arxiv_id"])
+    pruned = {k: v for k, v in cache.items()
+              if k.rsplit(":", 1)[-1] in valid_ids}
+    # Hard cap: evict oldest-updated entries beyond the limit.
+    if len(pruned) > TTS_CACHE_MAX_ENTRIES:
+        ordered = sorted(pruned.items(), key=lambda kv: kv[1].get("updated_at", 0))
+        pruned = dict(ordered[-TTS_CACHE_MAX_ENTRIES:])
+    return pruned
+
+
+def build_tts_batch(list_name, start, count):
+    """Assemble one Listen batch from a ranked-list snapshot.
+
+    Returns a dict for /api/tts/summary. Raises FileNotFoundError when the
+    list snapshot does not exist yet (the page should tell the user to
+    refresh); the LLM path never raises — failures degrade to fallback text.
+    """
+    lists = {"daily": DAILY_JSON, "recent": RECENT_JSON}
+    path = lists.get(list_name)
+    if path is None:
+        raise ValueError("Unknown list; expected 'daily' or 'recent'")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"No {'daily' if list_name == 'daily' else 'recent'} paper list "
+            "has been generated yet — refresh it first.")
+    papers = _load_ranked_papers(path, list_name)
+    total = len(papers)
+    start = max(0, start)
+    count = max(0, min(count, TTS_MAX_PAPERS_PER_REQUEST))
+    batch = papers[start:start + count]
+
+    config = load_chat_config()
+    chat_model = config.get("model", "").strip()
+    cache = _load_tts_cache()
+
+    out_papers = []
+    need_llm = []
+    for paper in batch:
+        key = f"{list_name}:{chat_model}:{paper['arxiv_id']}"
+        # Titles are cleaned so both the spoken lead-in ("Paper 7. <title>.
+        # By <author> and colleagues.") and the transcript read naturally
+        # even when the raw arXiv title carries LaTeX. author_count lets
+        # the page say "and colleagues" only for multi-author papers.
+        authors = [a.strip() for a in str(paper.get("authors") or "").split(",")
+                   if a.strip()]
+        base = {
+            "id": paper["arxiv_id"],
+            "title": _plain_speech_text(paper["title"]),
+            "first_author": _first_author(paper.get("authors")),
+            "author_count": len(authors),
+            "text": "",
+            "cached": False,
+        }
+        entry = cache.get(key)
+        if entry and entry.get("text"):
+            base["text"] = entry["text"]
+            base["cached"] = True
+        else:
+            need_llm.append((paper, key))
+        out_papers.append(base)
+
+    llm_used = False
+    llm_error = None
+    if need_llm:
+        summaries = summarize_papers_for_tts([p for p, _ in need_llm])
+        llm_used = summaries["llm_used"]
+        llm_error = summaries["error"]
+        for (paper, key), text in zip(need_llm, summaries["texts"]):
+            for entry in out_papers:
+                if entry["id"] == paper["arxiv_id"] and not entry["text"]:
+                    entry["text"] = text
+                    break
+            if summaries["llm_used"]:
+                cache[key] = {"text": text, "updated_at": time.time()}
+        if summaries["llm_used"]:
+            _save_tts_cache(_prune_tts_cache(cache, lists.values()))
+
+    return {
+        "papers": out_papers,
+        "start": start,
+        "count": len(batch),
+        "total": total,
+        "remaining": max(0, total - (start + len(batch))),
+        "llm_used": llm_used,
+        "model": chat_model,
+        "llm_error": llm_error,
+    }
+
+
 def _load_ranked_papers(path, source):
     """Read a ranked-list JSON snapshot written by the daily/recent refresh."""
     try:
@@ -2694,6 +3075,8 @@ class Handler(BaseHTTPRequestHandler):
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
                 if '<!-- chat-link-embedded -->' not in html:
                     html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
+                if '<!-- listen-button-embedded -->' not in html:
+                    html = html.replace('</body>', LISTEN_BUTTON_SCRIPT + '</body>')
                 self._send_html(html)
             else:
                 self._not_found_page(
@@ -2710,6 +3093,8 @@ class Handler(BaseHTTPRequestHandler):
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
                 if '<!-- chat-link-embedded -->' not in html:
                     html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
+                if '<!-- listen-button-embedded -->' not in html:
+                    html = html.replace('</body>', LISTEN_BUTTON_SCRIPT + '</body>')
                 self._send_html(html)
             else:
                 self._not_found_page(
@@ -2726,6 +3111,8 @@ class Handler(BaseHTTPRequestHandler):
                     html = html.replace('</body>', SAVE_BUTTON_SCRIPT + '</body>')
                 if '<!-- chat-link-embedded -->' not in html:
                     html = html.replace('</body>', CHAT_LINK_SCRIPT + '</body>')
+                if '<!-- listen-button-embedded -->' not in html:
+                    html = html.replace('</body>', LISTEN_BUTTON_SCRIPT + '</body>')
                 self._send_html(html)
             else:
                 self._not_found_page(
@@ -2910,6 +3297,53 @@ class Handler(BaseHTTPRequestHandler):
                 "success": True,
                 "has_token": bool(load_ads_token()),
             })
+
+        elif path == "/api/tts/config":
+            # Settings for the Daily/Recent Listen button: the voice ROLE
+            # ("", "male", "female" — resolved to a concrete
+            # speechSynthesis voice on each device), papers per batch, and
+            # speaking rate. The model name is reported so the panel can
+            # show which LLM will write the digests.
+            config = load_tts_config()
+            chat_config = load_chat_config()
+            self._send_json({
+                "success": True,
+                "voice": config["voice"],
+                "papers_per_read": config["papers_per_read"],
+                "rate": config["rate"],
+                "llm_model": chat_config.get("model", ""),
+                "llm_ready": bool(chat_config.get("base_url", "").strip()
+                                  and chat_config.get("model", "").strip()
+                                  and get_chat_api_key()),
+            })
+
+        elif path == "/api/tts/summary":
+            # One Listen batch: a slice of the daily/recent ranked list with
+            # a spoken digest per paper (LLM summary when configured, cleaned
+            # raw fields otherwise). start/count let the page continue with
+            # the remaining papers batch after batch.
+            list_name = (query.get("list", ["daily"])[0] or "daily").strip().lower()
+            try:
+                start = int(query.get("start", ["0"])[0])
+            except (TypeError, ValueError):
+                start = 0
+            try:
+                count = int(query.get("count", ["5"])[0])
+            except (TypeError, ValueError):
+                count = 5
+            config = load_tts_config()
+            if "count" not in query:
+                count = config["papers_per_read"]
+            try:
+                batch = build_tts_batch(list_name, start, count)
+            except ValueError:
+                self._send_json({"success": False,
+                                 "error": "Unknown list; use ?list=daily or ?list=recent"}, 400)
+                return
+            except FileNotFoundError as e:
+                self._send_json({"success": False, "error": str(e)}, 400)
+                return
+            self._send_json({"success": True, **batch})
 
         elif path == "/api/scix/resolve":
             # Accept ?q= plus the aliases callers naturally reach for.
@@ -3698,6 +4132,32 @@ class Handler(BaseHTTPRequestHandler):
                 })
             except RuntimeError as e:
                 self._send_json({"success": False, "error": str(e)}, 502)
+
+        elif path == "/api/tts/config":
+            # Voice-reading settings from the extension's Settings page.
+            # Values are clamped server-side; the voice is a role ("",
+            # "male", "female") that each browser resolves to one of its
+            # local speechSynthesis voices.
+            config = load_tts_config()
+            if "voice" in data:
+                config["voice"] = str(data.get("voice") or "").strip()
+            if "papers_per_read" in data:
+                try:
+                    config["papers_per_read"] = int(data["papers_per_read"])
+                except (TypeError, ValueError):
+                    pass
+            if "rate" in data:
+                try:
+                    config["rate"] = float(data["rate"])
+                except (TypeError, ValueError):
+                    pass
+            saved = save_tts_config(config)
+            self._send_json({
+                "success": True,
+                "voice": saved["voice"],
+                "papers_per_read": saved["papers_per_read"],
+                "rate": saved["rate"],
+            })
 
         elif path == "/api/chat/config":
             config = load_chat_config()
@@ -4960,6 +5420,591 @@ window.arxistantAttachChatLinks = function () {
     });
 };
 document.addEventListener('DOMContentLoaded', window.arxistantAttachChatLinks);
+</script>
+"""
+
+# Voice-reading UI injected into the Daily and Recent pages at serve time
+# (same pattern as SAVE_BUTTON_SCRIPT / CHAT_LINK_SCRIPT, with its own marker
+# comment so injection is idempotent and old generated pages gain the button
+# without regeneration). The pill sits next to the refresh pill; the panel
+# fetches /api/tts/summary batches and plays them with speechSynthesis.
+LISTEN_BUTTON_SCRIPT = """<!-- listen-button-embedded -->
+<style>
+  .arx-listen-btn {
+    position: fixed; top: 12px; right: 128px; z-index: 9998;
+    height: 30px; border-radius: 15px;
+    background: rgba(200, 200, 200, 0.5); border: 1px solid rgba(255, 255, 255, 0.5);
+    color: #333; display: flex; align-items: center; padding: 0 12px;
+    cursor: pointer; font-size: 14px; font-weight: 500;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+    -webkit-tap-highlight-color: transparent; overflow: hidden; white-space: nowrap;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .arx-listen-btn:hover { background: rgba(170, 170, 170, 0.6); }
+  .arx-listen-btn .icon { font-size: 15px; }
+  .arx-listen-btn .label { max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; transition: max-width 0.4s ease, opacity 0.4s ease, padding 0.4s ease; }
+  .arx-listen-btn:hover .label { max-width: 120px; opacity: 1; padding-left: 6px; }
+  .arx-listen-panel {
+    position: fixed; top: 50px; right: 12px; z-index: 9999;
+    background: #fff; border: 1px solid #e0e0e0; border-radius: 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+    width: 340px; max-width: calc(100vw - 24px);
+    max-height: 70vh; overflow-y: auto;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px; color: #333; line-height: 1.5;
+  }
+  .arx-listen-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 6px; border-bottom: 1px solid #f0e6e6; }
+  .arx-listen-head .t { font-weight: 600; font-size: 14px; }
+  .arx-listen-close { border: none; background: none; color: #999; font-size: 18px; cursor: pointer; line-height: 1; padding: 0 4px; }
+  .arx-listen-close:hover { color: #c62828; }
+  .arx-listen-body { padding: 8px 12px 12px; }
+  .arx-listen-status { font-size: 12px; color: #666; margin-bottom: 6px; white-space: pre-wrap; }
+  .arx-listen-status.err { color: #c62828; }
+  .arx-listen-now { border: 1px solid #eee; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #fafafa; }
+  .arx-listen-now .np-title { font-weight: 600; margin-bottom: 2px; }
+  .arx-listen-now .np-progress { font-size: 11px; color: #888; }
+  .arx-listen-controls { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .arx-listen-controls button, .arx-listen-continue button {
+    border: 1px solid #ddd; background: #f5f5f5; color: #555; border-radius: 6px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .arx-listen-controls button:hover, .arx-listen-continue button:hover { border-color: #b31b1b; color: #b31b1b; }
+  .arx-listen-controls button.primary, .arx-listen-continue button.primary { background: #b31b1b; border-color: #b31b1b; color: #fff; }
+  .arx-listen-controls button.primary:hover { background: #8a1515; }
+  .arx-listen-transcript { border-top: 1px dashed #e0d5d5; margin-top: 8px; padding-top: 8px; display: none; }
+  .arx-listen-transcript.open { display: block; }
+  .arx-listen-transcript .tr-item { padding: 6px 0; border-bottom: 1px solid #f5f0f0; font-size: 12.5px; }
+  .arx-listen-transcript .tr-item:last-child { border-bottom: none; }
+  .arx-listen-transcript .tr-item .tr-title { font-weight: 600; margin-bottom: 2px; }
+  .arx-listen-transcript .tr-item.current { background: #fdf3f3; margin: 0 -6px; padding: 6px; border-radius: 6px; }
+  .arx-listen-continue { border-top: 1px solid #f0e6e6; margin-top: 8px; padding-top: 8px; display: none; }
+  .arx-listen-continue.open { display: block; }
+  .arx-listen-continue .cq { font-size: 12px; color: #555; margin-bottom: 6px; }
+  .paper.arx-listen-current { outline: 3px solid #b31b1b; outline-offset: 2px; }
+</style>
+<script>
+(function () {
+    var synth = (typeof speechSynthesis !== 'undefined') ? speechSynthesis : null;
+
+    var btn = document.createElement('button');
+    btn.className = 'arx-listen-btn';
+    btn.id = 'arx-listen-btn';
+    btn.title = 'Read the paper digest aloud';
+    btn.innerHTML = '<span class="icon">🔊</span><span class="label">Listen</span>';
+
+    var panel = document.createElement('div');
+    panel.className = 'arx-listen-panel';
+    panel.id = 'arx-listen-panel';
+    panel.style.display = 'none';
+    panel.innerHTML =
+        '<div class="arx-listen-head"><span class="t">🔊 Voice digest</span>' +
+        '<button class="arx-listen-close" title="Close">×</button></div>' +
+        '<div class="arx-listen-body">' +
+        '  <div class="arx-listen-status"></div>' +
+        '  <div class="arx-listen-now" style="display:none;">' +
+        '    <div class="np-title"></div><div class="np-progress"></div>' +
+        '  </div>' +
+        '  <div class="arx-listen-controls">' +
+        '    <button class="ctl-pause" style="display:none;">⏸ Pause</button>' +
+        '    <button class="ctl-skip" style="display:none;">⏭ Skip paper</button>' +
+        '    <button class="ctl-stop" style="display:none;">⏹ Stop</button>' +
+        '    <button class="ctl-transcript">📜 Transcript</button>' +
+        '  </div>' +
+        '  <div class="arx-listen-transcript"></div>' +
+        '  <div class="arx-listen-continue"></div>' +
+        '</div>';
+
+    // Reading state. mode: idle | fetching | speaking | batchdone | done | error
+    var S = {
+        list: (window.location.pathname === '/recent.html') ? 'recent' : 'daily',
+        start: 0, total: 0, remaining: 0, perRead: 5,
+        papers: [], pi: 0, chunks: [], ci: 0,
+        rate: 1.0, model: '', llmReady: false, voice: null, voiceRole: '',
+        mode: 'idle', paused: false
+    };
+
+    var $status, $now, $transcript, $continue, $pauseBtn, $skipBtn, $stopBtn;
+    // Bumped by every cancel() (stop / skip / close / new paper) so stale
+    // utterance events from before the cancel are ignored.
+    var speakToken = 0;
+
+    function setStatus(text, isErr) {
+        if ($status) { $status.textContent = text || ''; $status.className = 'arx-listen-status' + (isErr ? ' err' : ''); }
+    }
+
+    function showNow(p) {
+        if (!p) { $now.style.display = 'none'; return; }
+        $now.style.display = 'block';
+        $now.querySelector('.np-title').textContent = '“' + p.title + '”';
+        $now.querySelector('.np-progress').textContent =
+            'Paper ' + (S.start + S.pi + 1) + ' of ' + S.total + ' · ' +
+            p.first_author + (p.cached ? ' · cached' : '');
+    }
+
+    function setControls(mode) {
+        var speaking = (mode === 'speaking');
+        $pauseBtn.style.display = speaking ? 'inline-block' : 'none';
+        $skipBtn.style.display = speaking ? 'inline-block' : 'none';
+        $stopBtn.style.display = (speaking || mode === 'paused') ? 'inline-block' : 'none';
+    }
+
+    function renderTranscript() {
+        var html = '';
+        S.papers.forEach(function (p, i) {
+            html += '<div class="tr-item' + (i === S.pi ? ' current' : '') + '">' +
+                '<div class="tr-title">' + (S.start + i + 1) + '. ' + p.title + '</div>' +
+                '<div>' + (p.text || '') + '</div></div>';
+        });
+        $transcript.innerHTML = html || '<div class="tr-item">Nothing to show.</div>';
+    }
+
+    function markTranscriptCurrent() {
+        var items = $transcript.querySelectorAll('.tr-item');
+        for (var i = 0; i < items.length; i++) {
+            items[i].classList.toggle('current', i === S.pi);
+            if (i === S.pi) items[i].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function highlightPaper(id) {
+        var prev = document.querySelector('.paper.arx-listen-current');
+        if (prev) prev.classList.remove('arx-listen-current');
+        var saveBtn = document.getElementById('save-btn-' + id);
+        var card = saveBtn ? saveBtn.closest('.paper') : null;
+        if (!card) {
+            var link = document.querySelector('.arxiv-id a[href*="/abs/' + id + '"]');
+            card = link ? link.closest('.paper') : null;
+        }
+        if (card) {
+            card.classList.add('arx-listen-current');
+            try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { /* older engines */ }
+        }
+    }
+
+    function showContinue() {
+        var from = S.start + S.papers.length;
+        var to = Math.min(S.total, from + S.perRead) - 1;
+        $continue.innerHTML =
+            '<div class="cq">Papers ' + (S.start + 1) + '–' + (S.start + S.papers.length) +
+            ' of ' + S.total + ' finished. Continue with ' + from + '–' + (to + 1) + '?</div>' +
+            '<button class="primary">▶ Continue</button> <button class="ctl-finish">Finish</button>';
+        $continue.classList.add('open');
+        $continue.querySelector('.primary').onclick = function () {
+            $continue.classList.remove('open');
+            fetchBatch(from);
+        };
+        $continue.querySelector('.ctl-finish').onclick = function () {
+            $continue.classList.remove('open');
+            S.mode = 'done';
+            setControls('done');
+            showNow(null);
+            setStatus('✅ Finished. Papers 1–' + (S.start + S.papers.length) + ' of ' + S.total + ' were read.');
+        };
+    }
+
+    function setBusyBtn(busy) {
+        btn.innerHTML = busy ? '<span class="icon">⏳</span><span class="label">Listen</span>'
+                             : '<span class="icon">🔊</span><span class="label">Listen</span>';
+    }
+
+    // ── speech engine ──
+    // Chrome stalls on very long utterances, so each paper's text is split
+    // into sentence chunks (≤ ~220 chars) that are chained with onend.
+    // Every paper is ANNOUNCED first — "Paper 7. <title>. By <first author>
+    // and colleagues." — then a pause lets the listener register that a new
+    // paper has started, and a second short stop follows the paper's last
+    // sentence before the next paper begins.
+    var PAUSE_AFTER_ANNOUNCE = 1300;   // ms of silence after the lead-in
+    var PAUSE_AFTER_PAPER = 900;       // ms of silence at the end of a paper
+
+    function splitSentences(text) {
+        var t = String(text || '').replace(/\\s+/g, ' ').trim();
+        if (!t) return [];
+        var sentences = t.match(/[^.!?]+[.!?]+["')\\]]*\\s*|[^.!?]+$/g) || [t];
+        var chunks = [], cur = '';
+        sentences.forEach(function (s) {
+            s = s.trim();
+            if (!s) return;
+            if (cur && (cur + ' ' + s).length > 220) { chunks.push(cur); cur = s; }
+            else cur = cur ? cur + ' ' + s : s;
+            while (cur.length > 300) {
+                var cut = cur.lastIndexOf(',', 280);
+                if (cut < 160) cut = cur.lastIndexOf(' ', 280);
+                if (cut < 160) cut = 280;
+                chunks.push(cur.slice(0, cut + 1));
+                cur = cur.slice(cut + 1).trim();
+            }
+        });
+        if (cur) chunks.push(cur);
+        return chunks;
+    }
+
+    // Build one paper's spoken chunks: the announcement plus the digest,
+    // each chunk carrying the silence that follows it.
+    function buildSpokenChunks(p, i) {
+        var chunks = [];
+        var lead = 'Paper ' + (S.start + i + 1) + '. ' + p.title + '.';
+        if (p.first_author) {
+            lead += ' By ' + p.first_author +
+                    (p.author_count > 1 ? ' and colleagues.' : '.');
+        }
+        chunks.push({ text: lead, pauseAfter: PAUSE_AFTER_ANNOUNCE });
+        var sentences = splitSentences(p.text);
+        for (var k = 0; k < sentences.length; k++) {
+            chunks.push({
+                text: sentences[k],
+                pauseAfter: (k === sentences.length - 1) ? PAUSE_AFTER_PAPER : 0
+            });
+        }
+        return chunks;
+    }
+
+    function speakNextChunk() {
+        if (S.mode !== 'speaking') return;
+        if (S.ci >= S.chunks.length) { advancePaper(); return; }
+        var item = S.chunks[S.ci];
+        var u = new SpeechSynthesisUtterance(item.text);
+        if (S.voice) { u.voice = S.voice; u.lang = S.voice.lang || 'en-US'; }
+        u.rate = S.rate;
+        // Generation token: cancel() (stop/skip/close/new paper) can leave a
+        // stale onend/onerror in the event queue; if the token moved on, the
+        // event belongs to an abandoned utterance and must be ignored.
+        var tok = speakToken;
+        var after = function () {
+            if (tok !== speakToken || S.mode !== 'speaking') return;
+            if (item.pauseAfter > 0) gapWait(tok, item.pauseAfter);
+            else speakNextChunk();
+        };
+        u.onend = function () {
+            if (tok !== speakToken) return;
+            S.ci++;
+            after();
+        };
+        u.onerror = function (ev) {
+            if (tok !== speakToken) return;
+            // cancel() during pause/skip/stop surfaces here — not an error.
+            if (ev && (ev.error === 'interrupted' || ev.error === 'canceled')) return;
+            S.ci++;
+            after();
+        };
+        try { synth.speak(u); } catch (e) { advancePaper(); }
+    }
+
+    // A short silence between chunks (after the announcement / at the end of
+    // a paper). Holds while the reading is paused, and dies if the session
+    // has moved on (token/mode) so Stop and Skip can never leave a pending
+    // gap that restarts speech.
+    function gapWait(tok, ms) {
+        setTimeout(function () {
+            if (tok !== speakToken || S.mode !== 'speaking') return;
+            if (S.paused) { gapWait(tok, 250); return; }
+            speakNextChunk();
+        }, ms);
+    }
+
+    function playPaperAt(i) {
+        speakToken++;
+        S.pi = i;
+        var p = S.papers[i];
+        highlightPaper(p.id);
+        showNow(p);
+        markTranscriptCurrent();
+        S.chunks = synth ? buildSpokenChunks(p, i) : [];
+        S.ci = 0;
+        speakNextChunk();
+    }
+
+    function advancePaper() {
+        if (S.mode !== 'speaking') return;
+        S.pi++;
+        if (S.pi < S.papers.length) { playPaperAt(S.pi); return; }
+        // Batch finished.
+        S.mode = 'batchdone';
+        setControls('batchdone');
+        showNow(null);
+        if (S.remaining > 0) {
+            setStatus('Batch finished — ' + S.remaining + ' papers left in the list.');
+            showContinue();
+        } else {
+            S.mode = 'done';
+            setStatus('✅ All ' + S.total + ' papers have been read.');
+        }
+    }
+
+    // ── data flow ──
+    async function refreshSettings() {
+        // Settings (voice role, N papers per batch, rate) live on the server
+        // so they are shared across devices; each device resolves the role
+        // to one of its own voices.
+        try {
+            var resp = await fetch('/api/tts/config');
+            var cfg = await resp.json();
+            if (cfg && cfg.success) {
+                S.perRead = cfg.papers_per_read || 5;
+                S.rate = cfg.rate || 1.0;
+                S.model = cfg.llm_model || '';
+                S.llmReady = !!cfg.llm_ready;
+                S.voiceRole = cfg.voice || '';
+                S.voice = resolveVoice(S.voiceRole);
+            }
+        } catch (e) { /* defaults are fine */ }
+    }
+
+    async function fetchBatch(start) {
+        // Re-read the settings for every batch: a voice / rate / batch-size
+        // change saved in the extension's Settings page then applies from
+        // the next batch (or after reopening the panel) without reloading
+        // the page.
+        await refreshSettings();
+        setBusyBtn(true);
+        S.mode = 'fetching';
+        setControls('fetching');
+        $continue.classList.remove('open');
+        setStatus('⏳ ' + (S.model ? 'Summarizing the top papers with ' + S.model + '…'
+                                   : 'Preparing the digest…') +
+                  '\\n(The first time takes a moment; it is cached afterwards.)');
+        var url = '/api/tts/summary?list=' + encodeURIComponent(S.list) +
+                  '&start=' + start + '&count=' + S.perRead;
+        var data = null;
+        try {
+            var resp = await fetch(url);
+            var text = await resp.text();
+            try { data = JSON.parse(text); }
+            catch (_) {
+                if (resp.status === 404) throw new Error('The running ArXistant server is outdated — restart it and try again.');
+                throw new Error(text.trim() || ('Server returned ' + resp.status));
+            }
+        } catch (e) {
+            S.mode = 'error';
+            setBusyBtn(false);
+            setStatus('✗ ' + e.message, true);
+            return;
+        }
+        setBusyBtn(false);
+        if (!data.success) {
+            S.mode = 'error';
+            setStatus('✗ ' + (data.error || 'The digest could not be generated.'), true);
+            return;
+        }
+        S.papers = data.papers || [];
+        S.start = data.start;
+        S.total = data.total;
+        S.remaining = data.remaining;
+        renderTranscript();
+        if (!S.papers.length) {
+            S.mode = 'done';
+            setStatus('No papers to read — refresh the list first.');
+            return;
+        }
+        if (!synth) {
+            // No speechSynthesis (common in Android WebView): show the digest
+            // as text and offer Continue for the next batch.
+            S.mode = 'batchdone';
+            setControls('batchdone');
+            $transcript.classList.add('open');
+            setStatus('⚠️ This browser has no voice playback; showing the digest as text.');
+            if (S.remaining > 0) showContinue();
+            return;
+        }
+        var note = '';
+        if (!data.llm_used) {
+            note = data.llm_error
+                ? '⚠️ LLM digest failed (' + data.llm_error + ') — reading titles and abstracts.'
+                : (S.llmReady ? '' : 'ℹ️ No LLM configured — reading titles and abstracts.');
+        }
+        if ((S.voiceRole === 'male' || S.voiceRole === 'female') && !S.voice) {
+            note += (note ? '\\n' : '') +
+                'ℹ️ No ' + (S.voiceRole === 'male' ? 'man' : 'woman') +
+                ' voice found on this device — using the system default.';
+        }
+        S.mode = 'speaking';
+        setControls('speaking');
+        setStatus((data.llm_used ? '🔊 Reading ' + S.papers.length + ' papers' +
+                     (data.model ? ' (digest by ' + data.model + ')' : '') + '.'
+                   : '🔊 Reading ' + S.papers.length + ' papers.') + (note ? '\\n' + note : ''));
+        playPaperAt(0);
+    }
+
+    async function start() {
+        fetchBatch(0);
+    }
+
+    // ── voices ──
+    // The setting is a ROLE ("", "male", "female"); each device resolves it
+    // locally so a voice picked on one machine works on another and a name
+    // mismatch can never silently drop the choice. Resolution prefers
+    // AMERICAN ENGLISH: Google's US voice when Chrome offers one ("Google
+    // US English", the woman's voice) and otherwise a US system voice
+    // (Alex / David) for the man's — Google ships no US English male voice,
+    // so its gendered voices are UK English and rank below US ones.
+    // NOTE: kept in sync with the resolver in the extension's options.js.
+    var voices = [];
+    function loadVoices() { if (synth) voices = synth.getVoices() || []; }
+    var FEMALE_VOICE_HINTS = ['female', 'samantha', 'karen', 'moira', 'tessa',
+        'fiona', 'victoria', 'serena', 'allison', 'ava', 'susan', 'zoe',
+        'nicky', 'catherine', 'charlotte', 'shelley', 'flo', 'kate', 'zira',
+        'hazel', 'eva', 'michelle', 'google us english'];
+    var MALE_VOICE_HINTS = ['male', 'alex', 'daniel', 'david', 'fred', 'tom',
+        'mark', 'matt', 'oliver', 'jacob', 'aaron', 'gordon', 'reed', 'bruce',
+        'junior', 'davis', 'grandpa'];
+
+    function voiceMatchesGender(v, gender) {
+        var n = String(v.name || '').toLowerCase();
+        // Names that state their gender ("Google UK English Female"); note
+        // "female" contains "male", so it must be tested first.
+        if (n.indexOf('female') >= 0) return gender === 'female';
+        if (n.indexOf('male') >= 0) return gender === 'male';
+        var hints = (gender === 'female') ? FEMALE_VOICE_HINTS : MALE_VOICE_HINTS;
+        for (var i = 0; i < hints.length; i++) {
+            if (n.indexOf(hints[i]) >= 0) return true;
+        }
+        return false;
+    }
+
+    function voicePreferenceScore(v) {
+        var n = String(v.name || '').toLowerCase();
+        var lang = String(v.lang || '').toLowerCase().replace('_', '-');
+        var score = 0;
+        if (n.indexOf('google') >= 0) score += 50;      // Google TTS voice
+        if (lang.indexOf('en-us') === 0) score += 100;  // American English
+        else if (lang.indexOf('en') === 0) score += 10; // any other English
+        return score;
+    }
+
+    function findGenderedVoice(gender) {
+        if (!voices.length) loadVoices();
+        // Prefer English voices — the digests are English.
+        var pool = [];
+        for (var i = 0; i < voices.length; i++) {
+            var v = voices[i];
+            var lang = String(v.lang || '').toLowerCase().replace('_', '-');
+            if (lang.indexOf('en') === 0 ||
+                String(v.name || '').toLowerCase().indexOf('english') >= 0) {
+                pool.push(v);
+            }
+        }
+        if (!pool.length) pool = voices.slice();
+        var best = null, bestScore = -1;
+        for (var j = 0; j < pool.length; j++) {
+            if (!voiceMatchesGender(pool[j], gender)) continue;
+            var s = voicePreferenceScore(pool[j]);
+            if (s > bestScore) { bestScore = s; best = pool[j]; }
+        }
+        return best;  // null — caller falls back to the system default
+    }
+
+    function resolveVoice(role) {
+        if (!synth) return null;
+        if (role === 'male' || role === 'female') return findGenderedVoice(role);
+        return null;  // "" (or unknown role) = system default
+    }
+
+    if (synth) {
+        loadVoices();
+        // getVoices() is often empty until this event fires (notably on
+        // macOS/Android); resolve the saved role once the list arrives.
+        var onVoicesReady = function () {
+            loadVoices();
+            if (S.voiceRole) S.voice = resolveVoice(S.voiceRole);
+        };
+        if (typeof synth.addEventListener === 'function') {
+            synth.addEventListener('voiceschanged', onVoicesReady);
+        } else if ('onvoiceschanged' in synth) {
+            synth.onvoiceschanged = onVoicesReady;
+        }
+    }
+
+    // ── controls ──
+    function stopAll() {
+        speakToken++;
+        if (synth) { try { synth.cancel(); } catch (e) {} }
+        S.mode = 'idle';
+        S.paused = false;
+        setControls('idle');
+    }
+
+    function open() {
+        panel.style.display = 'block';
+        if (S.mode === 'idle' || S.mode === 'done') start();
+        else if (S.mode === 'speaking' && S.paused) {
+            if (synth) { try { synth.resume(); } catch (e) {} }
+            S.paused = false;
+            setControls('speaking');
+        }
+    }
+
+    function close() {
+        stopAll();
+        panel.style.display = 'none';
+        var prev = document.querySelector('.paper.arx-listen-current');
+        if (prev) prev.classList.remove('arx-listen-current');
+    }
+
+    btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (panel.style.display === 'none') open(); else close();
+    });
+
+    function initPanel() {
+        document.body.appendChild(btn);
+        document.body.appendChild(panel);
+        $status = panel.querySelector('.arx-listen-status');
+        $now = panel.querySelector('.arx-listen-now');
+        $transcript = panel.querySelector('.arx-listen-transcript');
+        $continue = panel.querySelector('.arx-listen-continue');
+        $pauseBtn = panel.querySelector('.ctl-pause');
+        $skipBtn = panel.querySelector('.ctl-skip');
+        $stopBtn = panel.querySelector('.ctl-stop');
+
+        panel.querySelector('.arx-listen-close').addEventListener('click', close);
+        $pauseBtn.addEventListener('click', function () {
+            if (!synth) return;
+            if (S.paused) {
+                try { synth.resume(); } catch (e) {}
+                S.paused = false;
+                $pauseBtn.textContent = '⏸ Pause';
+            } else {
+                try { synth.pause(); } catch (e) {}
+                S.paused = true;
+                $pauseBtn.textContent = '▶ Resume';
+            }
+        });
+        $skipBtn.addEventListener('click', function () {
+            if (S.mode !== 'speaking') return;
+            // Also invalidates any pending inter-paper gap timeout.
+            speakToken++;
+            if (synth) { try { synth.cancel(); } catch (e) {} }
+            S.chunks = []; S.ci = 0;
+            advancePaper();
+        });
+        $stopBtn.addEventListener('click', function () {
+            stopAll();
+            showNow(null);
+            setStatus('Stopped.');
+        });
+        panel.querySelector('.ctl-transcript').addEventListener('click', function () {
+            $transcript.classList.toggle('open');
+            if ($transcript.classList.contains('open')) markTranscriptCurrent();
+        });
+        // Clicking outside the panel/its pill closes it (like the "..." menu).
+        document.addEventListener('click', function (e) {
+            if (panel.style.display === 'none') return;
+            if (panel.contains(e.target) || btn.contains(e.target)) return;
+            close();
+        });
+        // Speech must not continue after leaving the page.
+        window.addEventListener('beforeunload', function () {
+            speakToken++;
+            if (synth) { try { synth.cancel(); } catch (e) {} }
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initPanel);
+    } else {
+        initPanel();
+    }
+})();
 </script>
 """
 

@@ -322,6 +322,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           })
         };
       }
+      // ── Voice reading (Listen button) settings ──
+      // Stored server-side so every browser/device reads the same voice,
+      // batch size, and rate; the voice itself is a speechSynthesis name
+      // chosen in the Settings UI.
+      case 'getTtsConfig': {
+        const settings = await getSettings();
+        return { success: true, config: await fetchJson(serverApiUrl(settings.serverUrl, '/api/tts/config')) };
+      }
+      case 'saveTtsConfig': {
+        const settings = await getSettings();
+        return {
+          success: true,
+          config: await fetchJson(serverApiUrl(settings.serverUrl, '/api/tts/config'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message.config || {})
+          })
+        };
+      }
       // ── SciXplorer panel relays ──
       // The content script on scixplorer.org cannot fetch the local server
       // directly (https page → http localhost would be mixed content / PNA),

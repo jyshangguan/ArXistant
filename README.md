@@ -30,6 +30,11 @@ personal preferences remain on your computer.
   quotes, your own highlights and notes, local PDF drag-and-drop, and an
   assistant that can search your library, Semantic Scholar, the citation
   graph, and the web.
+- **Voice digest of the daily list** — a 🔊 Listen button on the Daily and
+  Recent pages reads the top-ranked papers aloud: each paper is announced
+  ("Paper N, title, by first author") and then its LLM-written digest is
+  read, batch by batch, with a choice of man / woman / system-default voice,
+  batch size, and rate.
 - **Tags for saved papers** — organize your library with tags, filter the
   Saved Papers page by them, and tag papers straight from the Daily, Recent,
   or Search pages.
@@ -49,7 +54,7 @@ personal preferences remain on your computer.
 - **Chrome reminders** — choose multiple reminder times, skip weekends, and
   automatically refresh the daily list once per day; every setting lives on
   one folded-sections settings page (server, reminders, retraining, cloud
-  sync, LLM, debug).
+  sync, LLM, voice reading, debug).
 - **Local-first operation** — a lightweight server runs on `localhost`; there is
   no hosted ArXistant account or remote personal database.
 - **Optional cloud sync** — mirror your paper database to Nutstore (坚果云) over
