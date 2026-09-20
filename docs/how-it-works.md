@@ -41,9 +41,11 @@ network configuration is deliberately changed.
 The Manifest V3 extension contains:
 
 - A popup for server status and page navigation.
-- An options page for reminder times, weekend behavior, server URL, model
-  retraining threshold, cloud sync, the ADS / SciX token, LLM settings, and a
-  per-site on/off switch for the browsing panel.
+- An options page whose folded sections cover the desktop-only settings:
+  Server, Paper Panel, Reminder Times, ML Retraining, Cloud Sync, ADS / SciX,
+  LLM (Chat), Voice Reading (Listen), and Debug. Settings that also matter on
+  the phone (LLM, voice reading, cloud sync) live on the server-rendered
+  `/settings.html` instead, so Android can reach them.
 - A background service worker for alarms, notifications, and automatic daily
   refresh requests. It also relays the page panels' requests to the local
   server.

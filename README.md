@@ -36,26 +36,33 @@ personal preferences remain on your computer.
   read, batch by batch, with a choice of man / woman / system-default voice,
   batch size, and rate.
 - **Tags for saved papers** — organize your library with tags, filter the
-  Saved Papers page by them, and tag papers straight from the Daily, Recent,
-  or Search pages.
-- **Local paper database** — search saved papers, maintain notes, and remove
-  records through a browser interface.
+  Saved Papers page by them (the tag list is folded away until you need it),
+  and tag papers straight from the Daily, Recent, and Search pages or from the
+  browsing panel.
+- **Local paper database** — search saved papers with plain keywords or scoped
+  `field:value` terms (`tag:`, `author:`, `title:`, `abs:`, `note:`, `year:`
+  with ranges, `id:`), maintain notes, and remove records through a browser
+  interface.
 - **ADS / SciX search** — find papers (fielded queries like
   `first_author:Greene author:Ho year:2005`) and save, tag, or open them in
   Chat without leaving ArXistant, with automatic retries when a source is slow
   or rate-limited.
 - **Save papers while you browse** — a small ArXistant panel on
   [scixplorer.org](https://scixplorer.org/) and
-  [arxiv.org](https://arxiv.org/) paper pages adds the paper to your library,
-  lets you tag it in the same step, and opens it in Chat; journal-only papers
-  are stored by bibcode with the same notes/tags/highlights, and the ADS token
-  can be set right from the extension's Settings page.
+  [arxiv.org](https://arxiv.org/) paper pages adds the paper to your library
+  and opens it in Chat. Adding a tag saves the paper in the same step, so
+  tagging is never lost. Journal-only papers are stored by bibcode with the
+  same notes/tags/highlights, the arXiv side needs no ADS token at all, and
+  each site can be switched off independently in Settings.
 - **Publication management** — import your publications from a SciX/ADS library
   with duplicate detection.
 - **Chrome reminders** — choose multiple reminder times, skip weekends, and
-  automatically refresh the daily list once per day; every setting lives on
-  one folded-sections settings page (server, reminders, retraining, cloud
-  sync, LLM, voice reading, debug).
+  automatically refresh the daily list once per day.
+- **Two settings surfaces** — the extension's folded-sections Settings page for
+  desktop-only choices (server, paper panel, reminders, retraining, cloud sync,
+  ADS / SciX token, LLM, voice reading, debug), and a server-rendered
+  `/settings.html` for the three that also matter on a phone (LLM, voice
+  reading, cloud sync), which is what the Android app uses.
 - **Local-first operation** — a lightweight server runs on `localhost`; there is
   no hosted ArXistant account or remote personal database.
 - **Optional cloud sync** — mirror your paper database to Nutstore (坚果云) over
@@ -88,10 +95,10 @@ flowchart LR
     E --> C
 ```
 
-ArXistant is currently at version **0.4.4**. The Chrome extension is loaded as
+ArXistant is currently at version **0.4.5**. The Chrome extension is loaded as
 an unpacked extension. macOS has a bundled launcher, and Debian/Ubuntu has an
 experimental `.deb` package with a systemd user service. A standalone **Android
-app (v0.4.4)** runs the full pipeline on the phone via Chaquopy — including
+app (v0.4.5)** runs the full pipeline on the phone via Chaquopy — including
 the 🔊 voice digest, spoken by the phone's own text-to-speech engine.
 
 ## License

@@ -155,7 +155,7 @@ cd android
 
 # Release APK (signed; see "Release build" below):
 ./gradlew :app:assembleRelease
-#   -> app/build/outputs/apk/release/arxistant-release.v0.4.4.apk
+#   -> app/build/outputs/apk/release/arxistant-release.v0.4.5.apk
 ```
 
 The first build downloads Chaquopy, NumPy, and scikit-learn wheels for the
@@ -195,7 +195,7 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android version is
-**v0.4.4** (`versionName "0.4.4"`, `versionCode 12` in `app/build.gradle`);
+**v0.4.5** (`versionName "0.4.5"`, `versionCode 13` in `app/build.gradle`);
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 
@@ -222,7 +222,7 @@ existing tag.
 ## Install and run
 
 - **Phone:** install the release APK
-  (`app/build/outputs/apk/release/arxistant-release.v0.4.4.apk`) or the debug APK
+  (`app/build/outputs/apk/release/arxistant-release.v0.4.5.apk`) or the debug APK
   (`app/build/outputs/apk/debug/app-debug.apk`) and launch it. The daily page
   appears in the WebView after the server starts.
 - **Emulator:** use an arm64 system image on Apple Silicon. The
@@ -242,6 +242,15 @@ Mac stay in step.
 
 ## Current limitations (to be aware of)
 
+- **No Chat page.** The reader/chat interface is desktop-oriented and is
+  stripped from the Android build; the chat API endpoints stay in place, so
+  libraries and highlights still merge cleanly with the desktop.
+- **No browsing panel.** The "add to ArXistant" panel that appears on
+  arxiv.org and scixplorer.org paper pages is a Chrome-extension content
+  script. The phone has no extension, and ArXistant's own WebView is not a
+  general browser, so there is nothing to inject it into. Save, tag, and chat
+  from the Daily, Recent, Search, and Saved Papers pages instead — the tag
+  editor there is the same one.
 - **No daily reminders yet.** The desktop Chrome extension's alarm/notification
   logic has no Android equivalent. A `WorkManager` job that calls
   `/api/refresh-daily` and posts a notification is the intended follow-up.

@@ -614,7 +614,7 @@ def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote
     last_error = "unknown network error"
     for attempt in range(1, attempts + 1):
         try:
-            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.4 (personal arXiv reader)'})
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.5 (personal arXiv reader)'})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read().decode('utf-8')
         except urllib.error.HTTPError as e:
@@ -1323,7 +1323,7 @@ def build_chat_request(base_url, model, messages, temperature, api_key):
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
-        "User-Agent": "ArXistant/0.4.4",
+        "User-Agent": "ArXistant/0.4.5",
     }
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -1547,7 +1547,7 @@ def s2_search(query, limit=10):
     """Semantic Scholar keyword search with citation counts + TLDR (keyless)."""
     url = ("https://api.semanticscholar.org/graph/v1/paper/search?query="
            + urllib.parse.quote(query) + f"&limit={limit}&fields=" + S2_FIELDS)
-    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.4"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.5"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return [_s2_to_item(p) for p in (data.get("data") or [])]
@@ -1558,7 +1558,7 @@ def s2_related(arxiv_id, limit=10):
     url = f"https://api.semanticscholar.org/recommendations/v1/papers/?limit={limit}&fields={S2_FIELDS}"
     req = urllib.request.Request(
         url, data=json.dumps({"positivePaperIds": ["arXiv:" + arxiv_id]}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.4"},
+        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.5"},
         method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -1750,7 +1750,7 @@ def _chat_completion(base_url, model, messages, temperature, api_key, tools=None
         payload["temperature"] = temperature
     if tools:
         payload["tools"] = tools
-    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.4"}
+    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.5"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -2095,7 +2095,7 @@ def fetch_paper_pdf(arxiv_id):
         return path
     url = ARXIV_PDF_URL.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
     req = urllib.request.Request(
-        url, headers={"User-Agent": "ArXistant/0.4.4 (local research assistant)"})
+        url, headers={"User-Agent": "ArXistant/0.4.5 (local research assistant)"})
     temp_path = f"{path}.{threading.get_ident()}.tmp"
     try:
         # Stream straight to disk in chunks so large PDFs never sit in memory.
@@ -2518,7 +2518,7 @@ def fetch_paper_fulltext(arxiv_id):
     for tmpl in ARXIV_HTML_URLS:
         url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
         req = urllib.request.Request(
-            url, headers={"User-Agent": "ArXistant/0.4.4 (local research assistant)"})
+            url, headers={"User-Agent": "ArXistant/0.4.5 (local research assistant)"})
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
@@ -3598,7 +3598,7 @@ class Handler(BaseHTTPRequestHandler):
         if use_tools:
             payload["tools"] = CHAT_TOOLS
         headers = {"Content-Type": "application/json",
-                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.4"}
+                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.5"}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),

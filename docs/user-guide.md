@@ -25,13 +25,22 @@ The server health endpoint is
 |---|---|---|
 | Daily Papers | `/daily.html` | Today's ranked submissions |
 | Recent Papers | `/recent.html` | Approximately five days of ranked papers |
-| Saved Papers | `/database.html` | Search, annotate, and remove saved papers |
+| Saved Papers | `/database.html` | Search, annotate, tag, and remove saved papers |
 | Chat | `/chat.html` | Read papers (tabs, highlights) and ask an LLM about them |
 | My Publications | `/publications.html` | Import and manage your publication list |
 | Search | `/search.html` | Find papers via ADS / SciX; save, tag, or open them in Chat |
 | ML Features | `/ml-features.html` | Inspect training state and ranking features |
+| Settings | `/settings.html` | LLM, voice reading, and cloud sync — works without the extension, so the Android app uses it |
+| Cloud Sync | `/cloud-sync.html` | The standalone cloud-sync page (the same form is embedded in Settings) |
 
 All addresses are served from `http://localhost:8765`.
+
+Two settings surfaces exist, and the split is deliberate. The extension's own
+**Settings** page (right-click the toolbar icon → Options) holds the
+desktop-only settings — server URL, Paper Panel, reminders, retraining, the
+ADS / SciX token, and debugging. The server-rendered `/settings.html` holds the
+three that also matter on a phone: LLM, voice reading, and cloud sync. Android
+has no extension, so it reaches the latter through the **⋯ → Settings** menu.
 
 ## Daily reading workflow
 
