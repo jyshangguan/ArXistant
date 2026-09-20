@@ -65,9 +65,13 @@ def _run(pathname, meta=META, click=None, saved=None,
     return data
 
 
-def _run_with_tags(click=".arx-tag-add,.arx-save", saved=None, tags_by_id=None,
+def _run_with_tags(click=".arx-tag-add", saved=None, tags_by_id=None,
                    vocab=("agn", "lrd"), value="agn"):
-    """Type a tag, then run a click sequence (default: Add, then Save)."""
+    """Type a tag, then run a click sequence (default: Add).
+
+    Adding a tag to an unsaved paper saves it, so a following .arx-save click
+    would mean "remove" — the default sequence stops at Add.
+    """
     payload = {
         "meta": dict(META),
         "__vocab": list(vocab),
@@ -238,11 +242,20 @@ class ArxivPanelBehaviourTests(unittest.TestCase):
         out = _run("/abs/1802.08364", click=".arx-save")
         self.assertEqual(out["savePayload"]["abstract"], META["citation_abstract"])
 
-    def test_tag_then_save_sends_both(self):
+    def test_tagging_saves_the_paper_in_one_write(self):
         out = _run_with_tags()
         self.assertIn("savePaper", out["messages"])
         self.assertEqual(out["saveKey"], "1802.08364")
         self.assertEqual(out["tagSent"], ["agn"])
+        self.assertEqual(out["tagChips"], ["agn"])
+        self.assertIn("✓ Saved", out["panelHtml"])
+        # One write: the tag rides along with the save.
+        self.assertNotIn("updateTags", out["messages"])
+
+    def test_saving_without_tagging_still_sends_the_tag_list(self):
+        out = _run("/abs/1802.08364", click=".arx-save")
+        self.assertIn("savePaper", out["messages"])
+        self.assertEqual(out["tagSent"], [])
 
     def test_saved_paper_shows_its_existing_tags(self):
         # No clicks: for a saved paper the Save button means "remove", so this

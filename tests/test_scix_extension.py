@@ -297,26 +297,48 @@ class PanelBehaviourTests(unittest.TestCase):
         self.assertEqual(payload["tags"], ["lrd", "jwst"])
         self.assertEqual(out["tagChips"], ["lrd", "jwst"])
 
-    def test_tagging_an_unsaved_paper_stages_locally_without_a_request(self):
+    def test_tagging_an_unsaved_paper_saves_it(self):
+        # Tagging is a clear signal the paper is wanted, so it saves rather
+        # than staging and waiting for a second click.
         out = self._run(f"/abs/{self.BIB}/abstract", meta={
             "__vocab": ["agn"],
             "__type": {"selector": ".arx-tag-input", "value": "agn"},
             "__click": ".arx-tag-add",
         })
-        self.assertEqual(out["tagChips"], ["agn"])
-        # Nothing but the initial library load: /api/update_tags would 404 on a
-        # paper that is not saved yet.
-        self.assertNotIn("updateTags", out["messages"])
-        self.assertNotIn("savePaper", out["messages"])
-
-    def test_staged_tags_ride_along_with_the_save(self):
-        out = self._run(f"/abs/{self.BIB}/abstract", meta={
-            "__vocab": ["agn"],
-            "__type": {"selector": ".arx-tag-input", "value": "agn"},
-            "__click": ".arx-tag-add,.arx-save",
-        })
         self.assertIn("savePaper", out["messages"])
         self.assertEqual(out["saveKey"], self.BIB)
+        self.assertEqual(out["tagSent"], ["agn"])
+        self.assertEqual(out["tagChips"], ["agn"])
+        # One write, not a save followed by a tag update.
+        self.assertNotIn("updateTags", out["messages"])
+        # The button flips, so the user can see the paper was saved.
+        self.assertIn("✓ Saved", out["panelHtml"])
+
+    def test_placeholder_warns_that_tagging_saves(self):
+        out = self._run(f"/abs/{self.BIB}/abstract")
+        self.assertIn("auto-saves", out["panelHtml"])
+        self.assertIn("Adding a tag saves the paper", out["panelHtml"])
+
+    def test_a_failed_save_does_not_apply_the_tag(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__vocab": ["agn"],
+            "__saveFails": True,
+            "__type": {"selector": ".arx-tag-input", "value": "agn"},
+            "__click": ".arx-tag-add",
+        })
+        self.assertIn("savePaper", out["messages"])
+        self.assertEqual(out["tagChips"], [])
+        self.assertIn("rejected", out["statusHtml"])
+        # Rendered as an error, not as neutral status text.
+        self.assertIn("arx-error", out["statusClass"])
+
+    def test_suggestion_click_also_saves_an_unsaved_paper(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__vocab": ["agn", "lrd"],
+            "__type": {"selector": ".arx-tag-input", "value": "a"},
+            "__click": ".arx-suggest-item",
+        })
+        self.assertIn("savePaper", out["messages"])
         self.assertEqual(out["tagSent"], ["agn"])
 
     def test_removing_a_chip_persists(self):

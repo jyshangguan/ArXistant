@@ -200,6 +200,10 @@ const chromeStub = {
           reply = { success: true, paper: paperFixture };
           break;
         case 'savePaper':
+          reply = META.__saveFails
+            ? { success: false, error: 'The server rejected the change.' }
+            : { success: true, message: 'ok' };
+          break;
         case 'deletePaper':
           reply = { success: true, message: 'ok' };
           break;
@@ -375,6 +379,18 @@ let typed = null;
       const pe = bodyEl0();
       const box = pe ? findDeep(pe, '.arx-suggest') : null;
       return box ? box.innerHTML : '';
+    })(),
+    // setStatus() writes into the .arx-status child, so it is not part of the
+    // body's innerHTML snapshot either.
+    statusHtml: (() => {
+      const pe = bodyEl0();
+      const el = pe ? findDeep(pe, '.arx-status') : null;
+      return el ? el.innerHTML : '';
+    })(),
+    statusClass: (() => {
+      const pe = bodyEl0();
+      const el = pe ? findDeep(pe, '.arx-status') : null;
+      return el ? el.className : '';
     })(),
     tagInputValue: (() => {
       const pe = bodyEl0();

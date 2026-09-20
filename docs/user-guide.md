@@ -385,10 +385,14 @@ panel in the bottom-right corner. It deliberately does not repeat the abstract
 - **🏷️ Tags** — type a tag and press Enter (or click **Add**). Existing tags
   appear as chips and each has a **✕**. Tags you already use elsewhere in your
   library are offered as suggestions while you type.
-  - On a paper that is **not saved yet**, tags are staged and written together
-    with the save — one step, one record.
+  - On a paper that is **not saved yet**, adding a tag **saves the paper** in
+    the same write — tagging is taken as "keep this paper", so there is no
+    separate Save click. The input reads `add a tag (auto-saves)` to say so, the
+    button flips to **✓ Saved**, and the status line confirms it. If the save
+    fails, the tag is not applied and the reason is shown.
   - On a paper that is **already saved**, each change persists immediately,
-    exactly like the tag editors on the ArXistant pages.
+    exactly like the tag editors on the ArXistant pages. Removing a tag never
+    removes the paper.
 - **💾 Save / ✓ Saved** — add the paper to your library, or remove it. The
   unified key rule applies, so a paper saved from a browsing page and the same
   paper saved from the Daily page are one record, never a duplicate.

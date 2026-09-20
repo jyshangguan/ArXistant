@@ -148,11 +148,18 @@
       state.tags = key && state.tagsById[key] ? state.tagsById[key].slice() : [];
     }
 
+    function rememberTags(key, tags) {
+      state.tagsById[key] = tags.slice();
+      tags.forEach(t => {
+        if (state.tagVocab.indexOf(t) === -1) state.tagVocab.push(t);
+      });
+      state.tagVocab.sort();
+    }
+
     async function persistTags() {
-      // Tags live on the saved row. For a paper that is not saved yet they are
-      // staged locally and written together with the save; once saved, every
-      // change persists immediately — the same behaviour as the tag editors on
-      // the ArXistant pages.
+      // Tags live on the saved row, and addTag() guarantees the paper is saved
+      // before we get here, so every change persists immediately — the same
+      // behaviour as the tag editors on the ArXistant pages.
       if (!state.paper || !isSavedNow()) { render(); return; }
       const resp = await send('updateTags',
                               { key: state.paper.id, tags: state.tags });
@@ -160,20 +167,51 @@
         setStatus(resp.error || 'Could not save the tags.', true);
         return;
       }
-      state.tagsById[state.paper.id] = state.tags.slice();
-      state.tags.forEach(t => {
-        if (state.tagVocab.indexOf(t) === -1) state.tagVocab.push(t);
-      });
-      state.tagVocab.sort();
+      rememberTags(state.paper.id, state.tags);
       setStatus('');
       render();
     }
 
-    function addTag(raw) {
+    async function addTag(raw) {
       const tag = normalizeTag(raw);
-      if (!tag || state.tags.indexOf(tag) !== -1) { render(); return; }
-      state.tags.push(tag);
-      persistTags();
+      if (!tag || !state.paper) { render(); return; }
+
+      // When the library state is unknown (an earlier load failed), refresh it
+      // before deciding anything: guessing wrong here could overwrite tags that
+      // are already stored for this paper.
+      if (state.savedIds === null) {
+        await loadLibrary();
+        loadTagsForCurrentPaper();
+      }
+      if (state.tags.indexOf(tag) !== -1) { render(); return; }
+      const next = state.tags.concat([tag]);
+
+      if (isSavedNow()) {
+        state.tags = next;
+        await persistTags();
+        return;
+      }
+
+      // Tagging a paper that is not in the library yet saves it. Tags live on
+      // the saved row, and tagging is a clear signal the paper is wanted, so
+      // making the user click Save afterwards was a pointless extra step.
+      // /api/save accepts tags in the same write, so this is still one request.
+      setStatus('Saving…');
+      const resp = await send('savePaper', { paper: state.paper, tags: next });
+      if (!resp.success) {
+        // The tag is not applied: showing it as added would be a lie. Render
+        // first, then report — render() rebuilds the status element, so setting
+        // the message beforehand would erase it.
+        render();
+        setStatus(resp.error || 'Could not save the paper.', true);
+        return;
+      }
+      state.tags = next;
+      if (state.savedIds) state.savedIds.add(state.paper.id);
+      else state.savedIds = new Set([state.paper.id]);
+      rememberTags(state.paper.id, next);
+      render();
+      setStatus('Saved and tagged “' + tag + '”.');
     }
 
     function removeTag(tag) {
@@ -224,13 +262,14 @@
       const wasSaved = state.savedIds && state.savedIds.has(key);
       if (wasSaved && !confirm('Remove this paper from your ArXistant library?')) return;
       setStatus(wasSaved ? 'Removing…' : 'Saving…');
+      const payload = { paper: state.paper };
+      // Tags ride along with the save. They are omitted when the library state
+      // is unknown, because /api/save preserves stored tags only when the field
+      // is absent — sending an empty list could wipe tags this panel never saw.
+      if (state.savedIds !== null) payload.tags = state.tags;
       const resp = wasSaved
         ? await send('deletePaper', { key: key })
-        // Tags ride along with the save, so tagging before saving is one write.
-        // They are deliberately omitted when removing: /api/save preserves
-        // stored tags only when the field is absent, and a re-save must never
-        // wipe what is already there.
-        : await send('savePaper', { paper: state.paper, tags: state.tags });
+        : await send('savePaper', payload);
       if (!resp.success) {
         setStatus(resp.error || 'The server rejected the change.', true);
         return;
@@ -244,14 +283,7 @@
         // the new state.
         state.savedIds = new Set([key]);
       }
-      if (!wasSaved) {
-        // The staged tags are now the stored ones.
-        state.tagsById[key] = state.tags.slice();
-        state.tags.forEach(t => {
-          if (state.tagVocab.indexOf(t) === -1) state.tagVocab.push(t);
-        });
-        state.tagVocab.sort();
-      }
+      if (!wasSaved) rememberTags(key, state.tags);   // staged tags are now stored
       setStatus('');
       render();
     }
@@ -310,7 +342,8 @@
           ).join('') + '</div>' +
           '<div class="arx-tag-row">' +
           '<input class="arx-tag-input" type="text" maxlength="60" placeholder="' +
-          (saved ? 'add a tag…' : 'tag it, then save…') + '">' +
+          (saved ? 'add a tag…' : 'add a tag (auto-saves)') + '"' +
+          (saved ? '' : ' title="Adding a tag saves the paper to your library"') + '>' +
           '<button class="arx-tag-add">Add</button>' +
           '</div>' +
           '<div class="arx-suggest"></div>' +
