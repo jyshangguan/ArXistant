@@ -12,14 +12,18 @@
   ],
   "host_permissions": [
     "http://localhost:8765/*",
-    "https://scixplorer.org/*"
+    "https://scixplorer.org/*",
+    "https://www.scixplorer.org/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://scixplorer.org/*"],
+      "matches": [
+        "https://scixplorer.org/*",
+        "https://www.scixplorer.org/*"
+      ],
       "js": ["content-scix.js"],
       "css": ["content-scix.css"],
       "run_at": "document_idle"

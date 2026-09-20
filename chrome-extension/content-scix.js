@@ -14,10 +14,18 @@
 (() => {
   'use strict';
 
-  // location.pathname keeps percent-encoding (e.g. A&A bibcodes appear as
-  // 2020A%26A...), so the class must accept % and & as well as the raw
-  // bibcode characters; the capture is decoded afterwards.
-  const PAPER_ROUTE_RE = /^\/(?:abs|detail)\/([A-Za-z0-9.%&\-_]{8,30})\/?$/;
+  // Paper routes are /abs/<bibcode> or /detail/<bibcode>, optionally followed
+  // by a sub-page segment. SciXplorer inherits ADS Classic's route shape, so a
+  // live paper page is normally /abs/<bibcode>/abstract — plus /citations,
+  // /references, /metrics, /graphics and /exportcitation. An earlier version
+  // anchored this pattern at the end of the path, so none of those matched and
+  // the panel never appeared.
+  //
+  // The capture stops at the first "/", "?" or "#"; the decoded value is then
+  // validated separately, because location.pathname keeps percent-encoding
+  // (A&A bibcodes appear as 2020A%26A...) and the "arXiv:<id>" form has a ":".
+  const PAPER_ROUTE_RE = /^\/(?:abs|detail)\/([^/?#]+)/;
+  const BIBCODE_RE = /^[A-Za-z0-9.&%\-_:]{6,40}$/;
   const ARXIV_ID_RE = /^(?:\d{4}\.\d{4,5}|[a-z\-]+\/\d{7})$/;
   const POLL_MS = 500;
 
@@ -58,11 +66,24 @@
     return div.innerHTML;
   }
 
+  function log(level, msg) {
+    // Diagnostics matter here: the panel is invisible when the route does not
+    // match, so without a log line there is no way to tell from the page
+    // whether the script ran at all or simply found no paper identifier.
+    try { console[level]('[ArXistant]', msg); } catch (e) { /* no console */ }
+  }
+
   function currentBibcode() {
     try {
       const m = PAPER_ROUTE_RE.exec(location.pathname);
       if (!m) return null;
-      return decodeURIComponent(m[1]);
+      let raw;
+      try { raw = decodeURIComponent(m[1]); } catch (e) { raw = m[1]; }
+      if (!BIBCODE_RE.test(raw)) {
+        log('warn', 'unrecognised paper identifier in the URL, panel skipped: ' + raw);
+        return null;
+      }
+      return raw;
     } catch (e) {
       return null;
     }
@@ -91,7 +112,11 @@
 
     panel.appendChild(head);
     panel.appendChild(body);
-    document.documentElement.appendChild(panel);
+    // Attach under <body>. Appending to documentElement makes the panel a
+    // sibling of <head> and <body>, which is invalid placement that some page
+    // CSS lays out incorrectly or hides.
+    (document.body || document.documentElement).appendChild(panel);
+    log('info', 'panel attached');
     return panel;
   }
 
@@ -249,6 +274,8 @@
     state.resolveError = '';
     state.serverError = '';
     state.abstractOpen = false;
+    log('info', bibcode ? 'paper page, bibcode ' + bibcode
+                       : 'not a paper page (' + location.pathname + ')');
     render();
 
     if (!bibcode) return;
@@ -285,22 +312,30 @@
   }
 
   function watch() {
+    const fail = e => log('error', 'route handling failed: ' + (e && e.message));
     setInterval(() => {
       if (location.pathname !== lastPath) {
         lastPath = location.pathname;
-        onRouteChange().catch(console.error);
+        onRouteChange().catch(fail);
+      } else if (state.bibcode && panel && !panel.isConnected) {
+        // The SPA replaced the DOM underneath us; put the panel back.
+        panel = null;
+        render();
       }
     }, POLL_MS);
     window.addEventListener('popstate', () => {
       lastPath = null;
-      onRouteChange().catch(console.error);
+      onRouteChange().catch(fail);
     });
   }
 
   function start() {
     if (window.__arxistantScixPanel) return;  // guard double injection
     window.__arxistantScixPanel = true;
+    log('info', 'content script active on ' + location.host);
     watch();
+    // Do not wait for the first poll tick on a page that is already a paper.
+    onRouteChange().catch(e => log('error', e && e.message));
   }
 
   if (document.readyState === 'loading') {

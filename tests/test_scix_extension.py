@@ -8,6 +8,7 @@ route regex and syntax.
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -24,13 +25,58 @@ OPTIONS_JS = (EXT / "options.js").read_text(encoding="utf-8")
 OPTIONS_HTML = (EXT / "options.html").read_text(encoding="utf-8")
 
 NODE = shutil.which("node")
+HARNESS = PROJECT_ROOT / "tests" / "js" / "panel-harness.js"
+
+# URL forms the route matcher must handle. The sub-page segments are the ones
+# a real scixplorer.org paper page actually uses; they are the reason the
+# panel silently never appeared.
+_ROUTE_CASES_JS = r"""
+const cases = [
+  // Plain and trailing-slash forms.
+  ['/abs/1929PNAS...15..168H', '1929PNAS...15..168H'],
+  ['/abs/1929PNAS...15..168H/', '1929PNAS...15..168H'],
+  ['/detail/2018ApJS..239...17A', '2018ApJS..239...17A'],
+  // Sub-page segments (ADS Classic route shape, inherited by SciXplorer).
+  ['/abs/1929PNAS...15..168H/abstract', '1929PNAS...15..168H'],
+  ['/abs/1998AJ....116.1009R/citations', '1998AJ....116.1009R'],
+  ['/abs/1998AJ....116.1009R/references', '1998AJ....116.1009R'],
+  ['/abs/1998AJ....116.1009R/metrics', '1998AJ....116.1009R'],
+  ['/abs/1998AJ....116.1009R/graphics', '1998AJ....116.1009R'],
+  ['/abs/1998AJ....116.1009R/exportcitation', '1998AJ....116.1009R'],
+  // Ampersand-bearing bibcodes, percent-encoded and literal.
+  ['/abs/2020A%26A...641A...6P/abstract', '2020A&A...641A...6P'],
+  ['/abs/2020A&A...641A...6P/abstract', '2020A&A...641A...6P'],
+  // Other identifier forms.
+  ['/abs/2023arXiv230711273V', '2023arXiv230711273V'],
+  ['/abs/arXiv:1802.08364', 'arXiv:1802.08364'],
+  // Non-paper routes and junk must not open a panel.
+  ['/search?q=black+holes', null],
+  ['/', null],
+  ['/abs/', null],
+  ['/abs/x', null],
+  ['/user/libraries/abc123', null],
+  ['/help/getting-started', null],
+  ['/scixblog/openapi-docs', null],
+];
+let failed = 0;
+for (const [path, want] of cases) {
+  const got = currentBibcode(path);
+  if (got !== want) {
+    failed++;
+    console.log('MISMATCH ' + path + ' -> ' + got + ' (want ' + want + ')');
+  }
+}
+process.exit(failed ? 1 : 0);
+"""
 
 
 class ManifestTests(unittest.TestCase):
     def test_content_script_registered_for_scixplorer(self):
         scripts = MANIFEST.get("content_scripts", [])
         self.assertEqual(len(scripts), 1)
-        self.assertEqual(scripts[0]["matches"], ["https://scixplorer.org/*"])
+        self.assertEqual(sorted(scripts[0]["matches"]),
+                         ["https://scixplorer.org/*",
+                          "https://www.scixplorer.org/*"])
         self.assertIn("content-scix.js", scripts[0]["js"])
         self.assertIn("content-scix.css", scripts[0]["css"])
         self.assertEqual(scripts[0]["run_at"], "document_idle")
@@ -38,6 +84,9 @@ class ManifestTests(unittest.TestCase):
     def test_host_permissions_cover_scixplorer_and_localhost(self):
         hosts = MANIFEST.get("host_permissions", [])
         self.assertIn("https://scixplorer.org/*", hosts)
+        # www.scixplorer.org resolves too; without it the script never loads
+        # for a user who happens to land on the www host.
+        self.assertIn("https://www.scixplorer.org/*", hosts)
         self.assertIn("http://localhost:8765/*", hosts)
 
     def test_no_new_invade_permissions(self):
@@ -73,50 +122,150 @@ class ContentScriptTests(unittest.TestCase):
     def test_double_injection_guard(self):
         self.assertIn("__arxistantScixPanel", CONTENT_JS)
 
-    def test_route_regex_in_test_matches_file(self):
-        # Drift protection: the semantics test below re-types the regex;
-        # it must stay byte-identical to the one in content-scix.js.
+    def test_panel_attaches_under_body(self):
+        # Appending to documentElement makes the panel a sibling of <head>
+        # and <body>, which is invalid placement some page CSS misplaces.
         self.assertIn(
-            "PAPER_ROUTE_RE = /^\\/(?:abs|detail)\\/"
-            "([A-Za-z0-9.%&\\-_]{8,30})\\/?$/;",
+            "(document.body || document.documentElement).appendChild(panel)",
             CONTENT_JS)
+        self.assertNotIn("document.documentElement.appendChild(panel)",
+                         CONTENT_JS)
+
+    def test_panel_is_recreated_if_the_spa_removes_it(self):
+        self.assertIn("!panel.isConnected", CONTENT_JS)
+
+    def test_failures_are_diagnosable_from_the_console(self):
+        # The panel is invisible when the route does not match, so the script
+        # must report what it decided rather than failing silently.
+        self.assertIn("[ArXistant]", CONTENT_JS)
+        self.assertIn("not a paper page", CONTENT_JS)
+        self.assertIn("panel attached", CONTENT_JS)
+
+    def test_route_is_checked_immediately_not_only_on_the_first_poll(self):
+        self.assertIn("onRouteChange().catch", CONTENT_JS)
+
+    # --- Route matching -------------------------------------------------
+    # The regexes are EXTRACTED from the source rather than retyped here.
+    # The previous version of this test re-declared the pattern, so it agreed
+    # with the buggy source instead of with reality: scixplorer.org paper
+    # pages carry a sub-page segment (/abs/<bibcode>/abstract, inherited from
+    # ADS Classic) and the old pattern was anchored at end-of-path, so it
+    # matched nothing and the panel never appeared — while this test passed.
+
+    @staticmethod
+    def _extract_regex(name):
+        m = re.search(rf"^\s*const {name} = (/.*);$", CONTENT_JS, re.M)
+        if not m:
+            raise AssertionError(f"{name} not found in content-scix.js")
+        return m.group(1)
 
     @unittest.skipIf(NODE is None, "node not installed")
-    def test_route_regex_semantics(self):
-        # Mirrors PAPER_ROUTE_RE from content-scix.js, tested against
-        # path-only strings the way location.pathname provides them.
-        script = r"""
-const PAPER_ROUTE_RE = /^\/(?:abs|detail)\/([A-Za-z0-9.%&\-_]{8,30})\/?$/;
-const cases = [
-  ['/abs/1929PNAS...15..168H', '1929PNAS...15..168H'],
-  ['/abs/2020A%26A...641A...6P', '2020A&A...641A...6P'],
-  ['/abs/2020A&A...641A...6P', '2020A&A...641A...6P'],
-  ['/detail/2018ApJS..239...17A/', '2018ApJS..239...17A'],
-  ['/abs/2023arXiv230711273V', '2023arXiv230711273V'],
-  ['/search?q=black+holes', null],
-  ['/', null],
-  ['/abs/', null],
-  ['/user/libraries/abc123', null],
-  ['/help/getting-started', null],
-];
-let failed = 0;
-for (const [path, want] of cases) {
-  const m = PAPER_ROUTE_RE.exec(path);
-  let got = m ? decodeURIComponent(m[1]) : null;
-  if (got !== want) { failed++; console.log('MISMATCH ' + path + ' -> ' + got + ' (want ' + want + ')'); }
-}
-process.exit(failed ? 1 : 0);
-"""
+    def test_route_matching_accepts_subpages_and_rejects_non_papers(self):
+        script = (
+            "const PAPER_ROUTE_RE = " + self._extract_regex("PAPER_ROUTE_RE") + ";\n"
+            "const BIBCODE_RE = " + self._extract_regex("BIBCODE_RE") + ";\n"
+            # A faithful copy of currentBibcode()'s decode-and-validate step.
+            "function currentBibcode(pathname) {\n"
+            "  const m = PAPER_ROUTE_RE.exec(pathname);\n"
+            "  if (!m) return null;\n"
+            "  let raw;\n"
+            "  try { raw = decodeURIComponent(m[1]); } catch (e) { raw = m[1]; }\n"
+            "  if (!BIBCODE_RE.test(raw)) return null;\n"
+            "  return raw;\n"
+            "}\n"
+            + _ROUTE_CASES_JS
+        )
         result = subprocess.run([NODE, "-e", script], capture_output=True,
                                 text=True, timeout=20)
         self.assertEqual(result.returncode, 0,
-                         "route regex mismatches:\n" + result.stdout)
+                         "route matching failures:\n" + result.stdout)
+
+    def test_route_matcher_does_not_anchor_at_end_of_path(self):
+        # Regression guard for the specific defect: an end-of-path anchor is
+        # what made every real paper URL fail to match.
+        pattern = self._extract_regex("PAPER_ROUTE_RE")
+        self.assertFalse(pattern.rstrip("/").endswith("$"),
+                         "PAPER_ROUTE_RE must not be anchored at end-of-path; "
+                         "paper URLs carry sub-page segments like /abstract")
 
     @unittest.skipIf(NODE is None, "node not installed")
     def test_content_script_syntax(self):
         result = subprocess.run([NODE, "--check", str(EXT / "content-scix.js")],
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class PanelBehaviourTests(unittest.TestCase):
+    """Run the REAL content script under a stub DOM and assert what it does.
+
+    A route-regex unit test passed while the panel never appeared in the
+    browser, because the test agreed with the source instead of with reality.
+    These tests execute the shipped script (tests/js/panel-harness.js) so the
+    whole path — route match, resolve relay, render, attach — is covered.
+    """
+
+    BIB = "1929PNAS...15..168H"
+
+    def setUp(self):
+        if NODE is None:
+            self.skipTest("node not installed")
+
+    def _run(self, pathname, host="scixplorer.org", meta=None, script=None):
+        args = [NODE, str(HARNESS),
+                str(script or (EXT / "content-scix.js")),
+                pathname, host, json.dumps(meta or {})]
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        data = json.loads(result.stdout)
+        self.assertIsNone(data.get("fatal"), f"script threw: {data.get('fatal')}")
+        return data
+
+    def test_panel_appears_on_a_suffixed_paper_route(self):
+        # The reported bug: SciXplorer paper pages carry a sub-page segment,
+        # and the panel never appeared on them.
+        out = self._run(f"/abs/{self.BIB}/abstract")
+        self.assertTrue(out["panelAttached"])
+        self.assertEqual(out["resolveIdentifier"], self.BIB)
+        self.assertIn("scixResolve", out["messages"])
+
+    def test_panel_attaches_under_body(self):
+        out = self._run(f"/abs/{self.BIB}/abstract")
+        self.assertEqual(out["panelParent"], "body")
+        self.assertTrue(out["panelVisible"])
+
+    def test_panel_renders_the_resolved_paper(self):
+        out = self._run(f"/abs/{self.BIB}")
+        html = out["panelHtml"]
+        self.assertIn("SciX:" + self.BIB, html)
+        self.assertIn("A Relation between Distance and Radial Velocity", html)
+        self.assertIn("arx-save", html)
+        self.assertIn("arx-chat", html)
+        self.assertIn("Show abstract", html)
+
+    def test_no_panel_on_non_paper_routes(self):
+        for path in ("/search?q=black+holes", "/", "/user/libraries/abc123",
+                     "/help/getting-started"):
+            out = self._run(path)
+            self.assertFalse(out["panelAttached"], path)
+            self.assertEqual(out["messages"], [], path)
+
+    def test_already_saved_paper_shows_the_saved_state(self):
+        out = self._run(f"/abs/{self.BIB}/abstract",
+                        meta={"__savedIds": [self.BIB]})
+        self.assertIn("✓ Saved", out["panelHtml"])
+        self.assertIn("arx-saved", out["panelHtml"])
+
+    def test_resolve_failure_is_reported_not_silent(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={"__resolveFails": True})
+        self.assertTrue(out["panelAttached"])
+        self.assertIn("SciX has no record", out["panelHtml"])
+
+    def test_diagnostics_explain_what_the_script_decided(self):
+        out = self._run(f"/abs/{self.BIB}/abstract")
+        joined = "\n".join(out["logs"])
+        self.assertIn("content script active", joined)
+        self.assertIn("paper page, bibcode " + self.BIB, joined)
+        self.assertIn("panel attached", joined)
 
 
 class BackgroundRelayTests(unittest.TestCase):
