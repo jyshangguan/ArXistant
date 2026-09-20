@@ -77,6 +77,7 @@
 
   window.ArXistantPanel.init({
     site: 'arxiv',
+    settingKey: 'panelOnArxiv',
     poll: false,         // server-rendered: every navigation is a fresh document
     parse: parse,
     fetchPaper: fetchPaper,

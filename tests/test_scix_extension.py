@@ -261,7 +261,13 @@ class PanelBehaviourTests(unittest.TestCase):
                      "/help/getting-started"):
             out = self._run(path)
             self.assertFalse(out["panelAttached"], path)
-            self.assertEqual(out["messages"], [], path)
+            # The only call is the enable check, which reads chrome.storage in
+            # the worker — no network, and no library or resolve work.
+            self.assertNotIn("savedPapers", out["messages"], path)
+            self.assertNotIn("scixResolve", out["messages"], path)
+            self.assertNotIn("savePaper", out["messages"], path)
+            self.assertTrue(set(out["messages"]) <= {"getSettings"},
+                            f"{path}: {out['messages']}")
 
     def test_already_saved_paper_shows_the_saved_state(self):
         out = self._run(f"/abs/{self.BIB}/abstract",

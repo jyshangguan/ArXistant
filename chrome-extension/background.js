@@ -47,7 +47,11 @@ async function getSettings() {
     skipWeekends: stored.skipWeekends !== false,
     retrainAfterChanges: Number.isInteger(stored.retrainAfterChanges)
       ? Math.min(100, Math.max(1, stored.retrainAfterChanges))
-      : DEFAULT_RETRAIN_AFTER_CHANGES
+      : DEFAULT_RETRAIN_AFTER_CHANGES,
+    // The browsing panel is opt-out per site. Missing means the setting
+    // predates the toggle, so it stays on — the behaviour users already have.
+    panelOnArxiv: stored.panelOnArxiv !== false,
+    panelOnScix: stored.panelOnScix !== false
   };
 }
 
@@ -57,7 +61,9 @@ async function saveSettings(settings) {
     reminderTimes: normalizeReminderTimes(settings.reminderTimes),
     skipWeekends: settings.skipWeekends !== false,
     retrainAfterChanges: Math.min(100, Math.max(1,
-      Number.parseInt(settings.retrainAfterChanges, 10) || DEFAULT_RETRAIN_AFTER_CHANGES))
+      Number.parseInt(settings.retrainAfterChanges, 10) || DEFAULT_RETRAIN_AFTER_CHANGES)),
+    panelOnArxiv: settings.panelOnArxiv !== false,
+    panelOnScix: settings.panelOnScix !== false
   };
   await chrome.storage.local.set({ [STORAGE_KEY_SETTINGS]: normalized });
   return normalized;

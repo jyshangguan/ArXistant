@@ -178,7 +178,13 @@ const chromeStub = {
       let reply;
       switch (msg.action) {
         case 'getSettings':
-          reply = { success: true, settings: { serverUrl: 'http://localhost:8765/daily.html' } };
+          reply = {
+            success: true,
+            settings: Object.assign(
+              { serverUrl: 'http://localhost:8765/daily.html',
+                panelOnArxiv: true, panelOnScix: true },
+              META.__settings || {})
+          };
           break;
         case 'savedPapers':
           reply = {

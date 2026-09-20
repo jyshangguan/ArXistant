@@ -7,6 +7,7 @@
 //
 // An adapter supplies:
 //   site              name used in console diagnostics
+//   settingKey        settings field that turns this site's panel on/off
 //   poll              true for SPA sites whose pathname changes without a reload
 //   parse(pathname)   the paper identifier for this URL, or null
 //   fetchPaper(id)    -> {paper, error}; from the page itself or via the server
@@ -417,12 +418,13 @@
 
       if (!state.savedIdsTried) {
         state.savedIdsTried = true;
-        await loadServerOrigin();
         await loadLibrary();
         if (state.savedIds === null) {
           state.serverError = 'Could not reach the ArXistant server.';
         }
       }
+      // start() normally sets the origin from the same settings read it used
+      // for the enable check; retry only if that did not happen.
       if (state.serverOrigin == null) await loadServerOrigin();
 
       try {
@@ -462,15 +464,30 @@
       onRouteChange().catch(fail);
     }
 
-    function start() {
+    async function start() {
       log('info', 'content script active on ' + location.host);
+      // Read settings before touching the page: the panel is opt-out per site,
+      // and the same response carries the server origin, so this replaces the
+      // separate lookup that onRouteChange() would otherwise do.
+      const resp = await send('getSettings');
+      const settings = (resp && resp.settings) || null;
+      if (settings && settings[adapter.settingKey] === false) {
+        log('info', 'panel is disabled for this site in the extension Settings');
+        return;   // no panel, no polling, no requests
+      }
+      if (settings && settings.serverUrl) {
+        try { state.serverOrigin = new URL(settings.serverUrl).origin; } catch (e) {}
+      }
       watch();
     }
 
+    const begin = () => {
+      start().catch(e => log('error', 'startup failed: ' + (e && e.message)));
+    };
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', start, { once: true });
+      document.addEventListener('DOMContentLoaded', begin, { once: true });
     } else {
-      start();
+      begin();
     }
   }
 

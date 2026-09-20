@@ -48,6 +48,7 @@
 
   window.ArXistantPanel.init({
     site: 'scixplorer',
+    settingKey: 'panelOnScix',
     poll: true,          // SPA: the pathname changes without a document reload
     parse: parse,
     fetchPaper: fetchPaper,

@@ -420,14 +420,24 @@ arXiv's rate limits. Version suffixes are dropped from the identifier, so
 `/abs/1802.08364v1` saves under `1802.08364`, the same key the Daily page
 uses.
 
-If the panel does not appear: confirm you are on a paper page, check that the
-server is running (the extension popup shows its status), and confirm the
+If the panel does not appear: check **Settings → Paper Panel**, where each site
+has its own on/off checkbox; confirm you are on a paper page; check that the
+server is running (the extension popup shows its status); and confirm the
 extension was reloaded after gaining these site permissions — Chrome asks you
 to re-approve host permissions when an unpacked extension is reloaded, and its
 **Site access** must not be restricted to specific sites. Opening DevTools on
 the page shows `[ArXistant …]` console lines reporting whether the script
-loaded, which identifier it read from the URL, and whether the panel was
-attached.
+loaded, whether the panel is disabled, which identifier it read from the URL,
+and whether the panel was attached.
+
+### Turning the panel off
+
+**Settings → Paper Panel** has one checkbox per site — arxiv.org abstract pages
+and scixplorer.org paper pages. Both are on by default, and an upgrade from a
+version without this setting leaves them on. Click **Save Settings**, then
+reload the paper tab: the choice is read when the page loads. Turning a site
+off stops the panel entirely — it makes no requests and reads nothing from the
+page.
 
 ## Publications from SciX/ADS
 

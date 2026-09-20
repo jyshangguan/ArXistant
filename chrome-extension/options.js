@@ -4,12 +4,16 @@ const DEFAULT_SETTINGS = {
   serverUrl: 'http://localhost:8765/daily.html',
   reminderTimes: ['10:30'],
   skipWeekends: true,
-  retrainAfterChanges: 5
+  retrainAfterChanges: 5,
+  panelOnArxiv: true,
+  panelOnScix: true
 };
 
 const serverUrlInput = document.getElementById('server-url');
 const reminderTimesList = document.getElementById('reminder-times');
 const skipWeekendsInput = document.getElementById('skip-weekends');
+const panelArxivInput = document.getElementById('panel-arxiv');
+const panelScixInput = document.getElementById('panel-scix');
 const btnAddTime = document.getElementById('btn-add-time');
 const btnSave = document.getElementById('btn-save');
 const btnReset = document.getElementById('btn-reset');
@@ -119,6 +123,9 @@ async function loadSettings() {
     renderTimes(settings.reminderTimes || DEFAULT_SETTINGS.reminderTimes);
     skipWeekendsInput.checked = settings.skipWeekends !== false;
     retrainAfterChangesInput.value = settings.retrainAfterChanges || DEFAULT_SETTINGS.retrainAfterChanges;
+    // Default on: an absent flag means the setting predates the toggle.
+    panelArxivInput.checked = settings.panelOnArxiv !== false;
+    panelScixInput.checked = settings.panelOnScix !== false;
     await updateAlarmStatus();
     await updateRetrainingStatus();
   } catch (error) {
@@ -133,6 +140,8 @@ async function saveSettings() {
   const reminderTimes = collectTimes();
   const skipWeekends = skipWeekendsInput.checked;
   const retrainAfterChanges = Number.parseInt(retrainAfterChangesInput.value, 10);
+  const panelOnArxiv = panelArxivInput.checked;
+  const panelOnScix = panelScixInput.checked;
   if (!serverUrl) {
     expandSection('section-server');
     return showStatus('Server URL cannot be empty.', 'error');
@@ -149,7 +158,10 @@ async function saveSettings() {
   try {
     const response = await chrome.runtime.sendMessage({
       action: 'saveSettings',
-      settings: { serverUrl, reminderTimes, skipWeekends, retrainAfterChanges }
+      settings: {
+        serverUrl, reminderTimes, skipWeekends, retrainAfterChanges,
+        panelOnArxiv, panelOnScix
+      }
     });
     if (!response.success) throw new Error(response.error || 'Failed to save settings');
     renderTimes(response.settings.reminderTimes);
@@ -169,6 +181,8 @@ async function resetSettings() {
   renderTimes(DEFAULT_SETTINGS.reminderTimes);
   skipWeekendsInput.checked = DEFAULT_SETTINGS.skipWeekends;
   retrainAfterChangesInput.value = DEFAULT_SETTINGS.retrainAfterChanges;
+  panelArxivInput.checked = DEFAULT_SETTINGS.panelOnArxiv;
+  panelScixInput.checked = DEFAULT_SETTINGS.panelOnScix;
   await saveSettings();
 }
 

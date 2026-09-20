@@ -42,7 +42,8 @@ The Manifest V3 extension contains:
 
 - A popup for server status and page navigation.
 - An options page for reminder times, weekend behavior, server URL, model
-  retraining threshold, cloud sync, the ADS / SciX token, and LLM settings.
+  retraining threshold, cloud sync, the ADS / SciX token, LLM settings, and a
+  per-site on/off switch for the browsing panel.
 - A background service worker for alarms, notifications, and automatic daily
   refresh requests. It also relays the page panels' requests to the local
   server.
@@ -69,7 +70,11 @@ The Manifest V3 extension contains:
   In both cases all server access goes through the service worker, so
   page-level mixed-content and private-network restrictions never apply. The
   permissions are read-only; a redesign of either site can at most make the
-  panel disappear, never break the page.
+  panel disappear, never break the page. Each site can be switched off
+  independently from Settings → Paper Panel; the adapter's `settingKey` is
+  checked before the panel touches the page, so a disabled site means no
+  polling, no requests and no DOM changes at all. Both default to on,
+  including for settings stored before the toggle existed.
 - A macOS custom-URL launcher integration. Linux relies on its systemd user
   service instead.
 
