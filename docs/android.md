@@ -99,11 +99,15 @@ WebView. It adds:
   page). This is how the LLM is configured on the phone — without it,
   Listen reads the raw titles and abstracts.
 - **Check for Updates** (⬆️ in the ⋯ menu): the app compares its version with
-  the latest GitHub release, offers to download the release APK, and hands it
-  to the package installer. Android asks once for the "install unknown apps"
-  permission; after allowing it, the installer opens automatically. A silent
-  check also runs once at startup and only speaks up when a newer release
-  exists.
+  the latest GitHub release, offers to download the release APK, **verifies
+  the download** (byte count and SHA-256 against the release asset metadata,
+  retrying once and deleting a suspect file rather than installing it), and
+  then hands it to the package installer. Android asks once for the "install
+  unknown apps" permission; after allowing it, the installer opens
+  automatically. A silent check also runs once at startup and only speaks up
+  when a newer release exists. Every check logs the parsed release, asset
+  size, and digest under the `ArxistantUpdate` tag, so a failed update can be
+  diagnosed from `adb logcat`.
 
 The app icon is the ArXistant logo, and `MainActivity` shows a loading page and
 polls the embedded server until it is ready, so the daily list appears as soon
@@ -191,7 +195,7 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android version is
-**v0.4.3** (`versionName "0.4.3"`, `versionCode 11` in `app/build.gradle`);
+**v0.4.4** (`versionName "0.4.4"`, `versionCode 12` in `app/build.gradle`);
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 

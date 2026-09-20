@@ -27,8 +27,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import arxiv_db_server as server
 
-VERSION = "0.4.3"
-VERSION_CODE = 11
+VERSION = "0.4.4"
+VERSION_CODE = 12
 API_VERSION = 4
 
 
