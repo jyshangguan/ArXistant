@@ -60,8 +60,9 @@ WebView. It adds:
 
 - **A floating ⋯ menu** (top-right) that replaces the desktop navigation bar.
   It links to Daily/Recent papers, Saved Papers, Search, My Publications,
-  ML Features, and Cloud Sync. Tap ⋯ to open it, tap outside to dismiss. A
-  **long-press on a menu item** shows a tooltip describing what it does.
+  ML Features, and Settings (Cloud Sync lives in the Settings page). Tap ⋯
+  to open it, tap outside to dismiss. A **long-press on a menu item** shows
+  a tooltip describing what it does.
 - **Pull-to-refresh** on the daily and recent pages: drag down from the top to
   sync the library and re-fetch the list. A spinner overlay appears while the
   refresh runs (the page's own Refresh button is hidden on Android in favor of

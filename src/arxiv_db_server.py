@@ -4818,7 +4818,6 @@ MOBILE_MENU_SCRIPT = """<!-- arxistant-mobile-menu -->
         { icon: '💬', label: 'Chat', href: '/chat.html', desc: 'Read and discuss your papers with an LLM' },
         { icon: '📚', label: 'My Publications', href: '/publications.html', desc: 'Import and manage your publications' },
         { icon: '🧠', label: 'ML Features', href: '/ml-features.html', desc: 'Inspect training and ranking features' },
-        { icon: '☁️', label: 'Cloud Sync', href: '/cloud-sync.html', desc: 'Sync your library across devices via Nutstore' },
         { icon: '⚙️', label: 'Settings', href: '/settings.html', desc: 'LLM, voice reading, and cloud sync settings' }
     ];
 
