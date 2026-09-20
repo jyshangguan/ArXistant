@@ -191,7 +191,7 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android version is
-**v0.4.2** (`versionName "0.4.2"`, `versionCode 10` in `app/build.gradle`);
+**v0.4.3** (`versionName "0.4.3"`, `versionCode 11` in `app/build.gradle`);
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 
