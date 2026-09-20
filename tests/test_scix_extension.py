@@ -20,6 +20,10 @@ EXT = PROJECT_ROOT / "chrome-extension"
 
 MANIFEST = json.loads((EXT / "manifest.json").read_text(encoding="utf-8"))
 CONTENT_JS = (EXT / "content-scix.js").read_text(encoding="utf-8")
+PANEL_JS = (EXT / "content-panel.js").read_text(encoding="utf-8")
+# Content scripts load in manifest order: the shared panel module first,
+# then the site adapter that calls ArXistantPanel.init().
+SCIX_SCRIPTS = "content-panel.js,content-scix.js"
 BACKGROUND_JS = (EXT / "background.js").read_text(encoding="utf-8")
 OPTIONS_JS = (EXT / "options.js").read_text(encoding="utf-8")
 OPTIONS_HTML = (EXT / "options.html").read_text(encoding="utf-8")
@@ -73,13 +77,15 @@ process.exit(failed ? 1 : 0);
 class ManifestTests(unittest.TestCase):
     def test_content_script_registered_for_scixplorer(self):
         scripts = MANIFEST.get("content_scripts", [])
-        self.assertEqual(len(scripts), 1)
-        self.assertEqual(sorted(scripts[0]["matches"]),
+        scix = next(s for s in scripts
+                    if "content-scix.js" in s.get("js", []))
+        self.assertEqual(sorted(scix["matches"]),
                          ["https://scixplorer.org/*",
                           "https://www.scixplorer.org/*"])
-        self.assertIn("content-scix.js", scripts[0]["js"])
-        self.assertIn("content-scix.css", scripts[0]["css"])
-        self.assertEqual(scripts[0]["run_at"], "document_idle")
+        # The shared panel module must load before the adapter that calls it.
+        self.assertEqual(scix["js"], ["content-panel.js", "content-scix.js"])
+        self.assertIn("content-panel.css", scix["css"])
+        self.assertEqual(scix["run_at"], "document_idle")
 
     def test_host_permissions_cover_scixplorer_and_localhost(self):
         hosts = MANIFEST.get("host_permissions", [])
@@ -100,23 +106,28 @@ class ManifestTests(unittest.TestCase):
 class ContentScriptTests(unittest.TestCase):
     def test_extracts_bibcode_from_url_not_dom(self):
         self.assertIn("PAPER_ROUTE_RE", CONTENT_JS)
-        self.assertIn("location.pathname", CONTENT_JS)
+        self.assertIn("location.pathname", PANEL_JS)
         # Never scrapes scixplorer's own markup for the identifier.
         self.assertNotIn("querySelector('.abstract", CONTENT_JS)
+        self.assertNotIn("querySelector('.abstract", PANEL_JS)
 
     def test_relays_requests_through_background_worker(self):
         # Mixed-content/PNA-safe: the page script itself never fetches
         # the local http server directly.
         self.assertIn("scixResolve", CONTENT_JS)
-        self.assertNotIn("fetch('http://localhost", CONTENT_JS)
-        self.assertNotIn("fetch(\"http://localhost", CONTENT_JS)
+        for src in (CONTENT_JS, PANEL_JS):
+            self.assertNotIn("fetch('http://localhost", src)
+            self.assertNotIn("fetch(\"http://localhost", src)
 
     def test_panel_survives_spa_navigation(self):
-        self.assertIn("setInterval", CONTENT_JS)
-        self.assertIn("popstate", CONTENT_JS)
+        # scixplorer is a SPA: the adapter asks for polling and the shared
+        # panel implements it.
+        self.assertIn("poll: true", CONTENT_JS)
+        self.assertIn("setInterval", PANEL_JS)
+        self.assertIn("popstate", PANEL_JS)
 
     def test_storage_key_rule_is_displayed_correctly(self):
-        self.assertIn("isArxivId", CONTENT_JS)
+        self.assertIn("isArxivId", PANEL_JS)
         self.assertIn("'SciX:'", CONTENT_JS)
 
     def test_double_injection_guard(self):
@@ -127,22 +138,22 @@ class ContentScriptTests(unittest.TestCase):
         # and <body>, which is invalid placement some page CSS misplaces.
         self.assertIn(
             "(document.body || document.documentElement).appendChild(panel)",
-            CONTENT_JS)
+            PANEL_JS)
         self.assertNotIn("document.documentElement.appendChild(panel)",
-                         CONTENT_JS)
+                         PANEL_JS)
 
     def test_panel_is_recreated_if_the_spa_removes_it(self):
-        self.assertIn("!panel.isConnected", CONTENT_JS)
+        self.assertIn("!panel.isConnected", PANEL_JS)
 
     def test_failures_are_diagnosable_from_the_console(self):
         # The panel is invisible when the route does not match, so the script
         # must report what it decided rather than failing silently.
-        self.assertIn("[ArXistant]", CONTENT_JS)
-        self.assertIn("not a paper page", CONTENT_JS)
-        self.assertIn("panel attached", CONTENT_JS)
+        self.assertIn("[ArXistant ", PANEL_JS)
+        self.assertIn("not a paper page", PANEL_JS)
+        self.assertIn("panel attached", PANEL_JS)
 
     def test_route_is_checked_immediately_not_only_on_the_first_poll(self):
-        self.assertIn("onRouteChange().catch", CONTENT_JS)
+        self.assertIn("onRouteChange().catch", PANEL_JS)
 
     # --- Route matching -------------------------------------------------
     # The regexes are EXTRACTED from the source rather than retyped here.
@@ -211,9 +222,9 @@ class PanelBehaviourTests(unittest.TestCase):
             self.skipTest("node not installed")
 
     def _run(self, pathname, host="scixplorer.org", meta=None, script=None):
-        args = [NODE, str(HARNESS),
-                str(script or (EXT / "content-scix.js")),
-                pathname, host, json.dumps(meta or {})]
+        scripts = script or ",".join(str(EXT / n) for n in SCIX_SCRIPTS.split(","))
+        args = [NODE, str(HARNESS), scripts, pathname, host,
+                json.dumps(meta or {})]
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         data = json.loads(result.stdout)
@@ -264,15 +275,33 @@ class PanelBehaviourTests(unittest.TestCase):
         out = self._run(f"/abs/{self.BIB}/abstract")
         joined = "\n".join(out["logs"])
         self.assertIn("content script active", joined)
-        self.assertIn("paper page, bibcode " + self.BIB, joined)
+        self.assertIn("paper page, identifier " + self.BIB, joined)
         self.assertIn("panel attached", joined)
 
 
 class BackgroundRelayTests(unittest.TestCase):
     def test_panel_relay_actions_exist(self):
-        for action in ("scixSavedPapers", "scixResolve", "scixSavePaper",
-                       "scixDeletePaper"):
+        for action in ("savedPapers", "scixResolve", "arxivResolve",
+                       "savePaper", "deletePaper"):
             self.assertIn(f"case '{action}':", BACKGROUND_JS)
+
+    def test_no_stale_scix_prefixed_panel_relays_remain(self):
+        for old_name in ("scixSavedPapers", "scixSavePaper", "scixDeletePaper"):
+            self.assertNotIn(old_name, BACKGROUND_JS)
+            self.assertNotIn(old_name, PANEL_JS)
+            self.assertNotIn(old_name, CONTENT_JS)
+
+    def test_every_relay_the_panel_sends_is_handled(self):
+        # A renamed relay on one side only fails silently at runtime: send()
+        # resolves with "Unknown action" and the panel just shows an error.
+        # This is the desync that the stub-DOM harness also caught.
+        sent = set(re.findall(r"send\('([A-Za-z]+)'", PANEL_JS))
+        sent |= set(re.findall(r"send\('([A-Za-z]+)'", CONTENT_JS))
+        self.assertTrue(sent, "no relay calls found — extraction broke")
+        handled = set(re.findall(r"case '([A-Za-z]+)':", BACKGROUND_JS))
+        missing = sent - handled
+        self.assertEqual(missing, set(),
+                         f"content scripts send unhandled actions: {missing}")
 
     def test_save_relay_sends_storage_key_shape(self):
         # The relay must use the resolver's key (paper.id), never the raw

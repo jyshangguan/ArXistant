@@ -17,6 +17,7 @@ ranking, and page generation.
 flowchart TD
     EXT["Chrome extension"] -->|"HTTP on localhost:8765"| SERVER["Python HTTP server"]
     SCIXPAGE["scixplorer.org pages"] -->|"content-script panel (URL bibcode)"| EXT
+    ARXIVPAGE["arxiv.org /abs/ pages"] -->|"content-script panel (citation_* meta)"| EXT
     EXT -->|"relay requests"| SERVER
     SERVER --> DB["SQLite paper database"]
     SERVER --> RANKER["Daily ranking pipeline"]
@@ -43,16 +44,31 @@ The Manifest V3 extension contains:
 - An options page for reminder times, weekend behavior, server URL, model
   retraining threshold, cloud sync, the ADS / SciX token, and LLM settings.
 - A background service worker for alarms, notifications, and automatic daily
-  refresh requests. It also relays the scixplorer.org panel's requests to the
-  local server.
-- A content script on `https://scixplorer.org/*` — the project's first
-  third-party-page injection. scixplorer.org is an AWS-WAF-protected React
-  SPA, so the Python server cannot fetch its pages; the content script runs
-  inside the rendered page instead. It reads the paper's ADS bibcode from the
-  URL (never from the page's own markup) and shows a panel with the abstract,
-  save, and chat actions. All its requests go through the service worker, so
+  refresh requests. It also relays the page panels' requests to the local
+  server.
+- Content scripts that show an "add to ArXistant" panel on paper pages of two
+  third-party sites — the project's only third-party-page injection. One shared
+  module (`content-panel.js`) implements the panel; each site supplies a thin
+  adapter that says how to read the paper's identity and metadata:
+  - `https://scixplorer.org/*` — scixplorer.org is an AWS-WAF-protected React
+    SPA, so the Python server cannot fetch its pages. The adapter reads the ADS
+    bibcode from the URL (never from the page's own markup), tolerating the
+    sub-page segments the site appends (`/abstract`, `/citations`, `/metrics`,
+    …), and resolves metadata through the server's `/api/scix/resolve`. Because
+    it is an SPA, the panel polls the pathname and re-attaches if the site
+    replaces the DOM.
+  - `https://arxiv.org/abs/*` — scoped to abstract pages only, so the script
+    never loads on list or search pages. arXiv is server-rendered, so no
+    polling is needed. The adapter reads the page's `citation_*` metadata
+    (title, authors, abstract, DOI, date, arXiv ID), which is complete, so this
+    path needs no ADS token and makes no arXiv API call — keeping it clear of
+    arXiv's rate limiter. The version suffix is stripped so the key matches the
+    daily list. It needs no `host_permissions` entry, since a declared content
+    script requires only its match pattern.
+
+  In both cases all server access goes through the service worker, so
   page-level mixed-content and private-network restrictions never apply. The
-  permission is read-only; a scixplorer.org redesign can at most make the
+  permissions are read-only; a redesign of either site can at most make the
   panel disappear, never break the page.
 - A macOS custom-URL launcher integration. Linux relies on its systemd user
   service instead.
@@ -319,10 +335,11 @@ periodic Nutstore auto-sync every 30 minutes. See the
 
 ```text
 ArXistant/
-├── chrome-extension/          Chrome UI, alarms, notifications, and the
-│                              settings page (server, reminders, retraining,
-│                              cloud sync, LLM, voice reading, debug —
-│                              folded sections)
+├── chrome-extension/          Chrome UI, alarms, notifications, the settings
+│                              page (server, reminders, retraining, cloud
+│                              sync, LLM, voice reading, debug — folded
+│                              sections), and the scixplorer.org / arxiv.org
+│                              page panels
 ├── docs/                      User and technical documentation
 ├── packaging/linux/           Debian builder, launcher, and systemd unit
 ├── src/

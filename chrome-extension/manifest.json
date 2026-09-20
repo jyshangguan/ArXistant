@@ -24,8 +24,14 @@
         "https://scixplorer.org/*",
         "https://www.scixplorer.org/*"
       ],
-      "js": ["content-scix.js"],
-      "css": ["content-scix.css"],
+      "js": ["content-panel.js", "content-scix.js"],
+      "css": ["content-panel.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://arxiv.org/abs/*"],
+      "js": ["content-panel.js", "content-arxiv.js"],
+      "css": ["content-panel.css"],
       "run_at": "document_idle"
     }
   ],

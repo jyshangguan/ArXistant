@@ -341,11 +341,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           })
         };
       }
-      // ── SciXplorer panel relays ──
-      // The content script on scixplorer.org cannot fetch the local server
-      // directly (https page → http localhost would be mixed content / PNA),
-      // so the worker — covered by the localhost host permission — relays.
-      case 'scixSavedPapers': {
+      // ── Page-panel relays (scixplorer.org and arxiv.org) ──
+      // A content script cannot fetch the local server directly: an https page
+      // calling http://localhost is mixed content, and it also runs into Private
+      // Network Access restrictions. The worker is covered by the localhost host
+      // permission, so it relays. These are site-agnostic — every paper is keyed
+      // the same way (its arXiv ID when the record has one, else its bibcode).
+      case 'savedPapers': {
         const settings = await getSettings();
         try {
           const data = await fetchJson(serverApiUrl(settings.serverUrl, '/api/papers'));
@@ -363,7 +365,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return { success: false, error: error.message };
         }
       }
-      case 'scixSavePaper': {
+      case 'arxivResolve': {
+        // Fallback for an arXiv page whose citation_* meta tags are missing.
+        // Uses the token-free arXiv API and prefers the exact ID match.
+        const settings = await getSettings();
+        const want = String(message.identifier || '').replace(/v\d+$/, '');
+        try {
+          const data = await fetchJson(serverApiUrl(settings.serverUrl,
+            '/api/arxiv/search?q=' + encodeURIComponent(want)));
+          const papers = data.papers || [];
+          const hit = papers.find(p => String(p.id || '').replace(/v\d+$/, '') === want)
+            || papers[0];
+          if (!hit) return { success: false, error: 'arXiv has no record for ' + want };
+          return {
+            success: true,
+            paper: {
+              id: hit.id || want,
+              title: hit.title || '',
+              authors: Array.isArray(hit.authors) ? hit.authors : String(hit.authors || ''),
+              abstract: hit.abstract || '',
+              year: hit.year || '',
+              doi: '',
+              bibcode: '',
+              citation_count: 0,
+              source: 'arxiv',
+              is_arxiv: true
+            }
+          };
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'savePaper': {
         const settings = await getSettings();
         const p = message.paper || {};
         try {
@@ -383,7 +416,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return { success: false, error: error.message };
         }
       }
-      case 'scixDeletePaper': {
+      case 'deletePaper': {
         const settings = await getSettings();
         try {
           return await fetchJson(serverApiUrl(settings.serverUrl, '/api/delete'), {

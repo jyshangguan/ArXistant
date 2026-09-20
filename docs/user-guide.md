@@ -343,7 +343,7 @@ not affect learning).
 
 All of the save/tag/chat actions work for ADS-only records too (Chat grounds
 those discussions in the abstract — see
-[SciXplorer papers](#papers-from-scixplorerorg)). Only records with neither
+[SciXplorer papers](#papers-from-scixplorerorg-and-arxivorg)). Only records with neither
 an arXiv ID nor a bibcode, which are rare, cannot be saved.
 
 Requests to ADS are retried automatically when the source is slow or
@@ -375,37 +375,48 @@ Saved-Papers-style `id:` token is remapped to ADS's `identifier:` field
 automatically; `tag:` and `note:` have no ADS equivalent (they filter your
 local library only).
 
-## Papers from scixplorer.org
+## Papers from scixplorer.org and arxiv.org
 
-While you browse [scixplorer.org](https://scixplorer.org/), the ArXistant
-extension shows a small panel on paper pages (`/abs/<bibcode>`). The panel
-reads the paper's bibcode from the page URL and resolves the record through
-your local server, so it works even though scixplorer.org itself cannot be
-accessed by the server.
+While you browse [scixplorer.org](https://scixplorer.org/) or
+[arxiv.org](https://arxiv.org/), the ArXistant extension shows the same small
+panel in the bottom-right corner:
 
-The panel offers:
-
-- **▸ Show abstract** — the paper's abstract, fetched once per paper.
-- **💾 Save / ✓ Saved** — save the paper to (or remove it from) your library;
-  the same unified key rule applies, so a paper saved from the Daily page
-  and the same paper saved from scixplorer are one record, never a
-  duplicate.
+- **▸ Show abstract** — the paper's abstract.
+- **💾 Save / ✓ Saved** — add the paper to your library, or remove it. The
+  unified key rule applies, so a paper saved from a browsing page and the same
+  paper saved from the Daily page are one record, never a duplicate.
 - **💬 Chat** — opens the paper in the Chat reader on your local server.
   Journal-only papers get an abstract-only reader you can highlight and
   annotate; papers with an arXiv version load the full text as usual.
+- **–** in the header collapses the panel out of the way.
 
-The panel needs the **ADS / SciX token**. Set it once from the extension's
-**Settings → ADS / SciX** section: paste the token from
-[NASA ADS API settings](https://ui.adsabs.harvard.edu/user/settings/token),
-click **Save Token** (it is verified immediately), and reload any open
-scixplorer.org tabs. The token is stored by your local server with
-owner-only file permissions.
+**On scixplorer.org** the panel appears on paper pages — `/abs/<bibcode>` and
+its sub-pages (`/abstract`, `/citations`, `/references`, `/metrics`,
+`/graphics`). It reads the bibcode from the page URL and resolves the record
+through your local server, so it works even though scixplorer.org itself
+cannot be fetched by the server. This path needs the **ADS / SciX token**: set
+it once from the extension's **Settings → ADS / SciX** section by pasting the
+token from
+[NASA ADS API settings](https://ui.adsabs.harvard.edu/user/settings/token) and
+clicking **Save Token** (it is verified immediately), then reload any open
+scixplorer.org tabs. The token is stored by your local server with owner-only
+file permissions.
+
+**On arxiv.org** the panel appears on abstract pages (`/abs/<arxiv-id>`). It
+reads the paper's `citation_*` metadata straight off the page, so it needs
+**no ADS token and makes no arXiv API call** — which also keeps it clear of
+arXiv's rate limits. Version suffixes are dropped from the identifier, so
+`/abs/1802.08364v1` saves under `1802.08364`, the same key the Daily page
+uses.
 
 If the panel does not appear: confirm you are on a paper page, check that the
-server is running (the extension popup shows its status), and that the
-extension was reloaded after gaining the new scixplorer.org permission —
-Chrome asks you to re-approve host permissions when an unpacked extension is
-reloaded.
+server is running (the extension popup shows its status), and confirm the
+extension was reloaded after gaining these site permissions — Chrome asks you
+to re-approve host permissions when an unpacked extension is reloaded, and its
+**Site access** must not be restricted to specific sites. Opening DevTools on
+the page shows `[ArXistant …]` console lines reporting whether the script
+loaded, which identifier it read from the URL, and whether the panel was
+attached.
 
 ## Publications from SciX/ADS
 

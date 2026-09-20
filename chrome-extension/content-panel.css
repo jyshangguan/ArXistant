@@ -1,6 +1,6 @@
-/* ArXistant panel on scixplorer.org (dev_sci).
-   Namespaced with arx- and a fixed high z-index; scoped to #arxistant-panel
-   so scixplorer's own styles and CSP never conflict. */
+/* ArXistant page panel, shared by the scixplorer.org and arxiv.org content
+   scripts. Namespaced with arx- and a fixed high z-index; every rule is scoped
+   to #arxistant-panel so the host site's own styles and CSP never conflict. */
 
 #arxistant-panel {
   position: fixed;

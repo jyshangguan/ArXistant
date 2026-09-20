@@ -6,17 +6,21 @@
 // Running the actual script catches that class of bug.
 //
 // Deliberately dependency-free (the repo has no package.json / jsdom).
-// innerHTML is stored as a string and querySelector returns a permissive stub,
-// so this verifies structure, content and messaging — not real CSS layout.
+// innerHTML is stored as a string and querySelector resolves simple .class /
+// #id selectors against real children, so this verifies structure, content
+// and messaging — not real CSS layout.
 //
-// Usage: node panel-harness.js <scriptPath> <pathname> <host> [metaJson]
+// Usage: node panel-harness.js <scriptCsv> <pathname> <host> [metaJson]
+//   scriptCsv  comma-separated content scripts in manifest load order,
+//              e.g. "content-panel.js,content-scix.js"
 // Prints one JSON object on stdout.
 
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
 
-const [, , scriptPath, pathname, host, metaJson] = process.argv;
+const [, , scriptCsv, pathname, host, metaJson] = process.argv;
+const scriptPaths = String(scriptCsv || '').split(',').map(s => s.trim()).filter(Boolean);
 
 // ---- element stub ----------------------------------------------------------
 let uid = 0;
@@ -50,7 +54,27 @@ class El {
       contains: (c) => self.className.split(/\s+/).includes(c),
     };
   }
-  set innerHTML(v) { this._html = String(v); }
+  set innerHTML(v) {
+    this._html = String(v);
+    // Crude flat parse: create a child per opening tag, carrying its class and
+    // id, so tests can locate rendered controls and fire their listeners.
+    // Nesting is not preserved, which is enough for querySelector-by-class.
+    this.children = [];
+    const re = /<([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>/g;
+    let m;
+    while ((m = re.exec(this._html)) !== null) {
+      const el = new El(m[1]);
+      const cls = /class="([^"]*)"/.exec(m[2]);
+      if (cls) el.className = cls[1];
+      const idm = /id="([^"]*)"/.exec(m[2]);
+      if (idm) el.id = idm[1];
+      const txt = /^([^<]*)/.exec(this._html.slice(re.lastIndex));
+      if (txt) el._text = txt[1];
+      el.parent = this;
+      el.isConnected = this.isConnected;
+      this.children.push(el);
+    }
+  }
   get innerHTML() { return this._html; }
   set textContent(v) {
     this._text = String(v);
@@ -143,7 +167,7 @@ const chromeStub = {
         case 'getSettings':
           reply = { success: true, settings: { serverUrl: 'http://localhost:8765/daily.html' } };
           break;
-        case 'scixSavedPapers':
+        case 'savedPapers':
           reply = { success: true, ids: META.__savedIds || [] };
           break;
         case 'scixResolve':
@@ -153,6 +177,10 @@ const chromeStub = {
           break;
         case 'arxivResolve':
           reply = { success: true, paper: paperFixture };
+          break;
+        case 'savePaper':
+        case 'deletePaper':
+          reply = { success: true, message: 'ok' };
           break;
         default:
           reply = { success: true };
@@ -217,21 +245,59 @@ documentStub.querySelectorAll = (sel) => {
 };
 
 // ---- run the real content script ------------------------------------------
-const src = fs.readFileSync(scriptPath, 'utf8');
 const context = vm.createContext(sandbox);
-try {
-  vm.runInContext(src, context, { filename: scriptPath });
-} catch (e) {
-  console.log(JSON.stringify({ fatal: String(e && e.message), logs, messages }));
-  process.exit(0);
+// Load in manifest order: the shared panel module defines
+// window.ArXistantPanel, then the site adapter calls init() on it.
+for (const p of scriptPaths) {
+  try {
+    vm.runInContext(fs.readFileSync(p, 'utf8'), context, { filename: p });
+  } catch (e) {
+    console.log(JSON.stringify({ fatal: p + ': ' + String(e && e.message), logs, messages }));
+    process.exit(0);
+  }
 }
 
 // Flush the async chain (send() resolves on microtasks), then fire one poll
 // tick so SPA re-creation logic is exercised too.
+function findDeep(root, sel) {
+  const m = /^([.#])([A-Za-z0-9_-]+)$/.exec(sel);
+  if (!m) return null;
+  const byId = m[1] === '#';
+  const stack = root.children.slice();
+  while (stack.length) {
+    const el = stack.shift();
+    if (byId ? el.id === m[2] : el.className.split(/\s+/).includes(m[2])) return el;
+    stack.push(...el.children);
+  }
+  return null;
+}
+function bodyEl0() {
+  return bodyEl.children.find(c => c.id === 'arxistant-panel') || null;
+}
+
+let clicked = null;
+
 (async () => {
   for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
   for (const iv of intervals) { try { iv.fn(); } catch (e) { logs.push('ERROR poll ' + e.message); } }
   for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
+
+  // Optionally click a rendered control (e.g. '.arx-save') to exercise the
+  // relay payloads, then flush again.
+  if (META.__click) {
+    const panelEl0 = bodyEl0();
+    const target = panelEl0 && panelEl0._find
+      ? findDeep(panelEl0, META.__click) : null;
+    if (target) {
+      for (const fn of (target.listeners.click || [])) {
+        try { fn({ stopPropagation() {}, preventDefault() {} }); } catch (e) { logs.push('ERROR click ' + e.message); }
+      }
+      clicked = META.__click;
+    } else {
+      clicked = META.__click + ' (not found)';
+    }
+    for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
+  }
 
   const panel = attached.find(a => a.id === 'arxistant-panel');
   const panelEl = bodyEl.children.find(c => c.id === 'arxistant-panel')
@@ -245,7 +311,10 @@ try {
     panelHtml: bodyDiv ? bodyDiv.innerHTML : '',
     messages: messages.map(m => m.action),
     resolveIdentifier: (messages.find(m => m.action === 'scixResolve') || {}).identifier || null,
-    savePayload: (messages.find(m => m.action === 'scixSavePaper') || {}).paper || null,
+    clicked: clicked,
+    savePayload: (messages.find(m => m.action === 'savePaper') || {}).paper || null,
+    saveKey: ((messages.find(m => m.action === 'savePaper') || {}).paper || {}).id || null,
+    deleteKey: (messages.find(m => m.action === 'deletePaper') || {}).key || null,
     logs,
     intervalCount: intervals.length,
   }, null, 0));
