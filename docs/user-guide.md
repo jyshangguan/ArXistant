@@ -379,9 +379,16 @@ local library only).
 
 While you browse [scixplorer.org](https://scixplorer.org/) or
 [arxiv.org](https://arxiv.org/), the ArXistant extension shows the same small
-panel in the bottom-right corner:
+panel in the bottom-right corner. It deliberately does not repeat the abstract
+— the page you are on already shows it — and offers only what that page cannot:
 
-- **▸ Show abstract** — the paper's abstract.
+- **🏷️ Tags** — type a tag and press Enter (or click **Add**). Existing tags
+  appear as chips and each has a **✕**. Tags you already use elsewhere in your
+  library are offered as suggestions while you type.
+  - On a paper that is **not saved yet**, tags are staged and written together
+    with the save — one step, one record.
+  - On a paper that is **already saved**, each change persists immediately,
+    exactly like the tag editors on the ArXistant pages.
 - **💾 Save / ✓ Saved** — add the paper to your library, or remove it. The
   unified key rule applies, so a paper saved from a browsing page and the same
   paper saved from the Daily page are one record, never a duplicate.

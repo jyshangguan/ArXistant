@@ -1,8 +1,9 @@
 // Shared ArXistant page panel.
 //
-// One implementation of the floating panel — show abstract / save / chat —
-// driven by a small per-site adapter, so scixplorer.org and arxiv.org behave
-// identically instead of each carrying a copy of the same logic.
+// One implementation of the floating panel — save, tag and chat — driven by a
+// small per-site adapter, so scixplorer.org and arxiv.org behave identically
+// instead of each carrying a copy of the same logic. The panel deliberately
+// does not repeat the abstract: the host page is already showing it.
 //
 // An adapter supplies:
 //   site              name used in console diagnostics
@@ -59,11 +60,13 @@
       paper: null,          // resolved paper; .id is the storage key
       error: '',            // why the paper could not be resolved
       savedIds: null,       // Set of saved keys, or null when unavailable
+      tagsById: {},         // saved key -> [tags], to show a paper's own tags
+      tagVocab: [],         // every tag in the library, for suggestions
+      tags: [],             // tags for this paper: staged until it is saved
       savedIdsTried: false,
       serverOrigin: null,
       serverError: '',
       collapsed: false,
-      abstractOpen: false,
     };
 
     let panel = null;
@@ -118,13 +121,94 @@
 
     // ---------- data ----------
 
-    async function loadSavedIds() {
+    async function loadLibrary() {
       const resp = await send('savedPapers');
       if (resp.success && Array.isArray(resp.ids)) {
         state.savedIds = new Set(resp.ids);
+        state.tagsById = resp.tagsById || {};
+        state.tagVocab = resp.vocab || [];
       } else {
         state.savedIds = null;  // offline server: keep the panel usable
       }
+    }
+
+    // ---------- tags ----------
+
+    function normalizeTag(raw) {
+      return String(raw == null ? '' : raw).trim().toLowerCase().slice(0, 60);
+    }
+
+    function isSavedNow() {
+      return !!(state.savedIds && state.paper &&
+                state.savedIds.has(state.paper.id));
+    }
+
+    function loadTagsForCurrentPaper() {
+      const key = state.paper ? state.paper.id : null;
+      state.tags = key && state.tagsById[key] ? state.tagsById[key].slice() : [];
+    }
+
+    async function persistTags() {
+      // Tags live on the saved row. For a paper that is not saved yet they are
+      // staged locally and written together with the save; once saved, every
+      // change persists immediately — the same behaviour as the tag editors on
+      // the ArXistant pages.
+      if (!state.paper || !isSavedNow()) { render(); return; }
+      const resp = await send('updateTags',
+                              { key: state.paper.id, tags: state.tags });
+      if (!resp.success) {
+        setStatus(resp.error || 'Could not save the tags.', true);
+        return;
+      }
+      state.tagsById[state.paper.id] = state.tags.slice();
+      state.tags.forEach(t => {
+        if (state.tagVocab.indexOf(t) === -1) state.tagVocab.push(t);
+      });
+      state.tagVocab.sort();
+      setStatus('');
+      render();
+    }
+
+    function addTag(raw) {
+      const tag = normalizeTag(raw);
+      if (!tag || state.tags.indexOf(tag) !== -1) { render(); return; }
+      state.tags.push(tag);
+      persistTags();
+    }
+
+    function removeTag(tag) {
+      state.tags = state.tags.filter(t => t !== tag);
+      persistTags();
+    }
+
+    function suggestionsFor(query) {
+      const q = normalizeTag(query);
+      if (!q) return [];
+      return state.tagVocab
+        .filter(t => t.indexOf(q) !== -1 && state.tags.indexOf(t) === -1)
+        .slice(0, 5);
+    }
+
+    function clearTagInput() {
+      const el = bodyEl() && bodyEl().querySelector('.arx-tag-input');
+      if (el) el.value = '';
+      paintSuggestions();
+    }
+
+    function paintSuggestions() {
+      const body = bodyEl();
+      if (!body) return;
+      const box = body.querySelector('.arx-suggest');
+      const input = body.querySelector('.arx-tag-input');
+      if (!box || !input) return;
+      const items = suggestionsFor(input.value);
+      // Only the suggestion list is rewritten, so the input keeps focus while
+      // the user types.
+      box.innerHTML = items.map(t =>
+        '<button class="arx-suggest-item">' + escapeText(t) + '</button>').join('');
+      box.querySelectorAll('.arx-suggest-item').forEach((btn, i) => {
+        btn.addEventListener('click', () => { addTag(items[i]); clearTagInput(); });
+      });
     }
 
     async function loadServerOrigin() {
@@ -142,7 +226,11 @@
       setStatus(wasSaved ? 'Removing…' : 'Saving…');
       const resp = wasSaved
         ? await send('deletePaper', { key: key })
-        : await send('savePaper', { paper: state.paper });
+        // Tags ride along with the save, so tagging before saving is one write.
+        // They are deliberately omitted when removing: /api/save preserves
+        // stored tags only when the field is absent, and a re-save must never
+        // wipe what is already there.
+        : await send('savePaper', { paper: state.paper, tags: state.tags });
       if (!resp.success) {
         setStatus(resp.error || 'The server rejected the change.', true);
         return;
@@ -155,6 +243,14 @@
         // relay succeeded — start tracking from this key so the button reflects
         // the new state.
         state.savedIds = new Set([key]);
+      }
+      if (!wasSaved) {
+        // The staged tags are now the stored ones.
+        state.tagsById[key] = state.tags.slice();
+        state.tags.forEach(t => {
+          if (state.tagVocab.indexOf(t) === -1) state.tagVocab.push(t);
+        });
+        state.tagVocab.sort();
       }
       setStatus('');
       render();
@@ -200,16 +296,24 @@
         const meta = [paper.year,
           paper.citation_count ? paper.citation_count + ' citations' : '']
           .filter(Boolean).join(' · ');
+        // The host page already shows the abstract, so the panel does not
+        // repeat it. It only offers what that page cannot: save, tag, chat.
+        // The abstract is still carried in state.paper and sent on save — it
+        // feeds ML training and Chat grounding.
         html =
           '<div class="arx-key">' + escapeText(adapter.label(paper)) + '</div>' +
           '<div class="arx-title">' + escapeText(paper.title || paper.id) + '</div>' +
           (meta ? '<div class="arx-meta">' + escapeText(meta) + '</div>' : '') +
-          '<button class="arx-abs-btn">' +
-          (state.abstractOpen ? '▾ Hide abstract' : '▸ Show abstract') + '</button>' +
-          (state.abstractOpen
-            ? '<div class="arx-abstract">' +
-              escapeText(paper.abstract || 'No abstract available.') + '</div>'
-            : '') +
+          '<div class="arx-tags">' + state.tags.map(t =>
+            '<span class="arx-tag">' + escapeText(t) +
+            '<button class="arx-tag-x" title="Remove tag">✕</button></span>'
+          ).join('') + '</div>' +
+          '<div class="arx-tag-row">' +
+          '<input class="arx-tag-input" type="text" maxlength="60" placeholder="' +
+          (saved ? 'add a tag…' : 'tag it, then save…') + '">' +
+          '<button class="arx-tag-add">Add</button>' +
+          '</div>' +
+          '<div class="arx-suggest"></div>' +
           '<div class="arx-actions">' +
           '<button class="arx-save' + (saved ? ' arx-saved' : '') + '">' +
           (saved ? '✓ Saved' : '💾 Save') + '</button>' +
@@ -217,13 +321,37 @@
           '</div>' +
           '<div class="arx-status"></div>';
       }
+
+      // Preserve what the user was typing: replacing innerHTML would clear the
+      // box and drop focus mid-word on every re-render.
+      const prevInput = body.querySelector('.arx-tag-input');
+      const typed = prevInput ? prevInput.value : '';
       body.innerHTML = html;
 
-      const absBtn = body.querySelector('.arx-abs-btn');
-      if (absBtn) absBtn.addEventListener('click', () => {
-        state.abstractOpen = !state.abstractOpen;
-        render();
+      const input = body.querySelector('.arx-tag-input');
+      if (input) {
+        if (typed) input.value = typed;
+        paintSuggestions();
+        input.addEventListener('input', paintSuggestions);
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            addTag(input.value);
+            clearTagInput();
+          }
+        });
+      }
+      const addBtn = body.querySelector('.arx-tag-add');
+      if (addBtn) addBtn.addEventListener('click', () => {
+        const el = bodyEl() && bodyEl().querySelector('.arx-tag-input');
+        addTag(el ? el.value : '');
+        clearTagInput();
       });
+      // Chips render in state.tags order, so index i is that tag.
+      body.querySelectorAll('.arx-tag-x').forEach((btn, i) => {
+        btn.addEventListener('click', () => removeTag(state.tags[i]));
+      });
+
       const saveBtn = body.querySelector('.arx-save');
       if (saveBtn) saveBtn.addEventListener('click', toggleSave);
       const chatBtn = body.querySelector('.arx-chat');
@@ -247,7 +375,7 @@
       state.paper = null;
       state.error = '';
       state.serverError = '';
-      state.abstractOpen = false;
+      state.tags = [];
       log('info', id ? 'paper page, identifier ' + id
                      : 'not a paper page (' + location.pathname + ')');
       render();
@@ -257,7 +385,7 @@
       if (!state.savedIdsTried) {
         state.savedIdsTried = true;
         await loadServerOrigin();
-        await loadSavedIds();
+        await loadLibrary();
         if (state.savedIds === null) {
           state.serverError = 'Could not reach the ArXistant server.';
         }
@@ -272,6 +400,9 @@
       } catch (e) {
         if (state.id === id) state.error = e.message;
       }
+      // Show the tags this paper already has, so editing starts from the stored
+      // list rather than an empty one.
+      loadTagsForCurrentPaper();
       render();
     }
 

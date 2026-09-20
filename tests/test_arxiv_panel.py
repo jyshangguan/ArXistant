@@ -65,6 +65,29 @@ def _run(pathname, meta=META, click=None, saved=None,
     return data
 
 
+def _run_with_tags(click=".arx-tag-add,.arx-save", saved=None, tags_by_id=None,
+                   vocab=("agn", "lrd"), value="agn"):
+    """Type a tag, then run a click sequence (default: Add, then Save)."""
+    payload = {
+        "meta": dict(META),
+        "__vocab": list(vocab),
+        "__type": {"selector": ".arx-tag-input", "value": value},
+        "__click": click,
+    }
+    if saved:
+        payload["__savedIds"] = list(saved)
+    if tags_by_id:
+        payload["__tagsById"] = tags_by_id
+    args = [NODE, str(HARNESS),
+            ",".join(str(EXT / n) for n in SCRIPTS.split(",")),
+            "/abs/1802.08364", "arxiv.org", json.dumps(payload)]
+    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr or result.stdout
+    data = json.loads(result.stdout)
+    assert not data.get("fatal"), f"content script threw: {data.get('fatal')}"
+    return data
+
+
 class ManifestTests(unittest.TestCase):
     def test_arxiv_abs_pages_get_the_panel(self):
         entry = next(s for s in MANIFEST["content_scripts"]
@@ -202,11 +225,41 @@ class ArxivPanelBehaviourTests(unittest.TestCase):
             out = _run(path)
             self.assertFalse(out["panelAttached"], path)
 
-    def test_abstract_toggle_renders_the_abstract(self):
-        out = _run("/abs/1802.08364", click=".arx-abs-btn")
-        self.assertIn("arx-abstract", out["panelHtml"])
-        self.assertIn(META["citation_abstract"][:40], out["panelHtml"])
-        self.assertIn("Hide abstract", out["panelHtml"])
+    def test_no_abstract_ui_the_page_already_shows_it(self):
+        out = _run("/abs/1802.08364")
+        self.assertNotIn("Show abstract", out["panelHtml"])
+        self.assertNotIn("arx-abstract", out["panelHtml"])
+        # The abstract is still carried for the save payload: it feeds ML
+        # training and Chat grounding, it is just not displayed.
+        self.assertEqual(out["savePayload"] if out.get("savePayload") else None,
+                         None)
+
+    def test_abstract_is_still_sent_when_saving(self):
+        out = _run("/abs/1802.08364", click=".arx-save")
+        self.assertEqual(out["savePayload"]["abstract"], META["citation_abstract"])
+
+    def test_tag_then_save_sends_both(self):
+        out = _run_with_tags()
+        self.assertIn("savePaper", out["messages"])
+        self.assertEqual(out["saveKey"], "1802.08364")
+        self.assertEqual(out["tagSent"], ["agn"])
+
+    def test_saved_paper_shows_its_existing_tags(self):
+        # No clicks: for a saved paper the Save button means "remove", so this
+        # only inspects the initial render.
+        out = _run_with_tags(click=None, saved=["1802.08364"],
+                             tags_by_id={"1802.08364": ["lrd"]})
+        self.assertEqual(out["tagChips"], ["lrd"])
+        self.assertIn("✓ Saved", out["panelHtml"])
+
+    def test_saved_paper_tag_change_persists_without_re_saving(self):
+        out = _run_with_tags(click=".arx-tag-add", saved=["1802.08364"],
+                             tags_by_id={"1802.08364": ["lrd"]})
+        self.assertIn("updateTags", out["messages"])
+        self.assertEqual(out["updateTagsPayload"]["tags"], ["lrd", "agn"])
+        # The paper must not be re-saved or removed by a tag edit.
+        self.assertNotIn("savePaper", out["messages"])
+        self.assertNotIn("deletePaper", out["messages"])
 
 
 class BackgroundRelayTests(unittest.TestCase):

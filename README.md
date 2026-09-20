@@ -46,10 +46,10 @@ personal preferences remain on your computer.
   or rate-limited.
 - **Save papers while you browse** — a small ArXistant panel on
   [scixplorer.org](https://scixplorer.org/) and
-  [arxiv.org](https://arxiv.org/) paper pages shows the abstract, adds the
-  paper to your library, and opens it in Chat; journal-only papers are stored
-  by bibcode with the same notes/tags/highlights, and the ADS token can be set
-  right from the extension's Settings page.
+  [arxiv.org](https://arxiv.org/) paper pages adds the paper to your library,
+  lets you tag it in the same step, and opens it in Chat; journal-only papers
+  are stored by bibcode with the same notes/tags/highlights, and the ADS token
+  can be set right from the extension's Settings page.
 - **Publication management** — import your publications from a SciX/ADS library
   with duplicate detection.
 - **Chrome reminders** — choose multiple reminder times, skip weekends, and

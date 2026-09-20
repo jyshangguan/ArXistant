@@ -107,8 +107,21 @@ class El {
     }
     return null;
   }
+  _findAll(sel) {
+    const m = /^([.#])([A-Za-z0-9_-]+)$/.exec(sel);
+    if (!m) return [];
+    const byId = m[1] === '#';
+    const out = [];
+    const stack = this.children.slice();
+    while (stack.length) {
+      const el = stack.shift();
+      if (byId ? el.id === m[2] : el.className.split(/\s+/).includes(m[2])) out.push(el);
+      stack.push(...el.children);
+    }
+    return out;
+  }
   querySelector(sel) { return this._find(sel) || new El('div'); }
-  querySelectorAll() { return []; }
+  querySelectorAll(sel) { return this._findAll(sel); }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
@@ -168,7 +181,15 @@ const chromeStub = {
           reply = { success: true, settings: { serverUrl: 'http://localhost:8765/daily.html' } };
           break;
         case 'savedPapers':
-          reply = { success: true, ids: META.__savedIds || [] };
+          reply = {
+            success: true,
+            ids: META.__savedIds || [],
+            tagsById: META.__tagsById || {},
+            vocab: META.__vocab || []
+          };
+          break;
+        case 'updateTags':
+          reply = { success: true, tags: msg.tags || [] };
           break;
         case 'scixResolve':
           reply = META.__resolveFails
@@ -271,33 +292,72 @@ function findDeep(root, sel) {
   }
   return null;
 }
+function findDeepAll(root, cls) {
+  const out = [];
+  const stack = root.children.slice();
+  while (stack.length) {
+    const el = stack.shift();
+    if (el.className.split(/\s+/).includes(cls)) out.push(el);
+    stack.push(...el.children);
+  }
+  return out;
+}
 function bodyEl0() {
   return bodyEl.children.find(c => c.id === 'arxistant-panel') || null;
 }
 
 let clicked = null;
+let typed = null;
 
 (async () => {
   for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
   for (const iv of intervals) { try { iv.fn(); } catch (e) { logs.push('ERROR poll ' + e.message); } }
   for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
 
-  // Optionally click a rendered control (e.g. '.arx-save') to exercise the
-  // relay payloads, then flush again.
-  if (META.__click) {
-    const panelEl0 = bodyEl0();
-    const target = panelEl0 && panelEl0._find
-      ? findDeep(panelEl0, META.__click) : null;
-    if (target) {
-      for (const fn of (target.listeners.click || [])) {
-        try { fn({ stopPropagation() {}, preventDefault() {} }); } catch (e) { logs.push('ERROR click ' + e.message); }
+  // Optionally type into a rendered input (and press a key) before clicking,
+  // so the tag editor can be exercised.
+  if (META.__type) {
+    const el = findDeep(bodyEl0(), META.__type.selector);
+    if (el) {
+      el.value = META.__type.value;
+      for (const fn of (el.listeners.input || [])) {
+        try { fn({}); } catch (e) { logs.push('ERROR input ' + e.message); }
       }
-      clicked = META.__click;
+      if (META.__type.key) {
+        for (const fn of (el.listeners.keydown || [])) {
+          try { fn({ key: META.__type.key, preventDefault() {} }); }
+          catch (e) { logs.push('ERROR keydown ' + e.message); }
+        }
+      }
+      typed = META.__type;
     } else {
-      clicked = META.__click + ' (not found)';
+      typed = META.__type.selector + ' (not found)';
     }
     for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
   }
+
+  // Optionally click a rendered control (e.g. '.arx-save') to exercise the
+  // relay payloads, then flush again.
+  // __click may be one selector or a comma-separated sequence, fired in order
+  // with a flush between, so "stage a tag then save" can be exercised.
+  const clickSeq = META.__click
+    ? String(META.__click).split(',').map(x => x.trim()).filter(Boolean) : [];
+  const clickReport = [];
+  for (const sel of clickSeq) {
+    const root = bodyEl0();
+    const target = root ? findDeep(root, sel) : null;
+    if (target) {
+      for (const fn of (target.listeners.click || [])) {
+        try { fn({ stopPropagation() {}, preventDefault() {} }); }
+        catch (e) { logs.push('ERROR click ' + e.message); }
+      }
+      clickReport.push(sel);
+    } else {
+      clickReport.push(sel + ' (not found)');
+    }
+    for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
+  }
+  clicked = clickSeq.length ? clickReport.join(',') : null;
 
   const panel = attached.find(a => a.id === 'arxistant-panel');
   const panelEl = bodyEl.children.find(c => c.id === 'arxistant-panel')
@@ -309,9 +369,33 @@ let clicked = null;
     panelParent: panel ? panel.parent : null,
     panelVisible: panelEl ? panelEl.style.display !== 'none' : false,
     panelHtml: bodyDiv ? bodyDiv.innerHTML : '',
+    // The suggestion list is rewritten in place after render, so it is not
+    // part of the body's innerHTML snapshot; report it separately.
+    suggestHtml: (() => {
+      const pe = bodyEl0();
+      const box = pe ? findDeep(pe, '.arx-suggest') : null;
+      return box ? box.innerHTML : '';
+    })(),
+    tagInputValue: (() => {
+      const pe = bodyEl0();
+      const el = pe ? findDeep(pe, '.arx-tag-input') : null;
+      return el ? (el.value || '') : null;
+    })(),
     messages: messages.map(m => m.action),
     resolveIdentifier: (messages.find(m => m.action === 'scixResolve') || {}).identifier || null,
     clicked: clicked,
+    typed: typed,
+    tagChips: null,
+    tagChips: (() => {
+      const pe = bodyEl0();
+      if (!pe) return [];
+      return findDeepAll(pe, 'arx-tag').map(e => e._text || '');
+    })(),
+    tagSent: ((messages.find(m => m.action === 'savePaper') || {}).tags) || null,
+    updateTagsPayload: (() => {
+      const m = messages.filter(x => x.action === 'updateTags');
+      return m.length ? m[m.length - 1] : null;
+    })(),
     savePayload: (messages.find(m => m.action === 'savePaper') || {}).paper || null,
     saveKey: ((messages.find(m => m.action === 'savePaper') || {}).paper || {}).id || null,
     deleteKey: (messages.find(m => m.action === 'deletePaper') || {}).key || null,

@@ -9,6 +9,9 @@
   z-index: 2147483000;
   width: 300px;
   max-width: calc(100vw - 36px);
+  max-height: calc(100vh - 36px);
+  display: flex;
+  flex-direction: column;
   background: #fff;
   border: 1px solid #ddd;
   border-radius: 10px;
@@ -27,6 +30,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex: 0 0 auto;
   padding: 6px 10px;
   background: #b31b1b;
   color: #fff;
@@ -54,6 +58,10 @@
 
 #arxistant-panel .arx-body {
   padding: 10px 12px 12px;
+  /* A paper with many tags would otherwise grow the panel past the viewport;
+     the header stays put and the body scrolls. */
+  overflow-y: auto;
+  min-height: 0;
 }
 
 #arxistant-panel .arx-key {
@@ -78,31 +86,107 @@
   font-style: italic;
 }
 
-#arxistant-panel .arx-abs-btn {
+/* Tag editor. Colours match the tag chips used on the ArXistant pages so the
+   panel reads as the same feature. */
+#arxistant-panel .arx-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 6px;
+}
+
+#arxistant-panel .arx-tags:empty {
+  display: none;
+}
+
+#arxistant-panel .arx-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #e0f2f1;
+  color: #00695c;
+  border: 1px solid #b2dfdb;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+}
+
+#arxistant-panel .arx-tag-x {
   background: none;
   border: none;
-  color: #b31b1b;
-  font-size: 12px;
-  font-weight: 600;
+  color: #00695c;
   cursor: pointer;
   padding: 0;
-  margin-bottom: 6px;
+  font-size: 10px;
+  line-height: 1;
 }
 
-#arxistant-panel .arx-abs-btn:hover {
-  text-decoration: underline;
+#arxistant-panel .arx-tag-x:hover {
+  color: #c62828;
 }
 
-#arxistant-panel .arx-abstract {
-  max-height: 220px;
-  overflow-y: auto;
-  font-size: 12px;
-  color: #444;
-  border-top: 1px dashed #ccc;
-  border-bottom: 1px dashed #ccc;
-  padding: 6px 0;
+#arxistant-panel .arx-tag-row {
+  display: flex;
+  gap: 5px;
   margin-bottom: 8px;
-  user-select: text;
+}
+
+#arxistant-panel .arx-tag-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: inherit;
+  background: #fff;
+  color: #333;
+}
+
+#arxistant-panel .arx-tag-input:focus {
+  outline: none;
+  border-color: #00796b;
+}
+
+#arxistant-panel .arx-tag-add {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  background: #00796b;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#arxistant-panel .arx-tag-add:hover {
+  background: #00695c;
+}
+
+#arxistant-panel .arx-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+#arxistant-panel .arx-suggest:empty {
+  display: none;
+}
+
+#arxistant-panel .arx-suggest-item {
+  background: #fff;
+  color: #00695c;
+  border: 1px dashed #b2dfdb;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#arxistant-panel .arx-suggest-item:hover {
+  background: #e0f2f1;
+  border-style: solid;
 }
 
 #arxistant-panel .arx-actions {

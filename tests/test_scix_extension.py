@@ -251,7 +251,10 @@ class PanelBehaviourTests(unittest.TestCase):
         self.assertIn("A Relation between Distance and Radial Velocity", html)
         self.assertIn("arx-save", html)
         self.assertIn("arx-chat", html)
-        self.assertIn("Show abstract", html)
+        # The host page already shows the abstract, so the panel must not.
+        self.assertNotIn("Show abstract", html)
+        self.assertNotIn("arx-abstract", html)
+        self.assertIn("arx-tag-input", html)
 
     def test_no_panel_on_non_paper_routes(self):
         for path in ("/search?q=black+holes", "/", "/user/libraries/abc123",
@@ -271,6 +274,70 @@ class PanelBehaviourTests(unittest.TestCase):
         self.assertTrue(out["panelAttached"])
         self.assertIn("SciX has no record", out["panelHtml"])
 
+    # --- tag editor ---
+
+    def test_existing_tags_are_shown_as_chips(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__savedIds": [self.BIB],
+            "__tagsById": {self.BIB: ["lrd", "agn"]},
+        })
+        self.assertEqual(out["tagChips"], ["lrd", "agn"])
+
+    def test_adding_a_tag_to_a_saved_paper_persists_immediately(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__savedIds": [self.BIB],
+            "__tagsById": {self.BIB: ["lrd"]},
+            "__type": {"selector": ".arx-tag-input", "value": "jwst",
+                       "key": "Enter"},
+        })
+        self.assertIn("updateTags", out["messages"])
+        payload = out["updateTagsPayload"]
+        self.assertEqual(payload["key"], self.BIB)
+        # The stored tag is kept and the new one appended.
+        self.assertEqual(payload["tags"], ["lrd", "jwst"])
+        self.assertEqual(out["tagChips"], ["lrd", "jwst"])
+
+    def test_tagging_an_unsaved_paper_stages_locally_without_a_request(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__vocab": ["agn"],
+            "__type": {"selector": ".arx-tag-input", "value": "agn"},
+            "__click": ".arx-tag-add",
+        })
+        self.assertEqual(out["tagChips"], ["agn"])
+        # Nothing but the initial library load: /api/update_tags would 404 on a
+        # paper that is not saved yet.
+        self.assertNotIn("updateTags", out["messages"])
+        self.assertNotIn("savePaper", out["messages"])
+
+    def test_staged_tags_ride_along_with_the_save(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__vocab": ["agn"],
+            "__type": {"selector": ".arx-tag-input", "value": "agn"},
+            "__click": ".arx-tag-add,.arx-save",
+        })
+        self.assertIn("savePaper", out["messages"])
+        self.assertEqual(out["saveKey"], self.BIB)
+        self.assertEqual(out["tagSent"], ["agn"])
+
+    def test_removing_a_chip_persists(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__savedIds": [self.BIB],
+            "__tagsById": {self.BIB: ["lrd", "agn"]},
+            "__click": ".arx-tag-x",
+        })
+        self.assertIn("updateTags", out["messages"])
+        self.assertEqual(out["updateTagsPayload"]["tags"], ["agn"])
+
+    def test_tag_suggestions_come_from_the_library_vocabulary(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__vocab": ["agn", "lrd", "jwst"],
+            "__type": {"selector": ".arx-tag-input", "value": "a"},
+        })
+        self.assertIn("arx-suggest-item", out["suggestHtml"])
+        self.assertIn(">agn<", out["suggestHtml"])
+        # Only library tags matching what was typed are offered.
+        self.assertNotIn(">jwst<", out["suggestHtml"])
+
     def test_diagnostics_explain_what_the_script_decided(self):
         out = self._run(f"/abs/{self.BIB}/abstract")
         joined = "\n".join(out["logs"])
@@ -282,7 +349,7 @@ class PanelBehaviourTests(unittest.TestCase):
 class BackgroundRelayTests(unittest.TestCase):
     def test_panel_relay_actions_exist(self):
         for action in ("savedPapers", "scixResolve", "arxivResolve",
-                       "savePaper", "deletePaper"):
+                       "savePaper", "deletePaper", "updateTags"):
             self.assertIn(f"case '{action}':", BACKGROUND_JS)
 
     def test_no_stale_scix_prefixed_panel_relays_remain(self):

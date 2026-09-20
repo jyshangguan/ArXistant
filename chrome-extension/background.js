@@ -351,7 +351,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const settings = await getSettings();
         try {
           const data = await fetchJson(serverApiUrl(settings.serverUrl, '/api/papers'));
-          return { success: true, ids: data.papers.map(p => p.arxiv_id) };
+          const papers = data.papers || [];
+          // tagsById lets the panel show a saved paper's existing tags; vocab
+          // drives its tag suggestions, so both come from the same one request.
+          const tagsById = {};
+          const vocab = new Set();
+          papers.forEach(p => {
+            const tags = String(p.tags || '').split(',')
+              .map(t => t.trim()).filter(Boolean);
+            tagsById[p.arxiv_id] = tags;
+            tags.forEach(t => vocab.add(t));
+          });
+          return {
+            success: true,
+            ids: papers.map(p => p.arxiv_id),
+            tagsById,
+            vocab: [...vocab].sort()
+          };
         } catch (error) {
           return { success: false, error: error.message };
         }
@@ -399,18 +415,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'savePaper': {
         const settings = await getSettings();
         const p = message.paper || {};
+        const body = {
+          arxiv_id: p.id,
+          title: p.title || '',
+          authors: Array.isArray(p.authors) ? p.authors.join(', ') : (p.authors || ''),
+          abstract: p.abstract || '',
+          relevance_score: 0,
+          date_fetched: new Date().toISOString().slice(0, 10)
+        };
+        // Tags are only sent when the panel actually has a list. The server
+        // preserves stored tags when the field is absent, so omitting it on a
+        // plain re-save can never wipe them.
+        if (Array.isArray(message.tags)) body.tags = message.tags;
         try {
           return await fetchJson(serverApiUrl(settings.serverUrl, '/api/save'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              arxiv_id: p.id,
-              title: p.title || '',
-              authors: Array.isArray(p.authors) ? p.authors.join(', ') : (p.authors || ''),
-              abstract: p.abstract || '',
-              relevance_score: 0,
-              date_fetched: new Date().toISOString().slice(0, 10)
-            })
+            body: JSON.stringify(body)
+          });
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'updateTags': {
+        const settings = await getSettings();
+        try {
+          return await fetchJson(serverApiUrl(settings.serverUrl, '/api/update_tags'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ arxiv_id: message.key, tags: message.tags || [] })
           });
         } catch (error) {
           return { success: false, error: error.message };
