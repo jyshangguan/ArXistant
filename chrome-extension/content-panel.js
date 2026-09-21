@@ -72,6 +72,9 @@
 
     let panel = null;
     let lastPath = null;
+    // Set by addTag() so the next render puts focus back in the tag input,
+    // letting the user type the next tag without clicking the box again.
+    let wantTagFocus = false;
 
     function log(level, msg) {
       // Diagnostics matter here: the panel is invisible when the route does
@@ -175,6 +178,9 @@
 
     async function addTag(raw) {
       const tag = normalizeTag(raw);
+      // Request focus back even on the no-op paths (empty or duplicate tag):
+      // the user is typing in the box and should stay there.
+      wantTagFocus = true;
       if (!tag || !state.paper) { render(); return; }
 
       // When the library state is unknown (an earlier load failed), refresh it
@@ -356,16 +362,35 @@
           '<div class="arx-status"></div>';
       }
 
-      // Preserve what the user was typing: replacing innerHTML would clear the
-      // box and drop focus mid-word on every re-render.
+      // Replacing innerHTML destroys the input and builds a new one, which
+      // loses both what the user typed and the focus — so adding a tag would
+      // otherwise force a click back into the box before the next one. Carry
+      // the value, the caret, and the focus across the swap.
       const prevInput = body.querySelector('.arx-tag-input');
       const typed = prevInput ? prevInput.value : '';
+      const hadFocus = !!(prevInput && document.activeElement === prevInput);
+      const caret = (hadFocus || wantTagFocus) && prevInput &&
+                    typeof prevInput.selectionStart === 'number'
+        ? prevInput.selectionStart : null;
       body.innerHTML = html;
 
       const input = body.querySelector('.arx-tag-input');
       if (input) {
         if (typed) input.value = typed;
         paintSuggestions();
+        // wantTagFocus is set by addTag(), whose render happens asynchronously
+        // after the Enter/Add click, by which time focus has already moved off
+        // the old (now discarded) input.
+        if (hadFocus || wantTagFocus) {
+          wantTagFocus = false;
+          try {
+            input.focus();
+            if (caret != null && typeof input.setSelectionRange === 'function') {
+              const pos = Math.min(caret, (input.value || '').length);
+              input.setSelectionRange(pos, pos);
+            }
+          } catch (e) { /* focus is best-effort */ }
+        }
         input.addEventListener('input', paintSuggestions);
         input.addEventListener('keydown', e => {
           if (e.key === 'Enter') {

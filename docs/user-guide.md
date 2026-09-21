@@ -393,7 +393,9 @@ panel in the bottom-right corner. It deliberately does not repeat the abstract
 
 - **🏷️ Tags** — type a tag and press Enter (or click **Add**). Existing tags
   appear as chips and each has a **✕**. Tags you already use elsewhere in your
-  library are offered as suggestions while you type.
+  library are offered as suggestions while you type. After a tag is added the
+  box is cleared and **keeps focus**, so you can type the next one straight away
+  without clicking back into it.
   - On a paper that is **not saved yet**, adding a tag **saves the paper** in
     the same write — tagging is taken as "keep this paper", so there is no
     separate Save click. The input reads `add a tag (auto-saves)` to say so, the

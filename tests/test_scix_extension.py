@@ -366,6 +366,63 @@ class PanelBehaviourTests(unittest.TestCase):
         # Only library tags matching what was typed are offered.
         self.assertNotIn(">jwst<", out["suggestHtml"])
 
+    # --- focus stays in the tag input so tags can be typed in a row ---
+
+    def test_enter_keeps_focus_in_the_cleared_tag_input(self):
+        # Reported: Enter cleared the box but dropped focus, so the next tag
+        # needed a click back into the input first.
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__savedIds": [self.BIB],
+            "__tagsById": {self.BIB: []},
+            "__vocab": ["agn"],
+            "__type": {"selector": ".arx-tag-input", "value": "agn",
+                       "key": "Enter"},
+        })
+        self.assertEqual(out["tagChips"], ["agn"])
+        self.assertEqual(out["focusedClass"], "arx-tag-input")
+        self.assertEqual(out["focusedValue"], "")   # cleared, ready for the next
+
+    def test_add_button_returns_focus_to_the_tag_input(self):
+        # A real click focuses the button, so this needs the explicit focus
+        # request rather than preservation across the re-render.
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__savedIds": [self.BIB],
+            "__tagsById": {self.BIB: []},
+            "__vocab": ["agn"],
+            "__type": {"selector": ".arx-tag-input", "value": "agn"},
+            "__click": ".arx-tag-add",
+        })
+        self.assertEqual(out["tagChips"], ["agn"])
+        self.assertEqual(out["focusedClass"], "arx-tag-input")
+        self.assertEqual(out["focusedValue"], "")
+
+    def test_suggestion_click_returns_focus_to_the_tag_input(self):
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__savedIds": [self.BIB],
+            "__tagsById": {self.BIB: []},
+            "__vocab": ["agn", "lrd"],
+            "__type": {"selector": ".arx-tag-input", "value": "a"},
+            "__click": ".arx-suggest-item",
+        })
+        self.assertEqual(out["tagChips"], ["agn"])
+        self.assertEqual(out["focusedClass"], "arx-tag-input")
+
+    def test_duplicate_tag_is_a_no_op_but_keeps_focus(self):
+        # Re-typing a tag already on the paper writes nothing, but the user is
+        # still mid-flow in the box, so focus is not lost.
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__savedIds": [self.BIB],
+            "__tagsById": {self.BIB: ["agn"]},
+            "__vocab": ["agn"],
+            "__type": {"selector": ".arx-tag-input", "value": "agn",
+                       "key": "Enter"},
+        })
+        self.assertEqual(out["tagChips"], ["agn"])
+        self.assertEqual(out["focusedClass"], "arx-tag-input")
+        # Nothing was written: the tag was already there.
+        self.assertNotIn("updateTags", out["messages"])
+        self.assertNotIn("savePaper", out["messages"])
+
     def test_diagnostics_explain_what_the_script_decided(self):
         out = self._run(f"/abs/{self.BIB}/abstract")
         joined = "\n".join(out["logs"])

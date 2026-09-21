@@ -24,6 +24,7 @@ const scriptPaths = String(scriptCsv || '').split(',').map(s => s.trim()).filter
 
 // ---- element stub ----------------------------------------------------------
 let uid = 0;
+let focusedEl = null;   // last element that received focus()
 class El {
   constructor(tag) {
     this.tagName = String(tag || 'div').toUpperCase();
@@ -39,6 +40,7 @@ class El {
     this.listeners = {};
     this._html = '';
     this._text = '';
+    this.value = '';
     const self = this;
     this.classList = {
       add: (c) => { self.className += (self.className ? ' ' : '') + c; },
@@ -123,6 +125,9 @@ class El {
   querySelector(sel) { return this._find(sel) || new El('div'); }
   querySelectorAll(sel) { return this._findAll(sel); }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  focus() { focusedEl = this; this._focused = true; }
+  blur() { if (focusedEl === this) focusedEl = null; this._focused = false; }
+  setSelectionRange(a, b) { this._selStart = a; this._selEnd = b; }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
   get firstChild() { return this.children[0] || null; }
@@ -146,6 +151,7 @@ const documentStub = {
   querySelectorAll: () => [],
   head: new El('head'),
 };
+Object.defineProperty(documentStub, 'activeElement', { get: () => focusedEl });
 
 // ---- recorded side effects -------------------------------------------------
 const messages = [];   // chrome.runtime.sendMessage payloads
@@ -329,7 +335,11 @@ let typed = null;
   if (META.__type) {
     const el = findDeep(bodyEl0(), META.__type.selector);
     if (el) {
+      // A real user has the caret in the box before typing or pressing Enter,
+      // so focus it first: the panel's focus-preservation depends on that.
+      el.focus();
       el.value = META.__type.value;
+      if (typeof META.__type.caret === 'number') el.setSelectionRange(META.__type.caret, META.__type.caret);
       for (const fn of (el.listeners.input || [])) {
         try { fn({}); } catch (e) { logs.push('ERROR input ' + e.message); }
       }
@@ -357,6 +367,7 @@ let typed = null;
     const root = bodyEl0();
     const target = root ? findDeep(root, sel) : null;
     if (target) {
+      if (typeof target.focus === 'function') target.focus();
       for (const fn of (target.listeners.click || [])) {
         try { fn({ stopPropagation() {}, preventDefault() {} }); }
         catch (e) { logs.push('ERROR click ' + e.message); }
@@ -393,6 +404,8 @@ let typed = null;
       const el = pe ? findDeep(pe, '.arx-status') : null;
       return el ? el.innerHTML : '';
     })(),
+    focusedClass: focusedEl ? focusedEl.className : null,
+    focusedValue: focusedEl && focusedEl.value !== undefined ? focusedEl.value : null,
     statusClass: (() => {
       const pe = bodyEl0();
       const el = pe ? findDeep(pe, '.arx-status') : null;

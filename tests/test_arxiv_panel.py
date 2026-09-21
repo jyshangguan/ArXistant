@@ -252,6 +252,26 @@ class ArxivPanelBehaviourTests(unittest.TestCase):
         # One write: the tag rides along with the save.
         self.assertNotIn("updateTags", out["messages"])
 
+    def test_enter_keeps_focus_after_an_auto_save(self):
+        # The unsaved path does more work (it saves the paper first), so the
+        # re-render happens later — focus must still land back in the box.
+        payload = {
+            "meta": dict(META),
+            "__vocab": ["agn"],
+            "__type": {"selector": ".arx-tag-input", "value": "agn", "key": "Enter"},
+        }
+        args = [NODE, str(HARNESS),
+                ",".join(str(EXT / n) for n in SCRIPTS.split(",")),
+                "/abs/1802.08364", "arxiv.org", json.dumps(payload)]
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out.get("fatal"), out.get("fatal"))
+        self.assertIn("savePaper", out["messages"])
+        self.assertEqual(out["tagSent"], ["agn"])
+        self.assertEqual(out["focusedClass"], "arx-tag-input")
+        self.assertEqual(out["focusedValue"], "")
+
     def test_saving_without_tagging_still_sends_the_tag_list(self):
         out = _run("/abs/1802.08364", click=".arx-save")
         self.assertIn("savePaper", out["messages"])
