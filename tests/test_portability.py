@@ -31,6 +31,12 @@ class _Response(io.BytesIO):
 
 
 class PortabilityTests(unittest.TestCase):
+    def test_launcher_detects_apple_silicon_hardware_outside_rosetta(self):
+        launcher = (PROJECT_ROOT / "start_server.sh").read_text(encoding="utf-8")
+
+        self.assertIn("hw.optional.arm64", launcher)
+        self.assertNotIn('case "$(uname -m)"', launcher)
+
     def test_data_directory_can_live_outside_installation(self):
         with tempfile.TemporaryDirectory() as data_dir:
             env = os.environ.copy()

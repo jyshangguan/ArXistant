@@ -27,9 +27,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import arxiv_db_server as server
 
-VERSION = "0.4.5"
-VERSION_CODE = 13
-API_VERSION = 4
+VERSION = "0.4.6"
+VERSION_CODE = 14
+API_VERSION = 5
 
 
 class ProductVersionTests(unittest.TestCase):

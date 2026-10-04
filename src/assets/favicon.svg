@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ArXistant">
+  <!-- ArXistant tab icon: the app logo simplified to its essentials —
+       the arXiv-red square and a bold white "A" that stays legible at
+       16 px. Geometry (apex flat 18/128, legs ~20° from vertical,
+       crossbar at 62–77% of cap height) is scaled up from the original
+       extension icon so the counter and crossbar survive downsampling.
+       The raster favicons are generated from the same geometry by
+       make_favicon.py in this directory — keep them in sync. -->
+  <rect width="128" height="128" rx="24" fill="#B31B1B"/>
+  <path fill="#FFFFFF" fill-rule="evenodd"
+        d="M55 20H73L105 108H89L82 88H46L39 108H23ZM64 39L77 75H51Z"/>
+</svg>

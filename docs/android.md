@@ -59,10 +59,10 @@ injects a small mobile layer (CSS + JavaScript) only when it detects an Android
 WebView. It adds:
 
 - **A floating ⋯ menu** (top-right) that replaces the desktop navigation bar.
-  It links to Daily/Recent papers, Saved Papers, Search, My Publications,
-  ML Features, and Settings (Cloud Sync lives in the Settings page). Tap ⋯
-  to open it, tap outside to dismiss. A **long-press on a menu item** shows
-  a tooltip describing what it does.
+  It links to Daily/Recent papers, Saved Papers, Notebook, Search, My
+  Publications, ML Features, and Settings (Cloud Sync lives in the Settings
+  page). Tap ⋯ to open it, tap outside to dismiss. A **long-press on a menu
+  item** shows a tooltip describing what it does.
 - **Pull-to-refresh** on the daily and recent pages: drag down from the top to
   sync the library and re-fetch the list. A spinner overlay appears while the
   refresh runs (the page's own Refresh button is hidden on Android in favor of
@@ -195,7 +195,7 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android version is
-**v0.4.5** (`versionName "0.4.5"`, `versionCode 13` in `app/build.gradle`);
+**v0.4.6** (`versionName "0.4.6"`, `versionCode 14` in `app/build.gradle`);
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 
@@ -245,12 +245,20 @@ Mac stay in step.
 - **No Chat page.** The reader/chat interface is desktop-oriented and is
   stripped from the Android build; the chat API endpoints stay in place, so
   libraries and highlights still merge cleanly with the desktop.
+- **No manuscript review assistant.** The Chat-page manuscript workspace
+  (PDF review findings, proposals, and the review skills) is desktop-only:
+  it needs the Chat page, PyMuPDF, and the `src/skills` + `src/assets`
+  directories, none of which ship in the APK. `copy_python.sh` skips its
+  Python modules and `strip_chat.py` removes its endpoints from the server.
 - **No browsing panel.** The "add to ArXistant" panel that appears on
   arxiv.org and scixplorer.org paper pages is a Chrome-extension content
   script. The phone has no extension, and ArXistant's own WebView is not a
   general browser, so there is nothing to inject it into. Save, tag, and chat
   from the Daily, Recent, Search, and Saved Papers pages instead — the tag
   editor there is the same one.
+- **No browser tab icons.** The favicon assets the desktop server injects
+  into every page are not bundled; the phone uses the app's native launcher
+  icon, so the favicon routes and `<link>` injection are stripped too.
 - **No daily reminders yet.** The desktop Chrome extension's alarm/notification
   logic has no Android equivalent. A `WorkManager` job that calls
   `/api/refresh-daily` and posts a notification is the intended follow-up.

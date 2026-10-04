@@ -41,6 +41,14 @@ cd ArXistant
 python3 -m pip install --user -r requirements.txt
 ```
 
+If the server was already running when dependencies were installed, restart it
+with `./start_server.sh`. The manuscript workspace needs PyMuPDF in the same
+Python interpreter used by the server. To verify the default macOS interpreter:
+
+```bash
+/usr/bin/python3 -c "import pymupdf; print(pymupdf.VersionBind)"
+```
+
 The launcher discovers the repository location automatically, so the checkout
 does not need to be in a particular directory.
 

@@ -10,13 +10,24 @@ DEST="$SCRIPT_DIR/app/src/main/python"
 mkdir -p "$DEST"
 
 for f in "$REPO_ROOT"/src/*.py; do
-    cp "$f" "$DEST/"
+    name=$(basename "$f")
+    case "$name" in
+        # Desktop-only: the manuscript review assistant needs the Chat
+        # page, PyMuPDF, and the src/skills + src/assets directories, none
+        # of which ship in the APK. strip_chat.py removes its endpoints
+        # from the server copy as well.
+        arxistant_manuscripts.py|arxistant_pdf_annotations.py) ;;
+        *) cp "$f" "$DEST/" ;;
+    esac
 done
+# Also drop stale copies from before the exclusion (idempotent).
+rm -f "$DEST/arxistant_manuscripts.py" "$DEST/arxistant_pdf_annotations.py"
 
 echo "Copied src/*.py -> $DEST"
 
-# The Chat page is desktop-oriented and will be redesigned for the phone
-# later; keep it out of the Android build. Idempotent.
+# Desktop-only UI surfaces (the Chat page, the manuscript review assistant,
+# and the browser tab icons) are removed from the Android copy. Idempotent,
+# and verifies that nothing stripped leaked through before succeeding.
 python3 "$SCRIPT_DIR/strip_chat.py"
 
 echo "Re-run this script after changing the Python sources."

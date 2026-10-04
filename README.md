@@ -39,6 +39,12 @@ personal preferences remain on your computer.
   Saved Papers page by them (the tag list is folded away until you need it),
   and tag papers straight from the Daily, Recent, and Search pages or from the
   browsing panel.
+- **Notebook reading folders** — a 📓 Notebook page keeps the papers you want
+  to read soon in folders, starting with a ready-made "To read" folder. Every
+  entry is a lightweight note that links to a paper (open it in Chat, arXiv,
+  or AlphaXiv), never a copy of it; add your own folders and rename any of
+  them at any time. A 📓 button on each Daily and Recent paper adds it straight
+  to a folder you pick (or a new one you name on the spot).
 - **Local paper database** — search saved papers with plain keywords or scoped
   `field:value` terms (`tag:`, `author:`, `title:`, `abs:`, `note:`, `year:`
   with ranges, `id:`), maintain notes, and remove records through a browser
@@ -95,10 +101,10 @@ flowchart LR
     E --> C
 ```
 
-ArXistant is currently at version **0.4.5**. The Chrome extension is loaded as
+ArXistant is currently at version **0.4.6**. The Chrome extension is loaded as
 an unpacked extension. macOS has a bundled launcher, and Debian/Ubuntu has an
 experimental `.deb` package with a systemd user service. A standalone **Android
-app (v0.4.5)** runs the full pipeline on the phone via Chaquopy — including
+app (v0.4.6)** runs the full pipeline on the phone via Chaquopy — including
 the 🔊 voice digest, spoken by the phone's own text-to-speech engine.
 
 ## License

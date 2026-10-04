@@ -26,6 +26,7 @@ The server health endpoint is
 | Daily Papers | `/daily.html` | Today's ranked submissions |
 | Recent Papers | `/recent.html` | Approximately five days of ranked papers |
 | Saved Papers | `/database.html` | Search, annotate, tag, and remove saved papers |
+| Notebook | `/notebook.html` | Reading-list folders — notes that link to papers you want to read |
 | Chat | `/chat.html` | Read papers (tabs, highlights) and ask an LLM about them |
 | My Publications | `/publications.html` | Import and manage your publication list |
 | Search | `/search.html` | Find papers via ADS / SciX; save, tag, or open them in Chat |
@@ -190,6 +191,62 @@ The assistant can also use a **web search** tool (keyless DuckDuckGo) for
 up-to-date or general information beyond the paper; while it searches, the chat
 shows a "🔎 Searching the web…" note and the answer cites the URLs it used.
 
+### Review and revise a manuscript
+
+Open an uploaded PDF in Chat, then click **Manuscript** beside the Conversation
+heading. Choose **New manuscript → Open workspace**, or link the PDF to an
+existing workspace as a new draft. Manuscript conversations, preferences,
+proposed wording, and comments are stored locally and survive page reloads.
+You can also open **Manuscript** first and drop a PDF directly into its upload
+area, or use **Choose PDF**; ArXistant imports and opens it automatically.
+
+- **Review entire paper** runs one consolidated review of all pages, with a
+  prioritized summary and comments anchored to passages or pages. Review options
+  select language, citations, and figures/tables. ArXistant first reviews
+  bounded text chunks of up to two pages, then runs a separate visual pass only
+  for pages with detected figure or table captions. It saves a checkpoint after
+  every chunk. Each text request includes only nearby text and cited reference
+  entries, and bibliographic searches no longer require an extra model call.
+  Use **Cancel** or **Resume** without repeating completed chunks.
+- For focused revision, select text in the reader and click **Revise**, or enter
+  a scope such as `2-4, 7`, `section 3.1`, or `figure 2`. Ask for proofreading,
+  clearer wording, alternative structures, citation support, or figure feedback.
+  Follow-up messages retain the target and earlier proposals. A named section
+  or figure in a message can also select that target.
+- **Use this proposal** records your chosen wording. **Copy wording** lets you
+  apply it in your manuscript editor. Proposals are working text: they do not
+  rewrite the PDF body. **Add to paper comments** creates an exportable comment.
+- Click a comment's **Page** button to locate it, or **Discuss** to continue the
+  conversation about it. Existing native PDF comments are included. Comments
+  can be edited, resolved, or dismissed; edits retain their history. Explicitly
+  asking to update the active comment can update that comment without duplicating it.
+- **Download PDF** exports open ArXistant comments while preserving the original
+  PDF and its native annotations. Check individual comments and choose **Export
+  selected** for a narrower export. An ambiguous text match becomes a labeled
+  page note rather than a guessed highlight. Resolving an imported comment does
+  not erase its original annotation from the source PDF.
+- After recompiling your manuscript, upload the new PDF and link it to the same
+  workspace. **Check earlier comments** suggests whether issues were addressed;
+  it does not automatically resolve them. **Carry comment** is available for a
+  unique matching passage in the new version. Earlier comments keep their old
+  PDF locations unless explicitly carried forward.
+
+The workspace uses your configured LLM. **Inspect page images** requires image
+input support; unsupported requests fall back to text checks with visible
+coverage limitations. **Look up cited sources** uses ADS when a token is
+configured, otherwise Semantic Scholar, and attempts arXiv full text for one
+candidate per query. Queries and retrieved excerpts are bounded: a review does
+not certify every citation. Bibliographic correctness and support for a claim
+are separate checks; missing evidence remains unverified. No journal-specific
+submission compliance is certified from the PDF alone.
+
+The desktop/server installation requires PyMuPDF (included in the Python
+requirements). Scanned PDFs need OCR before upload. The standalone Android build
+currently omits Chat, including this workspace. Manuscript files and workspace
+records are excluded from cloud-sync snapshots; model requests still go to the
+provider configured in Settings. Removing a local PDF also removes its workspace
+records for that version, after any active review has stopped.
+
 ### Finding more papers, right in the chat
 
 The chat assistant has paper-search tools it can call on its own, so you can
@@ -280,6 +337,43 @@ Multiple terms combine — every term must match, so
 quoted (`title:"dark matter"`). The publication year is derived from the
 arXiv ID or ADS bibcode, so it works for bibcode-keyed SciX papers too.
 
+## Notebook
+
+The Notebook page (`/notebook.html`, also in the extension popup and the **⋯**
+menu) collects the papers you want to read into folders. It starts with a
+ready-made **To read** folder for papers to get to soon.
+
+A folder holds *notes that link to papers* — not copies of them. Each entry
+shows the paper title (linking to AlphaXiv, or to SciX for bibcode-keyed
+papers), the arXiv ID, a **💬 Chat** shortcut, an optional note of your own,
+and the date you added it. The paper itself stays wherever it already lives
+(your library, the daily list, arXiv).
+
+- **Add a paper** — click **➕ Add paper** and either search your library
+  (saved, daily, and recent papers) or paste an arXiv ID, an arxiv.org /
+  AlphaXiv link, or any paper URL. The optional note field attaches a reason
+  ("read before the proposal deadline") to the entry you are adding. A paper
+  can sit in several folders at once, but never twice in the same one —
+  re-adding it there just refreshes its note.
+- **Add from the Daily / Recent / Search pages** — each paper there has a
+  **📓** button
+  (right after the 🏷️ tag button). Clicking it opens a small box below the
+  paper listing your folders; click **Add** next to one, or type a new folder
+  name and **Create & add**. The button turns green once that paper is in your
+  Notebook.
+- **Edit a note** — click the note text on any entry, then Save (⌘/Ctrl+Enter
+  works too). **✕** removes the entry from the folder.
+- **Manage folders** — **＋ New** creates a folder; hover a folder and use ✏️
+  to rename it (Enter saves, Esc cancels) or 🗑 to delete it together with its
+  notes. Folder names are unique. The seeded **To read** folder is an ordinary
+  folder: rename or delete it like any other, and a deleted folder never comes
+  back on restart.
+
+Notes added by bare arXiv ID keep showing the ID until the paper is saved to
+your library — once it is, the entry picks up the real title and authors
+automatically. Like uploaded PDFs, the Notebook is local to each device and is
+not part of cloud sync.
+
 ## Cloud sync
 
 ArXistant can mirror your paper database (saved papers, publications, and custom
@@ -312,8 +406,9 @@ ArXistant file. Use **Disconnect** to remove it and turn sync off.
 ### What is and is not synced
 
 Synced and merged (last-write-wins): saved papers with notes, tags, and
-highlights, publications, and custom keywords. Not synced: the ML model and generated daily/recent pages,
-which each device rebuilds from its local database.
+highlights, publications, and custom keywords. Not synced: the Notebook's
+folders and notes, uploaded local PDFs and manuscript workspaces, the ML model, and generated daily/recent
+pages, which each device keeps or rebuilds locally.
 
 The **Local folder** provider is an alternative that writes the snapshot into a
 folder you already sync with Dropbox/iCloud/OneDrive or the Nutstore desktop app.
@@ -337,7 +432,8 @@ every card carries the same action buttons as the daily list:
 
 - **💾** saves the paper into the local database (click again to remove it),
 - **💬** opens the paper directly in the Chat reader,
-- **🏷️** tags it (the paper is saved first if needed).
+- **🏷️** tags it (the paper is saved first if needed),
+- **📓** adds it to a Notebook folder (see [Notebook](#notebook)).
 
 Saving from the search page and saving from the Daily page produce the same
 record: a paper with an arXiv version is always stored under its arXiv ID —

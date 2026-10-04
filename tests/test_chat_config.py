@@ -7,7 +7,9 @@ provider 401 mid-chat.
 """
 
 import json
+import os
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.error
@@ -142,6 +144,41 @@ class LlmSettingsUiTests(unittest.TestCase):
         html = server.CHAT_PAGE_HTML
         self.assertIn("key in local file", html)
         self.assertIn("key from OS keychain", html)
+
+
+class ChatConfigFileRoundTripTests(unittest.TestCase):
+    """Saving settings must keep the API key already stored in the file."""
+
+    def test_save_without_reentering_key_keeps_file_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "chat_config.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"base_url": "https://llm.example/v1", "model": "m",
+                           "temperature": 0.7, "api_key": "file-key"}, f)
+            with mock.patch.object(server, "CHAT_CONFIG_PATH", path):
+                # Settings saved with no api_key in the payload: the handler
+                # loads, updates fields, and saves the whole config back.
+                config = server.load_chat_config()
+                config["model"] = "other-model"
+                server.save_chat_config(config)
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+        self.assertEqual(data["api_key"], "file-key")
+        self.assertEqual(data["model"], "other-model")
+
+    def test_delete_api_key_still_removes_file_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(temp, "chat_config.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"base_url": "https://llm.example/v1", "model": "m",
+                           "api_key": "file-key"}, f)
+            with mock.patch.object(server, "CHAT_CONFIG_PATH", path):
+                config = server.load_chat_config()
+                config.pop("api_key", None)  # what the delete_api_key path does
+                server.save_chat_config(config)
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+        self.assertNotIn("api_key", data)
 
 
 if __name__ == "__main__":

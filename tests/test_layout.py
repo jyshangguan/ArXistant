@@ -90,5 +90,49 @@ class OverflowMenuTests(unittest.TestCase):
         self.assertIn("label: 'Daily Papers'", script)
 
 
+class RefreshPillServeTimeFixTests(unittest.TestCase):
+    """Legacy pages must serve with the pill pinned top-right.
+
+    Pages generated before the Refresh pill became a fixed element render
+    the button inline at the top-left of the content column; the server
+    pins it next to the "..." menu at serve time so a stale file looks
+    like a freshly generated one without regeneration.
+    """
+
+    def _legacy_page(self):
+        # Shape of format_paper_list_html output before the layout change:
+        # the refresh button inline inside a .nav-bar wrapper.
+        return (
+            '<!DOCTYPE html><html><head><style>'
+            '.nav-bar { display: flex; gap: 12px; margin: 12px 0 20px 0; }'
+            '.refresh-btn { display: inline-block; padding: 6px 10px;'
+            ' background: #1976d2; }'
+            '</style></head><body>'
+            '<div class="nav-bar">'
+            '<button class="refresh-btn" id="refreshBtn" onclick="refreshRecent()">'
+            '<span class="icon">&#127760;</span>'
+            '<span class="label">Refresh</span></button>'
+            '</div><h1>arXiv Astro-ph Recent Papers</h1>'
+            '</body></html>'
+        )
+
+    def test_legacy_page_gains_the_pinned_pill(self):
+        html = server.ensure_refresh_pill(self._legacy_page())
+        self.assertIn('<!-- refresh-pill-embedded -->', html)
+        self.assertIn('top: 12px; right: 66px', html)
+        # The button escapes the hidden wrapper before it is hidden.
+        self.assertIn("document.body.appendChild(btn)", html)
+        self.assertIn("closest('.nav-bar')", html)
+
+    def test_modern_page_is_left_alone(self):
+        html = _render('recent')
+        self.assertEqual(html, server.ensure_refresh_pill(html))
+        self.assertNotIn('refresh-pill-embedded', html)
+
+    def test_fix_is_idempotent(self):
+        once = server.ensure_refresh_pill(self._legacy_page())
+        self.assertEqual(once, server.ensure_refresh_pill(once))
+
+
 if __name__ == "__main__":
     unittest.main()

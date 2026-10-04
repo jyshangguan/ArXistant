@@ -1131,6 +1131,7 @@ def generate_features_html(output_path=None):
     <a href="/search.html">🔍 Search</a>
     <a href="/chat.html">💬 Chat</a>
     <a href="/database.html">📂 Saved Papers</a>
+    <a href="/notebook.html">📓 Notebook</a>
     <a href="/publications.html">📚 My Publications</a>
   </div>
   <h1>ML Model Features</h1>

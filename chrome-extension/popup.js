@@ -2,7 +2,7 @@
 
 const DEFAULT_SERVER_URL = 'http://localhost:8765';
 const SERVER_LAUNCH_URL = 'arxistant://start';
-const SERVER_API_VERSION = 4;
+const SERVER_API_VERSION = 5;
 
 // ── DOM Elements ──
 const serverSection = document.getElementById('server-section');
@@ -12,6 +12,7 @@ const btnChat = document.getElementById('btn-chat');
 const btnRecent = document.getElementById('btn-recent');
 const btnML = document.getElementById('btn-ml');
 const btnDB = document.getElementById('btn-db');
+const btnNotebook = document.getElementById('btn-notebook');
 const btnPubs = document.getElementById('btn-pubs');
 const linkOptions = document.getElementById('link-options');
 const linkPower = document.getElementById('link-power');
@@ -176,6 +177,7 @@ function bindButtons() {
   btnRecent.addEventListener('click', () => openPage('/recent.html'));
   btnML.addEventListener('click', () => openPage('/ml-features.html'));
   btnDB.addEventListener('click', () => openPage('/database.html'));
+  btnNotebook.addEventListener('click', () => openPage('/notebook.html'));
   btnPubs.addEventListener('click', () => openPage('/publications.html'));
 
   linkOptions.addEventListener('click', (e) => {

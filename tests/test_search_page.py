@@ -174,6 +174,11 @@ class SearchPageEndpointTests(unittest.TestCase):
         # its presence is the attach function it defines).
         self.assertIn("arxistantAttachSaveButtons", html)
         self.assertIn("arxistantAttachChatLinks", html)
+        # The notebook button is injected too, like on the daily page, and
+        # the dynamically rendered results call its attach hook.
+        self.assertEqual(html.count("<!-- notebook-button-embedded -->"), 1)
+        self.assertIn("window.arxistantAttachNotebookButtons()", html)
+        self.assertIn("/api/notebook/note/add", html)
 
     def test_old_address_redirects_permanently(self):
         import http.client

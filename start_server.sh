@@ -8,17 +8,19 @@ PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="${ARXISTANT_PYTHON:-/usr/bin/python3}"
 LOG_FILE="$PROJECT_ROOT/local/server.log"
 SERVER_SCRIPT="$PROJECT_ROOT/src/arxiv_db_server.py"
-SERVER_API_VERSION="4"
+SERVER_API_VERSION="5"
 SERVER_PORT="${ARXISTANT_PORT:-8765}"
 
-# Platform tooling.  macOS wraps Python in `arch` to force the native slice;
-# Linux has no equivalent.
+# Platform tooling. macOS wraps Python in `arch` to force the hardware-native
+# slice. `uname -m` can report x86_64 when this launcher inherits a Rosetta
+# shell, so query the hardware capability directly instead.
 ARCH_CMD=()
 if [ "$(uname -s)" = "Darwin" ]; then
-    case "$(uname -m)" in
-        arm64) PYTHON_ARCH="arm64" ;;
-        *)     PYTHON_ARCH="x86_64" ;;
-    esac
+    if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2> /dev/null || echo 0)" = "1" ]; then
+        PYTHON_ARCH="arm64"
+    else
+        PYTHON_ARCH="x86_64"
+    fi
     ARCH_CMD=(/usr/bin/arch -"$PYTHON_ARCH")
 fi
 

@@ -12,7 +12,9 @@ See `../docs/android.md` for the full setup, build, and test guide.
 ```
 android/
 ├── settings.gradle, build.gradle, gradle.properties
-├── copy_python.sh               # copies ../src/*.py into the app's Python dir
+├── copy_python.sh               # copies ../src/*.py (minus desktop-only
+│                                #   manuscript modules) into the Python dir,
+│                                #   then runs strip_chat.py on the server
 └── app/
     ├── build.gradle             # Android + Chaquopy; pip install numpy scikit-learn
     └── src/main/
