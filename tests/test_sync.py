@@ -492,6 +492,56 @@ class NotebookSyncTests(unittest.TestCase):
         self.assertEqual(names, ["Beta", "Beta (2)"])
         self.assertEqual(len(_nb_notes(self.db_b)), 2)
 
+    def test_name_parking_holds_for_either_upsert_order(self):
+        # The record order out of merge_table follows set iteration and so
+        # varies per process (PYTHONHASHSEED); the parking pass must park
+        # every name that is about to move regardless of the order the
+        # upserts then run in. This pins the order-independence that the
+        # test above only catches under some hash seeds.
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                db = os.path.join(self.tmp.name, f"P{int(reverse)}",
+                                  "arxiv_papers.db")
+                _make_notebook_db(db)
+                k1 = "aaaa1111aaaa"
+                k2 = "bbbb2222bbbb"
+                conn = sqlite3.connect(db)
+                for key, name in ((k1, "Alpha"), (k2, "Beta")):
+                    conn.execute(
+                        "INSERT INTO notebook_folders "
+                        "(name, created_at, sync_key, updated_at) "
+                        "VALUES (?, '2026-10-01T00:00:00+00:00', ?, "
+                        "'2026-10-01T00:00:00+00:00')",
+                        (name, key))
+                conn.commit()
+                conn.close()
+
+                conn = sqlite3.connect(db)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                local = sync._select_rows(
+                    cur, "notebook_folders", sync.NOTEBOOK_FOLDER_COLUMNS)
+                # What the dedupe upstream of the reconcile produces: k1
+                # (renamed remotely, newer) keeps "Beta"; k2 is suffixed.
+                records = [
+                    {"sync_key": k1, "name": "Beta",
+                     "created_at": "2026-10-01T00:00:00+00:00",
+                     "updated_at": "2026-10-05T00:00:00+00:00"},
+                    {"sync_key": k2, "name": "Beta (2)",
+                     "created_at": "2026-10-01T00:00:00+00:00",
+                     "updated_at": "2026-10-01T00:00:00+00:00"},
+                ]
+                if reverse:
+                    records.reverse()
+                stats = sync._reconcile_notebook_folders(
+                    cur, local, records, {})
+                conn.commit()
+                names = sorted(r[0] for r in cur.execute(
+                    "SELECT name FROM notebook_folders"))
+                conn.close()
+                self.assertEqual(names, ["Beta", "Beta (2)"])
+                self.assertEqual(stats["updated"], 1)
+
     def test_note_of_deleted_folder_is_dropped(self):
         # A deletes the folder after B synced it. The folder tombstone wins,
         # so B's copy of the note goes with the folder instead of

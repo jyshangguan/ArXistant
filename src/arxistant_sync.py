@@ -526,21 +526,28 @@ def _merge_notebook(cur, snapshot, local_tombs):
     # Folder names are UNIQUE in the schema, and the merge can still surface
     # one twice (a device renames folder A to a name another device already
     # uses on folder B). The newest record keeps the exact name; the older
-    # one gets a numbered suffix so both folders survive the merge.
+    # one gets a numbered suffix so both folders survive the merge. The
+    # suffixed records are COPIES: merge_table hands back the local row
+    # dicts themselves for locally-won keys, and mutating them here would
+    # desynchronise the in-memory local rows from the database (and defeat
+    # the name-parking check in the reconcile below).
     taken = set()
+    deduped_records = []
     for rec in sorted(folders_merged,
                       key=lambda r: _ts(r.get("updated_at")), reverse=True):
-        name = rec.get("name") or "Untitled"
+        out = dict(rec)
+        name = out.get("name") or "Untitled"
         if name in taken:
             base, i = name, 2
             while name in taken:
                 name = f"{base} ({i})"
                 i += 1
-            rec["name"] = name
-        taken.add(rec["name"])
+            out["name"] = name
+        taken.add(out["name"])
+        deduped_records.append(out)
 
     folder_stats = _reconcile_notebook_folders(
-        cur, local_folder_rows, folders_merged, folder_tombs)
+        cur, local_folder_rows, deduped_records, folder_tombs)
 
     # ── Notes ─────────────────────────────────────────────────────────────
     local_note_rows = _notebook_note_rows(cur)
