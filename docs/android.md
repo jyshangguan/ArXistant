@@ -108,6 +108,15 @@ WebView. It adds:
   when a newer release exists. Every check logs the parsed release, asset
   size, and digest under the `ArxistantUpdate` tag, so a failed update can be
   diagnosed from `adb logcat`.
+- **Rate-limited update checks**: GitHub's unauthenticated API allows 60
+  requests per hour per network address, and answers exhaustion with
+  HTTP 403 — on a phone network that address is shared, so the check can be
+  refused through no fault of the app. The checker recognises the rate
+  limit from the response headers, backs off until the window resets
+  instead of hammering, and still answers the version question through the
+  release page redirect (plain github.com traffic, outside the API budget):
+  an update found that way opens the release page in the browser, since
+  the APK cannot be download-verified without the API's asset metadata.
 
 The app icon is the ArXistant logo, and `MainActivity` shows a loading page and
 polls the embedded server until it is ready, so the daily list appears as soon

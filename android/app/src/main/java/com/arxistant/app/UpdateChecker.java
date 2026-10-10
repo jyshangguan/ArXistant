@@ -2,7 +2,9 @@ package com.arxistant.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -27,6 +29,9 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /**
  * Self-update flow for the Android app.
@@ -36,14 +41,26 @@ import java.security.MessageDigest;
  * the release asset metadata), and hands it to the system package installer.
  * Triggered from the "..." menu ("Check for Updates", via the JS bridge) and
  * silently once at startup.
+ *
+ * GitHub's unauthenticated API allows only 60 requests per hour per network
+ * address, and answers exhaustion with HTTP 403 (not 429) — on a phone
+ * network that address is shared with everyone else behind it, so the check
+ * can be refused even when this app rarely calls. The checker recognises the
+ * rate limit, backs off until the reset time instead of hammering, and still
+ * answers the "is there a newer version" question through the release page
+ * redirect, which is plain github.com traffic outside the API budget.
  */
 public class UpdateChecker {
     private static final String TAG = "ArxistantUpdate";
     private static final String RELEASE_API_URL =
             "https://api.github.com/repos/jyshangguan/ArXistant/releases/latest";
+    private static final String RELEASE_PAGE_URL =
+            "https://github.com/jyshangguan/ArXistant/releases/latest";
     private static final String UPDATE_FILE_NAME = "arxistant-update.apk";
     /** A corrupt or truncated download is retried once before giving up. */
     private static final int DOWNLOAD_ATTEMPTS = 2;
+    private static final String PREFS_NAME = "arxistant_update";
+    private static final String KEY_RATE_LIMITED_UNTIL = "rate_limited_until";
 
     private final Activity activity;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -62,6 +79,13 @@ public class UpdateChecker {
      */
     public void check(boolean manual) {
         new Thread(() -> {
+            // Inside a known rate-limit window the API call would only be
+            // refused again, so go straight to the release-page fallback.
+            long limitedUntil = prefs().getLong(KEY_RATE_LIMITED_UNTIL, 0L);
+            if (System.currentTimeMillis() < limitedUntil) {
+                fallbackViaReleasePage(manual, null);
+                return;
+            }
             try {
                 JSONObject release = fetchJson(RELEASE_API_URL);
                 String tag = release.optString("tag_name", "");
@@ -96,6 +120,10 @@ public class UpdateChecker {
                     return;
                 }
                 mainHandler.post(() -> offerUpdate(latest, apkUrl, expectedSize, expectedDigest));
+            } catch (RateLimitedException e) {
+                Log.w(TAG, "GitHub API rate-limited this network", e);
+                recordRateLimit(e.resetAtMillis);
+                fallbackViaReleasePage(manual, e);
             } catch (Exception e) {
                 Log.w(TAG, "Update check failed", e);
                 if (manual) showError("Update check failed: " + e.getMessage());
@@ -117,6 +145,17 @@ public class UpdateChecker {
 
     // ── network ─────────────────────────────────────────────────────────
 
+    /** The unauthenticated API budget (60/hour per network) is exhausted. */
+    private static final class RateLimitedException extends Exception {
+        final long resetAtMillis;
+
+        RateLimitedException(long resetEpochSeconds) {
+            super("rate limited"
+                    + (resetEpochSeconds > 0 ? " (reset epoch " + resetEpochSeconds + ")" : ""));
+            this.resetAtMillis = resetEpochSeconds > 0 ? resetEpochSeconds * 1000L : 0L;
+        }
+    }
+
     private static JSONObject fetchJson(String url) throws Exception {
         HttpURLConnection connection =
                 (HttpURLConnection) new URL(url).openConnection();
@@ -125,9 +164,17 @@ public class UpdateChecker {
         // GitHub rejects requests without a User-Agent header.
         connection.setRequestProperty("User-Agent", "ArXistant-Android");
         try {
-            if (connection.getResponseCode() != 200) {
-                throw new RuntimeException("GitHub returned HTTP "
-                        + connection.getResponseCode());
+            int code = connection.getResponseCode();
+            if (code == 403 || code == 429) {
+                // GitHub answers rate-limit exhaustion with 403 (not 429)
+                // for unauthenticated callers; the headers say which.
+                if ("0".equals(header(connection, "X-RateLimit-Remaining"))) {
+                    throw new RateLimitedException(
+                            parseEpochSeconds(header(connection, "X-RateLimit-Reset")));
+                }
+            }
+            if (code != 200) {
+                throw new RuntimeException("GitHub returned HTTP " + code);
             }
             StringBuilder body = new StringBuilder();
             try (InputStream in = connection.getInputStream()) {
@@ -141,6 +188,132 @@ public class UpdateChecker {
         } finally {
             connection.disconnect();
         }
+    }
+
+    /**
+     * The latest release tag, via the release page's redirect. The page is
+     * plain github.com traffic — outside the 60/hour API budget — and
+     * answers 302 to {@code .../releases/tag/<tag>} without a body.
+     */
+    private static String fetchLatestTag() throws Exception {
+        HttpURLConnection connection =
+                (HttpURLConnection) new URL(RELEASE_PAGE_URL).openConnection();
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(15000);
+        connection.setRequestProperty("User-Agent", "ArXistant-Android");
+        // Don't follow the redirect; the Location header is the answer.
+        connection.setInstanceFollowRedirects(false);
+        try {
+            int code = connection.getResponseCode();
+            String location = connection.getHeaderField("Location");
+            if ((code == 301 || code == 302) && location != null) {
+                int idx = location.lastIndexOf("/tag/");
+                if (idx >= 0) {
+                    return location.substring(idx + "/tag/".length());
+                }
+            }
+            throw new IOException("release page answered HTTP " + code
+                    + (location == null ? "" : " -> " + location));
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static String header(HttpURLConnection connection, String name) {
+        String value = connection.getHeaderField(name);
+        return value == null ? "" : value.trim();
+    }
+
+    private static long parseEpochSeconds(String value) {
+        if (value == null) return 0;
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private SharedPreferences prefs() {
+        return activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    /**
+     * Remember the rate-limit window so repeated checks (startup + manual)
+     * stop calling the API until it can succeed again. A missing or past
+     * reset time falls back to a five-minute backoff.
+     */
+    private void recordRateLimit(long resetAtMillis) {
+        long until = resetAtMillis;
+        if (until <= System.currentTimeMillis()) {
+            until = System.currentTimeMillis() + 5 * 60 * 1000L;
+        }
+        prefs().edit().putLong(KEY_RATE_LIMITED_UNTIL, until).apply();
+    }
+
+    /**
+     * Version-only fallback when the API is rate-limited. Asset metadata
+     * (size/digest/download URL) is not available this way, so an update
+     * found here points at the release page instead of auto-downloading.
+     */
+    private void fallbackViaReleasePage(boolean manual, RateLimitedException cause) {
+        String tag;
+        try {
+            tag = fetchLatestTag();
+        } catch (Exception e) {
+            Log.w(TAG, "Release-page fallback failed too", e);
+            if (manual) showError(rateLimitMessage(cause));
+            return;
+        }
+        String latest = tag.startsWith("v") ? tag.substring(1) : tag;
+        if (latest.isEmpty()) {
+            if (manual) showError(rateLimitMessage(cause));
+            return;
+        }
+        String current = BuildConfig.VERSION_NAME;
+        Log.i(TAG, "release=" + latest + " installed=" + current
+                + " (via release-page fallback)"
+                + (cause == null ? " (within rate-limit window)" : ""));
+        if (compareVersions(latest, current) <= 0) {
+            if (manual) showInfo("ArXistant is up to date (v" + current + ").");
+            return;
+        }
+        String message = "ArXistant v" + latest + " is available (installed: v"
+                + current + ").\n\n"
+                + "GitHub is rate-limiting the update API for this network right now, "
+                + "so the APK cannot be downloaded and verified automatically. "
+                + "Open the release page in your browser and download it there?";
+        mainHandler.post(() -> new AlertDialog.Builder(activity)
+                .setTitle("Update available")
+                .setMessage(message)
+                .setPositiveButton("Open release page", (d, w) -> {
+                    try {
+                        activity.startActivity(new Intent(
+                                Intent.ACTION_VIEW, Uri.parse(RELEASE_PAGE_URL)));
+                    } catch (Exception e) {
+                        showError("Could not open the browser: " + e.getMessage());
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show());
+    }
+
+    /** A human explanation of the 403, with the reset time when known. */
+    private String rateLimitMessage(RateLimitedException cause) {
+        StringBuilder sb = new StringBuilder(
+                "GitHub refused the update check with HTTP 403: the "
+                + "unauthenticated API allows 60 requests per hour per "
+                + "network address, and yours is shared or busy right now.\n");
+        if (cause != null && cause.resetAtMillis > 0) {
+            sb.append("The limit resets at ")
+                    .append(new SimpleDateFormat("HH:mm", Locale.getDefault())
+                            .format(new Date(cause.resetAtMillis)))
+                    .append(".\n");
+        } else {
+            sb.append("The app will retry automatically later.\n");
+        }
+        sb.append("You can always download the newest APK from the GitHub "
+                + "release page.");
+        return sb.toString();
     }
 
     /** The release asset whose name ends in .apk, or null. */

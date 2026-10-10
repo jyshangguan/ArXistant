@@ -70,5 +70,64 @@ class UpdateCheckerInvariantTests(unittest.TestCase):
         self.assertIn("release page", src)
 
 
+class RateLimitHandlingTests(unittest.TestCase):
+    """GitHub answers unauthenticated rate-limit exhaustion with HTTP 403.
+
+    A phone network shares one public address (CGNAT), so the 60-requests-
+    per-hour unauthenticated API budget is often spent by others when the
+    app checks. The checker must recognise that 403 via its rate-limit
+    headers instead of reporting an opaque failure, back off until the
+    window resets instead of hammering, and still answer the "is there a
+    newer version" question through the release page redirect — plain
+    github.com traffic, outside the API budget.
+    """
+
+    def test_detects_the_rate_limit_403_through_its_headers(self):
+        src = source()
+        self.assertIn("X-RateLimit-Remaining", src)
+        self.assertIn("X-RateLimit-Reset", src)
+        self.assertIn("RateLimitedException", src)
+        # Only 403/429 with a spent budget is a rate limit; anything else
+        # keeps the generic "GitHub returned HTTP <code>" message.
+        self.assertIn('"0".equals(header(connection, "X-RateLimit-Remaining"))', src)
+        self.assertIn('"GitHub returned HTTP " + code', src)
+
+    def test_backs_off_while_the_window_is_open(self):
+        src = source()
+        self.assertIn("KEY_RATE_LIMITED_UNTIL", src)
+        self.assertIn('"rate_limited_until"', src)
+        self.assertIn("putLong(KEY_RATE_LIMITED_UNTIL", src)
+        # The check consults the window before calling the API.
+        self.assertIn("prefs().getLong(KEY_RATE_LIMITED_UNTIL, 0L)", src)
+
+    def test_falls_back_to_the_release_page_redirect(self):
+        src = source()
+        self.assertIn("RELEASE_PAGE_URL", src)
+        self.assertIn('"https://github.com/jyshangguan/ArXistant/releases/latest"', src)
+        # No body is fetched: the Location header of the 302 is the answer.
+        self.assertIn("setInstanceFollowRedirects(false)", src)
+        self.assertIn('lastIndexOf("/tag/")', src)
+
+    def test_rate_limited_update_points_at_the_release_page(self):
+        # Without asset metadata there is no verified auto-download, so an
+        # update found via the fallback opens the release page instead.
+        src = source()
+        self.assertIn("fallbackViaReleasePage", src)
+        self.assertIn('"Open release page"', src)
+        self.assertIn("cannot be downloaded and verified automatically", src)
+
+    def test_error_explains_the_shared_budget_and_reset_time(self):
+        src = source()
+        self.assertIn("60 requests per hour", src)
+        self.assertIn("X-RateLimit-Reset", src)  # via the header check
+        self.assertIn("The limit resets at", src)
+
+    def test_startup_check_stays_silent_on_failure(self):
+        # The silent startup path only shows dialogs when an update exists;
+        # failures (rate limit included) are manual-only messages.
+        src = source()
+        self.assertIn("if (manual) showError(rateLimitMessage(cause));", src)
+
+
 if __name__ == "__main__":
     unittest.main()
