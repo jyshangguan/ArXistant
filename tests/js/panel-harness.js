@@ -157,6 +157,7 @@ Object.defineProperty(documentStub, 'activeElement', { get: () => focusedEl });
 const messages = [];   // chrome.runtime.sendMessage payloads
 const logs = [];       // console output
 const attached = [];   // elements appended to body/documentElement
+let notebookFoldersCalls = 0;
 
 for (const fn of ['appendChild']) {
   const orig = bodyEl[fn].bind(bodyEl);
@@ -218,6 +219,28 @@ const chromeStub = {
           break;
         case 'deletePaper':
           reply = { success: true, message: 'ok' };
+          break;
+        // Notebook relays: the folder snapshot (with each note's paper_id),
+        // folder creation, and the add-to-folder write. __notebookFails fails
+        // every read, __notebookFailsOnce only the first — which is how the
+        // retry paths are exercised; __folderAddFails simulates a 409 name
+        // collision so the reuse-existing-folder path runs.
+        case 'notebookFolders':
+          notebookFoldersCalls++;
+          if (META.__notebookFails ||
+              (META.__notebookFailsOnce && notebookFoldersCalls === 1)) {
+            reply = { success: false, error: 'server unreachable' };
+          } else {
+            reply = { success: true, folders: META.__notebookFolders || [] };
+          }
+          break;
+        case 'notebookFolderAdd':
+          reply = META.__folderAddFails
+            ? { success: false, error: 'A folder with this name already exists' }
+            : { success: true, folder: { id: 42, name: msg.name, notes: [] } };
+          break;
+        case 'notebookNoteAdd':
+          reply = { success: true, added: true, note_id: 7 };
           break;
         default:
           reply = { success: true };
@@ -330,6 +353,23 @@ let typed = null;
   for (const iv of intervals) { try { iv.fn(); } catch (e) { logs.push('ERROR poll ' + e.message); } }
   for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
 
+  // Optionally click a control before typing (e.g. open the notebook picker,
+  // whose input only exists once it is rendered), then flush so the type step
+  // can find its target.
+  if (META.__open) {
+    const el = findDeep(bodyEl0(), META.__open);
+    if (el) {
+      if (typeof el.focus === 'function') el.focus();
+      for (const fn of (el.listeners.click || [])) {
+        try { fn({ stopPropagation() {}, preventDefault() {} }); }
+        catch (e) { logs.push('ERROR open ' + e.message); }
+      }
+    } else {
+      logs.push('ERROR open ' + META.__open + ' (not found)');
+    }
+    for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r));
+  }
+
   // Optionally type into a rendered input (and press a key) before clicking,
   // so the tag editor can be exercised.
   if (META.__type) {
@@ -434,6 +474,20 @@ let typed = null;
     savePayload: (messages.find(m => m.action === 'savePaper') || {}).paper || null,
     saveKey: ((messages.find(m => m.action === 'savePaper') || {}).paper || {}).id || null,
     deleteKey: (messages.find(m => m.action === 'deletePaper') || {}).key || null,
+    notebookNoteAddPayload: (() => {
+      const m = messages.filter(x => x.action === 'notebookNoteAdd');
+      return m.length ? m[m.length - 1] : null;
+    })(),
+    notebookFolderAddName: (() => {
+      const m = messages.filter(x => x.action === 'notebookFolderAdd');
+      return m.length ? m[m.length - 1].name : null;
+    })(),
+    nbInputValue: (() => {
+      const pe = bodyEl0();
+      const el = pe ? findDeep(pe, '.arx-nb-new-input') : null;
+      return el ? (el.value || '') : null;
+    })(),
+    notebookFoldersCalls,
     logs,
     intervalCount: intervals.length,
   }, null, 0));

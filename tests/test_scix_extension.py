@@ -430,11 +430,34 @@ class PanelBehaviourTests(unittest.TestCase):
         self.assertIn("paper page, identifier " + self.BIB, joined)
         self.assertIn("panel attached", joined)
 
+    # --- notebook picker ---
+
+    def test_the_notebook_button_files_the_paper_by_bibcode(self):
+        # A journal-only paper has no arXiv ID: its ADS bibcode is the
+        # storage key everywhere, so the notebook row must use it too — and
+        # carry the scixplorer URL so the Notebook page can link back.
+        out = self._run(f"/abs/{self.BIB}/abstract", meta={
+            "__notebookFolders": [
+                {"id": 1, "name": "To read", "notes": []},
+                {"id": 2, "name": "AGN", "notes": [{"paper_id": "other"}]},
+            ],
+            "__click": ".arx-notebook,.arx-nb-add",
+        })
+        self.assertIn("notebookNoteAdd", out["messages"])
+        payload = out["notebookNoteAddPayload"]
+        self.assertEqual(payload["folderId"], 1)
+        self.assertEqual(payload["paper"]["id"], self.BIB)
+        self.assertIn("scixplorer.org/abs/" + self.BIB, payload["url"])
+        self.assertIn("Added to “To read” ✓", out["statusHtml"])
+        self.assertIn("✓ Notebook", out["panelHtml"])
+
 
 class BackgroundRelayTests(unittest.TestCase):
     def test_panel_relay_actions_exist(self):
         for action in ("savedPapers", "scixResolve", "arxivResolve",
-                       "savePaper", "deletePaper", "updateTags"):
+                       "savePaper", "deletePaper", "updateTags",
+                       "notebookFolders", "notebookFolderAdd",
+                       "notebookNoteAdd"):
             self.assertIn(f"case '{action}':", BACKGROUND_JS)
 
     def test_no_stale_scix_prefixed_panel_relays_remain(self):

@@ -1,9 +1,10 @@
 // Shared ArXistant page panel.
 //
-// One implementation of the floating panel — save, tag and chat — driven by a
-// small per-site adapter, so scixplorer.org and arxiv.org behave identically
-// instead of each carrying a copy of the same logic. The panel deliberately
-// does not repeat the abstract: the host page is already showing it.
+// One implementation of the floating panel — save, tag, chat and notebook —
+// driven by a small per-site adapter, so scixplorer.org and arxiv.org behave
+// identically instead of each carrying a copy of the same logic. The panel
+// deliberately does not repeat the abstract: the host page is already showing
+// it.
 //
 // An adapter supplies:
 //   site              name used in console diagnostics
@@ -68,6 +69,13 @@
       serverOrigin: null,
       serverError: '',
       collapsed: false,
+      // Notebook picker. notebookFolders is null until a load succeeds, so a
+      // failed load can be retried by opening the picker; notebookIds mirrors
+      // every folder's paper_ids so the button can show the filed state.
+      notebookOpen: false,
+      notebookFolders: null,
+      notebookIds: null,
+      notebookError: '',
     };
 
     let panel = null;
@@ -304,7 +312,137 @@
                   '_blank', 'noopener');
     }
 
+    // ---------- notebook ----------
+
+    async function loadNotebook() {
+      const resp = await send('notebookFolders');
+      if (resp.success && Array.isArray(resp.folders)) {
+        state.notebookFolders = resp.folders;
+        state.notebookIds = new Set();
+        resp.folders.forEach(f => (f.notes || []).forEach(
+          n => state.notebookIds.add(n.paper_id)));
+        state.notebookError = '';
+      } else {
+        // Keep the previous snapshot (possibly none) and remember why, so the
+        // picker can show the reason instead of a silent empty list.
+        state.notebookFolders = null;
+        state.notebookError = resp.error || 'Could not load the notebook folders.';
+      }
+    }
+
+    async function toggleNotebook() {
+      if (!state.paper) return;
+      state.notebookOpen = !state.notebookOpen;
+      render();
+      // A failed or first-time load retries when the picker opens; a loaded
+      // list is reused, like the saved-paper list is.
+      if (state.notebookOpen && state.notebookFolders === null) {
+        await loadNotebook();
+        render();
+      }
+    }
+
+    async function addToNotebookFolder(folder) {
+      if (!state.paper || !folder) return;
+      setStatus('Adding to “' + folder.name + '”…');
+      // A notebook row stands on its own — the paper does not need to be saved
+      // first. The storage key travels as paper_id, so the same paper filed
+      // from the Daily page and from here is one row there too.
+      const resp = await send('notebookNoteAdd', {
+        folderId: folder.id, paper: state.paper, url: location.href
+      });
+      if (!resp.success) {
+        setStatus(resp.error || 'Could not add this paper to the folder.', true);
+        return;
+      }
+      // Patch the local snapshot so the row and the button flip without a
+      // refetch; the next page view reloads the authoritative list anyway.
+      const notes = folder.notes || (folder.notes = []);
+      if (!notes.some(n => n.paper_id === state.paper.id)) {
+        notes.push({ paper_id: state.paper.id });
+      }
+      if (state.notebookIds) state.notebookIds.add(state.paper.id);
+      else state.notebookIds = new Set([state.paper.id]);
+      render();
+      setStatus(resp.added === false
+        ? 'Already in “' + folder.name + '”.'
+        : 'Added to “' + folder.name + '” ✓');
+    }
+
+    async function createNotebookFolderAndAdd(raw) {
+      const name = String(raw == null ? '' : raw).trim().slice(0, 80);
+      if (!name || !state.paper) {
+        setStatus('Enter a folder name first.', true);
+        return;
+      }
+      setStatus('Creating “' + name + '”…');
+      const resp = await send('notebookFolderAdd', { name: name });
+      let folder = resp.success && resp.folder ? resp.folder : null;
+      if (!folder) {
+        // Most likely a 409: a folder with this name already exists. Reuse it
+        // rather than failing, like the Daily page's editor does.
+        await loadNotebook();
+        folder = (state.notebookFolders || []).find(
+          f => String(f.name).toLowerCase() === name.toLowerCase());
+        if (!folder) {
+          render();
+          setStatus(resp.error || 'Could not create the folder.', true);
+          return;
+        }
+        await addToNotebookFolder(folder);
+        return;
+      }
+      // Clear the box while the old DOM input is still the one whose value
+      // render() carries across the innerHTML swap.
+      const el = bodyEl() && bodyEl().querySelector('.arx-nb-new-input');
+      if (el) el.value = '';
+      if (Array.isArray(state.notebookFolders)) {
+        if (!state.notebookFolders.some(f => f.id === folder.id)) {
+          state.notebookFolders.push(folder);
+        }
+      } else {
+        // The list never loaded, but the folder exists now: show at least it.
+        state.notebookFolders = [folder];
+      }
+      render();
+      await addToNotebookFolder(folder);
+    }
+
     // ---------- rendering ----------
+
+    function notebookHtml() {
+      if (state.notebookFolders === null) {
+        return '<div class="arx-nb">' +
+          '<div class="arx-nb-head">📓 Notebook folders</div>' +
+          '<div class="arx-nb-msg">' +
+          escapeText(state.notebookError || 'Loading folders…') +
+          (state.notebookError
+            ? ' <button class="arx-nb-retry">Retry</button>' : '') +
+          '</div></div>';
+      }
+      const key = state.paper ? state.paper.id : null;
+      const rows = state.notebookFolders.map(f => {
+        const inFolder = !!key &&
+          (f.notes || []).some(n => n.paper_id === key);
+        return '<div class="arx-nb-row">' +
+          '<span class="arx-nb-name">📁 ' + escapeText(f.name) + '</span>' +
+          (inFolder
+            ? '<button class="arx-nb-add arx-nb-in" disabled>✓ Added</button>'
+            : '<button class="arx-nb-add">Add</button>') +
+          '</div>';
+      }).join('');
+      return '<div class="arx-nb">' +
+        '<div class="arx-nb-head">Add to a Notebook folder</div>' +
+        '<div class="arx-nb-folders">' +
+        (rows || '<div class="arx-nb-msg">No folders yet — create one below.</div>') +
+        '</div>' +
+        '<div class="arx-nb-new">' +
+        '<input class="arx-nb-new-input" type="text" maxlength="80" ' +
+        'placeholder="New folder name…">' +
+        '<button class="arx-nb-new-add">Create &amp; add</button>' +
+        '</div>' +
+        '</div>';
+    }
 
     function render() {
       const p = ensurePanel();
@@ -332,13 +470,15 @@
           escapeText(state.error || 'Loading this paper…') + '</div>';
       } else {
         const saved = state.savedIds && state.savedIds.has(paper.id);
+        const inNotebook = !!(state.notebookIds &&
+                              state.notebookIds.has(paper.id));
         const meta = [paper.year,
           paper.citation_count ? paper.citation_count + ' citations' : '']
           .filter(Boolean).join(' · ');
         // The host page already shows the abstract, so the panel does not
-        // repeat it. It only offers what that page cannot: save, tag, chat.
-        // The abstract is still carried in state.paper and sent on save — it
-        // feeds ML training and Chat grounding.
+        // repeat it. It only offers what that page cannot: save, tag, chat,
+        // notebook. The abstract is still carried in state.paper and sent on
+        // save — it feeds ML training and Chat grounding.
         html =
           '<div class="arx-key">' + escapeText(adapter.label(paper)) + '</div>' +
           '<div class="arx-title">' + escapeText(paper.title || paper.id) + '</div>' +
@@ -358,20 +498,34 @@
           '<button class="arx-save' + (saved ? ' arx-saved' : '') + '">' +
           (saved ? '✓ Saved' : '💾 Save') + '</button>' +
           '<button class="arx-chat">💬 Chat</button>' +
+          '<button class="arx-notebook' +
+          (inNotebook ? ' arx-in-notebook' : '') + '"' +
+          ' title="' + (inNotebook
+            ? 'This paper is in a Notebook folder — click to file it in another'
+            : 'Add this paper to a Notebook folder') + '">' +
+          (inNotebook ? '✓ Notebook' : '📓 Notebook') + '</button>' +
           '</div>' +
+          (state.notebookOpen ? notebookHtml() : '') +
           '<div class="arx-status"></div>';
       }
 
       // Replacing innerHTML destroys the input and builds a new one, which
       // loses both what the user typed and the focus — so adding a tag would
       // otherwise force a click back into the box before the next one. Carry
-      // the value, the caret, and the focus across the swap.
+      // the value, the caret, and the focus across the swap. The notebook
+      // picker's new-folder input gets the same treatment.
       const prevInput = body.querySelector('.arx-tag-input');
       const typed = prevInput ? prevInput.value : '';
       const hadFocus = !!(prevInput && document.activeElement === prevInput);
       const caret = (hadFocus || wantTagFocus) && prevInput &&
                     typeof prevInput.selectionStart === 'number'
         ? prevInput.selectionStart : null;
+      const prevNbInput = body.querySelector('.arx-nb-new-input');
+      const nbTyped = prevNbInput ? prevNbInput.value : '';
+      const nbHadFocus = !!(prevNbInput && document.activeElement === prevNbInput);
+      const nbCaret = nbHadFocus && prevNbInput &&
+                      typeof prevNbInput.selectionStart === 'number'
+        ? prevNbInput.selectionStart : null;
       body.innerHTML = html;
 
       const input = body.querySelector('.arx-tag-input');
@@ -416,6 +570,47 @@
       const chatBtn = body.querySelector('.arx-chat');
       if (chatBtn) chatBtn.addEventListener('click', openChat);
 
+      // Notebook picker. Rows render in state.notebookFolders order, so
+      // index i is that folder — the same convention the tag chips use.
+      const nbBtn = body.querySelector('.arx-notebook');
+      if (nbBtn) nbBtn.addEventListener('click', toggleNotebook);
+      body.querySelectorAll('.arx-nb-add').forEach((btn, i) => {
+        btn.addEventListener('click', () => {
+          const folders = state.notebookFolders;
+          if (folders && folders[i]) addToNotebookFolder(folders[i]);
+        });
+      });
+      const nbRetry = body.querySelector('.arx-nb-retry');
+      if (nbRetry) nbRetry.addEventListener('click', async () => {
+        nbRetry.disabled = true;
+        await loadNotebook();
+        render();
+      });
+      const nbInput = body.querySelector('.arx-nb-new-input');
+      if (nbInput) {
+        if (nbTyped) nbInput.value = nbTyped;
+        if (nbHadFocus) {
+          try {
+            nbInput.focus();
+            if (nbCaret != null && typeof nbInput.setSelectionRange === 'function') {
+              const pos = Math.min(nbCaret, (nbInput.value || '').length);
+              nbInput.setSelectionRange(pos, pos);
+            }
+          } catch (e) { /* focus is best-effort */ }
+        }
+        nbInput.addEventListener('keydown', e => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            createNotebookFolderAndAdd(nbInput.value);
+          }
+        });
+      }
+      const nbNewBtn = body.querySelector('.arx-nb-new-add');
+      if (nbNewBtn) nbNewBtn.addEventListener('click', () => {
+        const el = bodyEl() && bodyEl().querySelector('.arx-nb-new-input');
+        createNotebookFolderAndAdd(el ? el.value : '');
+      });
+
       if (state.serverError) {
         setStatus(state.serverError, true);
       } else if (state.savedIds === null) {
@@ -435,6 +630,8 @@
       state.error = '';
       state.serverError = '';
       state.tags = [];
+      // The picker's ✓-rows describe one paper; a new page closes it.
+      state.notebookOpen = false;
       log('info', id ? 'paper page, identifier ' + id
                      : 'not a paper page (' + location.pathname + ')');
       render();
@@ -443,7 +640,10 @@
 
       if (!state.savedIdsTried) {
         state.savedIdsTried = true;
-        await loadLibrary();
+        // The notebook snapshot loads with the library: both are one cheap
+        // local read, and together they power the save and 📓 button states.
+        // A notebook failure is not fatal — the picker retries on open.
+        await Promise.all([loadLibrary(), loadNotebook()]);
         if (state.savedIds === null) {
           state.serverError = 'Could not reach the ArXistant server.';
         }

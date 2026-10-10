@@ -195,7 +195,8 @@
 }
 
 #arxistant-panel .arx-save,
-#arxistant-panel .arx-chat {
+#arxistant-panel .arx-chat,
+#arxistant-panel .arx-notebook {
   flex: 1;
   border: none;
   border-radius: 6px;
@@ -204,6 +205,13 @@
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Its label is the longest of the three, so it gets a slightly larger share
+   of the row; the others shrink to their content's width. */
+#arxistant-panel .arx-notebook {
+  flex: 1.25;
 }
 
 #arxistant-panel .arx-save {
@@ -218,9 +226,136 @@
   background: #5e35b1;
 }
 
+/* Purple/green match the 📓 buttons on the ArXistant pages, so the panel
+   reads as the same Notebook feature. */
+#arxistant-panel .arx-notebook {
+  background: #6a4fb3;
+}
+
+#arxistant-panel .arx-notebook.arx-in-notebook {
+  background: #2e7d32;
+}
+
 #arxistant-panel .arx-save:hover,
-#arxistant-panel .arx-chat:hover {
+#arxistant-panel .arx-chat:hover,
+#arxistant-panel .arx-notebook:hover {
   opacity: 0.9;
+}
+
+/* Notebook folder picker, shown below the actions while it is open. */
+#arxistant-panel .arx-nb {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #f7f5fc;
+  border: 1px solid #ded8ee;
+  border-radius: 6px;
+}
+
+#arxistant-panel .arx-nb-head {
+  font-weight: 600;
+  font-size: 11px;
+  color: #4a3a80;
+  margin-bottom: 6px;
+}
+
+#arxistant-panel .arx-nb-folders {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+#arxistant-panel .arx-nb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#arxistant-panel .arx-nb-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#arxistant-panel .arx-nb-add {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  background: #6a4fb3;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+#arxistant-panel .arx-nb-add:hover {
+  background: #563f96;
+}
+
+#arxistant-panel .arx-nb-add.arx-nb-in,
+#arxistant-panel .arx-nb-add:disabled {
+  background: #2e7d32;
+  cursor: default;
+}
+
+#arxistant-panel .arx-nb-new {
+  display: flex;
+  gap: 5px;
+  border-top: 1px dashed #ded8ee;
+  padding-top: 7px;
+}
+
+#arxistant-panel .arx-nb-new-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: inherit;
+  background: #fff;
+  color: #333;
+}
+
+#arxistant-panel .arx-nb-new-input:focus {
+  outline: none;
+  border-color: #6a4fb3;
+}
+
+#arxistant-panel .arx-nb-new-add {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  background: #00796b;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+#arxistant-panel .arx-nb-new-add:hover {
+  background: #00695c;
+}
+
+#arxistant-panel .arx-nb-msg {
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+}
+
+#arxistant-panel .arx-nb-msg .arx-nb-retry {
+  margin-left: 4px;
+  padding: 1px 8px;
+  background: #6a4fb3;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 10px;
+  font-style: normal;
+  cursor: pointer;
 }
 
 #arxistant-panel .arx-status {

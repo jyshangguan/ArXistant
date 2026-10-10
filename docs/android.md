@@ -195,7 +195,7 @@ keyPassword=<key-password>
 `app/build.gradle` reads `keystore.properties` when present and applies it to
 the `release` build type. Keep a backup of both files; without the same key you
 cannot push an update over an existing install. The current Android version is
-**v0.4.6** (`versionName "0.4.6"`, `versionCode 14` in `app/build.gradle`);
+**v0.4.7** (`versionName "0.4.7"`, `versionCode 15` in `app/build.gradle`);
 bump both whenever you publish a new release so the in-app update check can
 detect it.
 
@@ -237,8 +237,9 @@ stored encrypted via the Keystore backend.
 
 Once connected, the phone syncs **automatically every 30 minutes** (the default
 `interval_minutes`), and also syncs before every manual refresh. Syncing uses
-the same last-write-wins versioned snapshot as desktop, so the phone and your
-Mac stay in step.
+the same last-write-wins versioned snapshot as desktop — saved papers,
+publications, custom keywords, and the Notebook's folders and notes — so the
+phone and your Mac stay in step, reading list included.
 
 ## Current limitations (to be aware of)
 

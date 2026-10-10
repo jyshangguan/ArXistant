@@ -363,6 +363,41 @@ class ChatPageHtmlTests(unittest.TestCase):
                       "pdfStatus", "paperInfo", "chatMessages"):
             self.assertIn(f'id="{ident}"', arxiv_db_server.CHAT_PAGE_HTML)
 
+    def test_pane_resize_uses_pointer_capture(self):
+        # Dragging the divider over the text/PDF iframe used to stall: the
+        # iframe swallowed the mousemove events the window listener needed.
+        # The fix captures the pointer on the resizer, so every move/up
+        # arrives there regardless of what the cursor travels over
+        # (issue #12).
+        html = arxiv_db_server.CHAT_PAGE_HTML
+        self.assertIn("resizer.setPointerCapture(e.pointerId)", html)
+        self.assertIn("resizer.addEventListener('pointerdown'", html)
+        self.assertIn("resizer.addEventListener('pointermove'", html)
+        # Interrupted drags must not leave the pane stuck in resize mode.
+        self.assertIn("resizer.addEventListener('pointercancel'", html)
+        self.assertIn("resizer.addEventListener('lostpointercapture'", html)
+        # The old, iframe-fragile pattern must be gone from the resize
+        # handler for good. (The text-selection feature still listens on
+        # the window for mouse releases outside the iframe — that is a
+        # deliberate part of issue #10's fix, not the pane drag.)
+        import re
+        m = re.search(r"function initChatResize\(\).*?\n    }", html, re.S)
+        self.assertIsNotNone(m, "initChatResize function not found")
+        resize_src = m.group(0)
+        self.assertNotIn("window.addEventListener('mousemove'", resize_src)
+        self.assertNotIn("window.addEventListener('mouseup'", resize_src)
+        self.assertNotIn("addEventListener('mousedown'", resize_src)
+
+    def test_pane_resize_keeps_clamps_and_touch_drag(self):
+        html = arxiv_db_server.CHAT_PAGE_HTML
+        # touch-action:none lets touch/touchpad drags resize instead of
+        # scrolling; the 280–820 clamp is applied both while dragging and
+        # when a saved width is restored (issue #12).
+        self.assertIn("touch-action: none", html)
+        self.assertIn("Math.max(280, Math.min(820,", html)
+        self.assertIn("Math.max(280, Math.min(820, parseInt(saved.chatW)", html)
+        self.assertIn("savePaneState()", html)
+
 
 class FulltextTests(unittest.TestCase):
     HTML = (b"<html><head><title>t</title></head><body>"

@@ -62,6 +62,20 @@ class TagUiHtmlTests(unittest.TestCase):
             self.assertIn("tag-ghost-prefix", script)
             self.assertNotIn("tag-suggestion", script)
 
+    def test_tag_editor_suggestion_is_tappable_for_touch(self):
+        # Android soft keyboards have no Tab key, so completing the
+        # suggested tag must not depend on one (issue #13): a small Tab
+        # button inside the input wrap appears whenever a suggestion is
+        # showing, and tapping it fills in the suggestion. The keyboard
+        # Tab path keeps working alongside it.
+        for script in (server.SAVE_BUTTON_SCRIPT, ranker.SAVE_BUTTON_SCRIPT):
+            self.assertIn('class="tag-complete"', script)
+            self.assertIn("completeBtn.onclick", script)
+            self.assertIn("inputWrap.classList.toggle('suggesting'", script)
+            self.assertIn(".tag-input-wrap.suggesting .tag-complete", script)
+            self.assertIn(".tag-input-wrap.suggesting input", script)
+            self.assertIn("e.key === 'Tab'", script)
+
     def test_saved_papers_page_has_tag_filter_and_editor(self):
         self.assertIn('id="tagBar"', server.DATABASE_VIEWER_HTML)
         self.assertIn("Filter by tags", server.DATABASE_VIEWER_HTML)

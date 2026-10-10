@@ -1,8 +1,9 @@
 """Cloud sync engine for the ArXistant paper database.
 
-The paper database (saved papers + publications + custom keywords) is exported
-to a versioned JSON snapshot, merged with a remote snapshot using per-record
-last-write-wins timestamps, and pushed to a storage provider.
+The paper database (saved papers + publications + custom keywords + the
+Notebook's reading folders and notes) is exported to a versioned JSON
+snapshot, merged with a remote snapshot using per-record last-write-wins
+timestamps, and pushed to a storage provider.
 
 Providers implement a small ``CloudProvider`` interface. Two providers ship
 today: a local-folder provider (useful for a Dropbox/iCloud-synced folder and
@@ -25,7 +26,7 @@ from datetime import datetime, timezone
 from arxistant_paths import data_path
 
 SYNC_FILENAME = "arxistant_sync.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EPOCH = "1970-01-01T00:00:00+00:00"
 
 # Non-id columns that participate in sync. The autoincrement ``id`` column is
@@ -40,6 +41,28 @@ PUB_COLUMNS = [
     "bibcode", "title", "authors", "abstract", "keywords", "year",
     "date_added", "updated_at",
 ]
+
+# Notebook reading folders join the snapshot (issue #14). Folders sync by a
+# stable ``sync_key`` so a rename keeps its identity; note keys are derived
+# from (folder key, paper id) so the same paper filed on two devices merges
+# into one note instead of duplicating. The separator cannot occur in folder
+# names or paper ids (arXiv IDs, bibcodes, local- ids).
+NOTEBOOK_KEY_SEP = "\x1f"
+NOTEBOOK_FOLDER_COLUMNS = ["sync_key", "name", "created_at", "updated_at"]
+NOTEBOOK_NOTE_COLUMNS = [
+    "sync_key", "paper_id", "title", "authors", "url", "note",
+    "created_at", "updated_at",
+]
+
+
+def new_sync_key():
+    """A fresh device-local-unique folder sync key."""
+    return uuid.uuid4().hex[:12]
+
+
+def notebook_note_sync_key(folder_sync_key, paper_id):
+    """Stable cross-device identity for a notebook note."""
+    return f"{folder_sync_key}{NOTEBOOK_KEY_SEP}{paper_id}"
 
 _SYNC_LOCK = threading.Lock()
 _auto_sync_timer = None
@@ -184,6 +207,48 @@ def migrate_db(conn):
         )
     """)
 
+    # Notebook sync columns (issue #14). Existing folders get fresh keys and
+    # the epoch timestamp so any real edit on any device wins over them;
+    # existing notes get their derived key. Databases from before the
+    # Notebook feature (or sync-only test databases) simply have no notebook
+    # tables, which the export/import paths tolerate.
+    for table in ("notebook_folders", "notebook_notes"):
+        if table not in existing_tables:
+            continue
+        cur.execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in cur.fetchall()}
+        if "sync_key" not in columns:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN sync_key TEXT")
+        if "updated_at" not in columns:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN updated_at TEXT")
+
+    if "notebook_folders" in existing_tables:
+        cur.execute("SELECT id FROM notebook_folders "
+                    "WHERE sync_key IS NULL OR sync_key = ''")
+        for (folder_id,) in cur.fetchall():
+            cur.execute("UPDATE notebook_folders SET sync_key = ? WHERE id = ?",
+                        (new_sync_key(), folder_id))
+        cur.execute("UPDATE notebook_folders SET updated_at = ? "
+                    "WHERE updated_at IS NULL OR updated_at = ''", (EPOCH,))
+
+    if "notebook_notes" in existing_tables:
+        cur.execute(
+            "UPDATE notebook_notes SET sync_key = "
+            "(SELECT f.sync_key FROM notebook_folders f "
+            " WHERE f.id = notebook_notes.folder_id) || ? || paper_id "
+            "WHERE sync_key IS NULL OR sync_key = ''",
+            (NOTEBOOK_KEY_SEP,))
+        cur.execute("UPDATE notebook_notes SET updated_at = ? "
+                    "WHERE updated_at IS NULL OR updated_at = ''", (EPOCH,))
+
+    # Unique indexes after the backfill, so the merge can key on sync_key.
+    if "notebook_folders" in existing_tables:
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "idx_notebook_folders_sync_key ON notebook_folders(sync_key)")
+    if "notebook_notes" in existing_tables:
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "idx_notebook_notes_sync_key ON notebook_notes(sync_key)")
+
     # Rows created before sync existed get the epoch, so any real edit on any
     # device wins over them.
     if "saved_papers" in existing_tables:
@@ -265,14 +330,42 @@ def _ts(value):
     return value or EPOCH
 
 
+def _table_exists(conn, table):
+    cur = conn.execute("SELECT 1 FROM sqlite_master "
+                       "WHERE type='table' AND name=?", (table,))
+    return cur.fetchone() is not None
+
+
+def _notebook_note_rows(cur):
+    """Note rows shaped like the snapshot: folder identified by its sync key.
+
+    ``folder_id`` is device-local and would collide across installs, so the
+    snapshot carries the folder's ``sync_key`` instead; the import resolves
+    it back to a local folder id.
+    """
+    cur.execute(
+        "SELECT n.sync_key, f.sync_key AS folder_key, n.paper_id, n.title, "
+        "       n.authors, n.url, n.note, n.created_at, n.updated_at "
+        "FROM notebook_notes n "
+        "JOIN notebook_folders f ON f.id = n.folder_id "
+        "WHERE n.sync_key IS NOT NULL AND n.sync_key != ''")
+    return [dict(r) for r in cur.fetchall()]
+
+
 def export_snapshot(db_path=None):
     db_path = db_path or get_db_path()
     conn = _connect(db_path)
     try:
         migrate_db(conn)
-        saved = _select_rows(conn.cursor(), "saved_papers", SAVED_COLUMNS)
-        pubs = _select_rows(conn.cursor(), "my_publications", PUB_COLUMNS)
-        tombstones = _select_tombstones(conn.cursor())
+        cur = conn.cursor()
+        saved = _select_rows(cur, "saved_papers", SAVED_COLUMNS)
+        pubs = _select_rows(cur, "my_publications", PUB_COLUMNS)
+        notebook_folders = (_select_rows(cur, "notebook_folders",
+                                         NOTEBOOK_FOLDER_COLUMNS)
+                            if _table_exists(conn, "notebook_folders") else [])
+        notebook_notes = (_notebook_note_rows(cur)
+                          if _table_exists(conn, "notebook_notes") else [])
+        tombstones = _select_tombstones(cur)
     finally:
         conn.close()
 
@@ -283,6 +376,8 @@ def export_snapshot(db_path=None):
         "exported_at": now_iso(),
         "saved_papers": saved,
         "my_publications": pubs,
+        "notebook_folders": notebook_folders,
+        "notebook_notes": notebook_notes,
         "custom_positive": _load_keywords(db_path, "positive"),
         "custom_negative": _load_keywords(db_path, "negative"),
         "tombstones": tombstones,
@@ -365,6 +460,202 @@ def _reconcile(cur, table, key, columns, local_rows, merged_records, merged_tomb
     return {"added": added, "updated": updated, "deleted": deleted, "kept": len(merged_records)}
 
 
+# ---------------------------------------------------------------------------
+# Notebook merge (issue #14)
+# ---------------------------------------------------------------------------
+
+def _merge_notebook(cur, snapshot, local_tombs):
+    """Merge the Notebook part of a remote snapshot into the local database.
+
+    Folders merge last-write-wins on their stable ``sync_key`` (a rename keeps
+    its identity, so it propagates as a rename); notes merge the same way on
+    their derived (folder key, paper id) key. ``folder_id`` is device-local,
+    so snapshot notes carry their folder's ``sync_key`` and are resolved back
+    to a local id here.
+
+    A remote folder whose *name* matches a local folder with a different key
+    is the same user-facing folder (the seeded "To read" on both devices, or
+    the same name created on both): the local row adopts the remote key —
+    re-keying its notes with it — so their records and notes merge instead of
+    duplicating.
+
+    Returns per-table stats, or None when this database predates the Notebook
+    feature (no notebook tables to merge into).
+    """
+    if not (_table_exists(cur, "notebook_folders")
+            and _table_exists(cur, "notebook_notes")):
+        return None
+
+    remote_folders = snapshot.get("notebook_folders") or []
+    remote_notes = snapshot.get("notebook_notes") or []
+    remote_tombs = snapshot.get("tombstones") or []
+
+    # ── Adoption pass ─────────────────────────────────────────────────────
+    local_folders = [dict(r) for r in cur.execute(
+        "SELECT id, sync_key, name FROM notebook_folders")]
+    for rec in remote_folders:
+        remote_key = rec.get("sync_key")
+        remote_name = rec.get("name")
+        if not remote_key or not remote_name:
+            continue
+        if any(f["sync_key"] == remote_key for f in local_folders):
+            continue
+        namesake = next(
+            (f for f in local_folders if f["name"] == remote_name), None)
+        if namesake is not None:
+            cur.execute(
+                "UPDATE notebook_folders SET sync_key = ? WHERE id = ?",
+                (remote_key, namesake["id"]))
+            # The folder's notes follow its new key so they meet their remote
+            # twins in the merge below (keys are derived from the folder key).
+            cur.execute(
+                "UPDATE notebook_notes SET sync_key = ? || ? || paper_id "
+                "WHERE folder_id = ?",
+                (remote_key, NOTEBOOK_KEY_SEP, namesake["id"]))
+            namesake["sync_key"] = remote_key
+
+    # ── Folders ───────────────────────────────────────────────────────────
+    local_folder_rows = _select_rows(cur, "notebook_folders",
+                                     NOTEBOOK_FOLDER_COLUMNS)
+    folders_merged, folder_tombs = merge_table(
+        local_folder_rows, remote_folders,
+        [t for t in local_tombs if t["table_name"] == "notebook_folders"],
+        [t for t in remote_tombs if t["table_name"] == "notebook_folders"],
+        "sync_key",
+    )
+    # Folder names are UNIQUE in the schema, and the merge can still surface
+    # one twice (a device renames folder A to a name another device already
+    # uses on folder B). The newest record keeps the exact name; the older
+    # one gets a numbered suffix so both folders survive the merge.
+    taken = set()
+    for rec in sorted(folders_merged,
+                      key=lambda r: _ts(r.get("updated_at")), reverse=True):
+        name = rec.get("name") or "Untitled"
+        if name in taken:
+            base, i = name, 2
+            while name in taken:
+                name = f"{base} ({i})"
+                i += 1
+            rec["name"] = name
+        taken.add(rec["name"])
+
+    folder_stats = _reconcile_notebook_folders(
+        cur, local_folder_rows, folders_merged, folder_tombs)
+
+    # ── Notes ─────────────────────────────────────────────────────────────
+    local_note_rows = _notebook_note_rows(cur)
+    notes_merged, note_tombs = merge_table(
+        local_note_rows, remote_notes,
+        [t for t in local_tombs if t["table_name"] == "notebook_notes"],
+        [t for t in remote_tombs if t["table_name"] == "notebook_notes"],
+        "sync_key",
+    )
+    note_stats = _reconcile_notebook_notes(
+        cur, local_note_rows, notes_merged, note_tombs)
+
+    return {"notebook_folders": folder_stats, "notebook_notes": note_stats}
+
+
+def _reconcile_notebook_folders(cur, local_rows, merged_records, merged_tombs):
+    local_by_key = {r["sync_key"]: r for r in local_rows if r.get("sync_key")}
+    merged_keys = {r["sync_key"] for r in merged_records if r.get("sync_key")}
+
+    added = updated = deleted = 0
+    # Deletions first: a tombstoned folder must not keep blocking a name.
+    for k, deleted_at in merged_tombs.items():
+        cur.execute("DELETE FROM notebook_folders WHERE sync_key = ?", (k,))
+        cur.execute(
+            "INSERT OR REPLACE INTO sync_tombstones "
+            "(table_name, record_key, deleted_at) VALUES (?, ?, ?)",
+            ("notebook_folders", k, deleted_at))
+        if k in local_by_key:
+            deleted += 1
+
+    # Folder names are UNIQUE, and the merge can hand two rows each other's
+    # names (a rename that lands on a name another folder is leaving).
+    # Park every name that is about to move on a key-unique temporary first,
+    # so the upserts below cannot collide mid-way, in any order. The whole
+    # import is one transaction, so a failure rolls the parked names back.
+    for rec in merged_records:
+        k = rec["sync_key"]
+        local = local_by_key.get(k)
+        if local is not None and local.get("name") != rec.get("name"):
+            cur.execute(
+                "UPDATE notebook_folders SET name = ? WHERE sync_key = ?",
+                ("\x00" + k, k))
+
+    for rec in merged_records:
+        k = rec["sync_key"]
+        if k not in local_by_key:
+            added += 1
+        elif _ts(local_by_key[k].get("updated_at")) < _ts(rec.get("updated_at")):
+            updated += 1
+        _upsert_row(cur, "notebook_folders", "sync_key",
+                    NOTEBOOK_FOLDER_COLUMNS, rec)
+    for k in merged_keys:
+        cur.execute(
+            "DELETE FROM sync_tombstones WHERE table_name = ? AND record_key = ?",
+            ("notebook_folders", k))
+    return {"added": added, "updated": updated, "deleted": deleted,
+            "kept": len(merged_records)}
+
+
+def _reconcile_notebook_notes(cur, local_rows, merged_records, merged_tombs):
+    folder_ids = {}
+    for r in cur.execute("SELECT id, sync_key FROM notebook_folders"):
+        if r["sync_key"]:
+            folder_ids[r["sync_key"]] = r["id"]
+    local_by_key = {r["sync_key"]: r for r in local_rows if r.get("sync_key")}
+    merged_keys = {r["sync_key"] for r in merged_records if r.get("sync_key")}
+
+    added = updated = deleted = 0
+    for k, deleted_at in merged_tombs.items():
+        cur.execute("DELETE FROM notebook_notes WHERE sync_key = ?", (k,))
+        cur.execute(
+            "INSERT OR REPLACE INTO sync_tombstones "
+            "(table_name, record_key, deleted_at) VALUES (?, ?, ?)",
+            ("notebook_notes", k, deleted_at))
+        if k in local_by_key:
+            deleted += 1
+    for rec in merged_records:
+        k = rec.get("sync_key")
+        folder_id = folder_ids.get(rec.get("folder_key"))
+        if folder_id is None:
+            # The note's folder lost the merge (deleted on the winning
+            # side), so the note goes with it. No tombstone: if a newer
+            # folder record ever beats that tombstone, its notes return.
+            continue
+        if k not in local_by_key:
+            added += 1
+        elif _ts(local_by_key[k].get("updated_at")) < _ts(rec.get("updated_at")):
+            updated += 1
+        _upsert_notebook_note(cur, rec, folder_id)
+    for k in merged_keys:
+        cur.execute(
+            "DELETE FROM sync_tombstones WHERE table_name = ? AND record_key = ?",
+            ("notebook_notes", k))
+    return {"added": added, "updated": updated, "deleted": deleted,
+            "kept": len(merged_records)}
+
+
+def _upsert_notebook_note(cur, rec, folder_id):
+    """Upsert one note row, resolving its folder key to a local folder id."""
+    cur.execute(
+        "INSERT INTO notebook_notes "
+        "(sync_key, folder_id, paper_id, title, authors, url, note, "
+        " created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(sync_key) DO UPDATE SET "
+        "folder_id=excluded.folder_id, paper_id=excluded.paper_id, "
+        "title=excluded.title, authors=excluded.authors, url=excluded.url, "
+        "note=excluded.note, created_at=excluded.created_at, "
+        "updated_at=excluded.updated_at",
+        (rec.get("sync_key"), folder_id, rec.get("paper_id"),
+         rec.get("title") or "", rec.get("authors") or "",
+         rec.get("url") or "", rec.get("note") or "",
+         rec.get("created_at") or "", rec.get("updated_at") or EPOCH))
+
+
 def import_and_merge(snapshot, db_path=None):
     """Merge a remote snapshot into the local database and persist the result.
 
@@ -408,6 +699,10 @@ def import_and_merge(snapshot, db_path=None):
         pubs_stats = _reconcile(cur, "my_publications", "bibcode", PUB_COLUMNS,
                                 local_pubs, pubs_merged, pubs_tombs)
 
+        # Snapshots from before notebook sync (schema v1) carry no notebook
+        # fields; the local notebook then simply survives and is re-uploaded.
+        notebook_stats = _merge_notebook(cur, snapshot, local_tombs)
+
         pos, neg = merge_keywords(
             _load_keywords(db_path, "positive"),
             _load_keywords(db_path, "negative"),
@@ -421,12 +716,15 @@ def import_and_merge(snapshot, db_path=None):
     finally:
         conn.close()
 
-    return {
+    result = {
         "saved_papers": saved_stats,
         "my_publications": pubs_stats,
         "keywords": {"positive": len(pos), "negative": len(neg)},
         "conflicts": 0,
     }
+    if notebook_stats:
+        result.update(notebook_stats)
+    return result
 
 
 # ---------------------------------------------------------------------------

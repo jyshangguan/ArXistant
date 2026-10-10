@@ -694,7 +694,7 @@ def _fetch_with_retries(url, headers=None, timeout=30, attempts=3, label="Remote
     last_error = "unknown network error"
     for attempt in range(1, attempts + 1):
         try:
-            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.6 (personal arXiv reader)'})
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'ArXistant/0.4.7 (personal arXiv reader)'})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read().decode('utf-8')
         except urllib.error.HTTPError as e:
@@ -1409,7 +1409,7 @@ def build_chat_request(base_url, model, messages, temperature, api_key):
     headers = {
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
-        "User-Agent": "ArXistant/0.4.6",
+        "User-Agent": "ArXistant/0.4.7",
     }
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
@@ -1633,7 +1633,7 @@ def s2_search(query, limit=10):
     """Semantic Scholar keyword search with citation counts + TLDR (keyless)."""
     url = ("https://api.semanticscholar.org/graph/v1/paper/search?query="
            + urllib.parse.quote(query) + f"&limit={limit}&fields=" + S2_FIELDS)
-    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.6"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ArXistant/0.4.7"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return [_s2_to_item(p) for p in (data.get("data") or [])]
@@ -1644,7 +1644,7 @@ def s2_related(arxiv_id, limit=10):
     url = f"https://api.semanticscholar.org/recommendations/v1/papers/?limit={limit}&fields={S2_FIELDS}"
     req = urllib.request.Request(
         url, data=json.dumps({"positivePaperIds": ["arXiv:" + arxiv_id]}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.6"},
+        headers={"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.7"},
         method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -1839,7 +1839,7 @@ def _chat_completion(base_url, model, messages, temperature, api_key, tools=None
         payload["max_tokens"] = max_tokens
     if tools:
         payload["tools"] = tools
-    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.6"}
+    headers = {"Content-Type": "application/json", "User-Agent": "ArXistant/0.4.7"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -2052,6 +2052,9 @@ def search_saved_papers(query):
 
 NOTEBOOK_NAME_MAX = 80
 NOTEBOOK_NOTE_MAX = 4000
+# Deterministic key for the seeded "To read" folder, so fresh installs share
+# it and cloud sync merges them as one folder (issue #14).
+NOTEBOOK_SEED_KEY = "seed-to-read"
 
 
 def normalize_notebook_name(name):
@@ -2061,6 +2064,25 @@ def normalize_notebook_name(name):
     """
     cleaned = " ".join(str(name or "").split())
     return cleaned[:NOTEBOOK_NAME_MAX].strip()
+
+
+def notebook_folder_sync_key(c, folder_id):
+    """The folder's stable cloud-sync key, creating one if it is missing.
+
+    init_db's migration backfills keys, so this is normally a plain read;
+    the write path only guards odd states (e.g. a hand-built test database).
+    """
+    c.execute("SELECT sync_key FROM notebook_folders WHERE id = ?",
+              (folder_id,))
+    row = c.fetchone()
+    if row is None:
+        return None
+    if row[0]:
+        return row[0]
+    key = arxistant_sync.new_sync_key()
+    c.execute("UPDATE notebook_folders SET sync_key = ? WHERE id = ?",
+              (key, folder_id))
+    return key
 
 
 def get_notebook():
@@ -2232,7 +2254,7 @@ def fetch_paper_pdf(arxiv_id):
         return path
     url = ARXIV_PDF_URL.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
     req = urllib.request.Request(
-        url, headers={"User-Agent": "ArXistant/0.4.6 (local research assistant)"})
+        url, headers={"User-Agent": "ArXistant/0.4.7 (local research assistant)"})
     temp_path = f"{path}.{threading.get_ident()}.tmp"
     try:
         # Stream straight to disk in chunks so large PDFs never sit in memory.
@@ -2655,7 +2677,7 @@ def fetch_paper_fulltext(arxiv_id):
     for tmpl in ARXIV_HTML_URLS:
         url = tmpl.format(arxiv_id=urllib.parse.quote(arxiv_id, safe="/"))
         req = urllib.request.Request(
-            url, headers={"User-Agent": "ArXistant/0.4.6 (local research assistant)"})
+            url, headers={"User-Agent": "ArXistant/0.4.7 (local research assistant)"})
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read(FULLTEXT_MAX_BYTES).decode("utf-8", "replace")
@@ -2986,7 +3008,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS notebook_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            sync_key TEXT,
+            updated_at TEXT
         )
     ''')
     c.execute('''
@@ -2999,6 +3023,8 @@ def init_db():
             url TEXT DEFAULT '',
             note TEXT DEFAULT '',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            sync_key TEXT,
+            updated_at TEXT,
             UNIQUE (folder_id, paper_id),
             FOREIGN KEY (folder_id) REFERENCES notebook_folders(id)
                 ON DELETE CASCADE
@@ -3006,7 +3032,15 @@ def init_db():
     ''')
     c.execute("SELECT COUNT(*) FROM notebook_folders")
     if notebook_first_run and c.fetchone()[0] == 0:
-        c.execute("INSERT INTO notebook_folders (name) VALUES ('To read')")
+        # The seeded folder carries a deterministic sync key so two fresh
+        # installs merge it as one folder instead of colliding on the name
+        # (issue #14; the sync migration assigns random keys to everything
+        # else).
+        c.execute(
+            "INSERT INTO notebook_folders (name, created_at, sync_key, updated_at) "
+            "VALUES ('To read', ?, ?, ?)",
+            (arxistant_sync.now_iso(), NOTEBOOK_SEED_KEY,
+             arxistant_sync.now_iso()))
 
     arxistant_sync.migrate_db(conn)
 
@@ -3853,7 +3887,7 @@ class Handler(BaseHTTPRequestHandler):
         if use_tools:
             payload["tools"] = CHAT_TOOLS
         headers = {"Content-Type": "application/json",
-                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.6"}
+                   "Accept": "text/event-stream", "User-Agent": "ArXistant/0.4.7"}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
@@ -4283,10 +4317,13 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             try:
                 c = conn.cursor()
+                now = arxistant_sync.now_iso()
                 c.execute(
-                    "INSERT INTO notebook_folders (name, created_at) VALUES (?, ?)",
-                    (name, arxistant_sync.now_iso()))
+                    "INSERT INTO notebook_folders "
+                    "(name, created_at, sync_key, updated_at) VALUES (?, ?, ?, ?)",
+                    (name, now, arxistant_sync.new_sync_key(), now))
                 conn.commit()
+                arxistant_sync.schedule_auto_sync()
                 self._send_json({"success": True,
                                  "folder": {"id": c.lastrowid, "name": name,
                                             "notes": []}})
@@ -4316,9 +4353,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"success": False, "error": "Folder not found"}, 404)
                     return
                 try:
-                    c.execute("UPDATE notebook_folders SET name = ? WHERE id = ?",
-                              (name, folder_id))
+                    c.execute(
+                        "UPDATE notebook_folders SET name = ?, updated_at = ? "
+                        "WHERE id = ?",
+                        (name, arxistant_sync.now_iso(), folder_id))
                     conn.commit()
+                    arxistant_sync.schedule_auto_sync()
                 except sqlite3.IntegrityError:
                     self._send_json(
                         {"success": False,
@@ -4340,15 +4380,32 @@ class Handler(BaseHTTPRequestHandler):
                 c = conn.cursor()
                 # Foreign keys are off by default per connection; remove the
                 # folder's notes explicitly instead of relying on the cascade.
+                c.execute("SELECT sync_key FROM notebook_folders WHERE id = ?",
+                          (folder_id,))
+                folder_row = c.fetchone()
+                c.execute("SELECT sync_key FROM notebook_notes WHERE folder_id = ?",
+                          (folder_id,))
+                note_keys = [row[0] for row in c.fetchall()]
                 c.execute("SELECT COUNT(*) FROM notebook_notes WHERE folder_id = ?",
                           (folder_id,))
                 notes_deleted = c.fetchone()[0]
                 c.execute("DELETE FROM notebook_notes WHERE folder_id = ?", (folder_id,))
                 c.execute("DELETE FROM notebook_folders WHERE id = ?", (folder_id,))
                 removed = c.rowcount > 0
+                # Tombstone the folder and every note in it, so the deletion
+                # propagates to the other devices (issue #14).
+                if removed:
+                    if folder_row and folder_row[0]:
+                        arxistant_sync.add_tombstone(
+                            conn, "notebook_folders", folder_row[0])
+                    for key in note_keys:
+                        if key:
+                            arxistant_sync.add_tombstone(
+                                conn, "notebook_notes", key)
                 conn.commit()
             finally:
                 conn.close()
+            arxistant_sync.schedule_auto_sync()
             self._send_json({"success": True, "removed": removed,
                              "notes_deleted": notes_deleted})
 
@@ -4370,24 +4427,32 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             try:
                 c = conn.cursor()
-                c.execute("SELECT id FROM notebook_folders WHERE id = ?", (folder_id,))
-                if c.fetchone() is None:
+                folder_key = notebook_folder_sync_key(c, folder_id)
+                if folder_key is None:
                     self._send_json({"success": False, "error": "Folder not found"}, 404)
                     return
+                now = arxistant_sync.now_iso()
+                # The note's sync identity derives from (folder key, paper
+                # id), so the same paper filed into the same folder on two
+                # devices merges into one note (issue #14).
+                note_key = arxistant_sync.notebook_note_sync_key(
+                    folder_key, paper_id)
                 c.execute('''
                     INSERT OR IGNORE INTO notebook_notes
-                    (folder_id, paper_id, title, authors, url, note, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (folder_id, paper_id, title, authors, url, note,
-                      arxistant_sync.now_iso()))
+                    (folder_id, paper_id, title, authors, url, note, created_at,
+                     sync_key, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (folder_id, paper_id, title, authors, url, note, now,
+                      note_key, now))
                 added = c.rowcount > 0
                 if not added and note:
                     # The paper is already in this folder; re-adding with a
                     # note refreshes the note text instead of doing nothing.
-                    c.execute("UPDATE notebook_notes SET note = ? "
+                    c.execute("UPDATE notebook_notes SET note = ?, updated_at = ? "
                               "WHERE folder_id = ? AND paper_id = ?",
-                              (note, folder_id, paper_id))
+                              (note, now, folder_id, paper_id))
                 conn.commit()
+                arxistant_sync.schedule_auto_sync()
                 c.execute("SELECT id FROM notebook_notes "
                           "WHERE folder_id = ? AND paper_id = ?",
                           (folder_id, paper_id))
@@ -4410,13 +4475,15 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             try:
                 c = conn.cursor()
-                c.execute("UPDATE notebook_notes SET note = ? WHERE id = ?",
-                          (note, note_id))
+                c.execute("UPDATE notebook_notes SET note = ?, updated_at = ? "
+                          "WHERE id = ?",
+                          (note, arxistant_sync.now_iso(), note_id))
                 updated = c.rowcount > 0
                 conn.commit()
             finally:
                 conn.close()
             if updated:
+                arxistant_sync.schedule_auto_sync()
                 self._send_json({"success": True, "note": note})
             else:
                 self._send_json({"success": False, "error": "Note not found"}, 404)
@@ -4430,11 +4497,19 @@ class Handler(BaseHTTPRequestHandler):
             conn = sqlite3.connect(DB_PATH)
             try:
                 c = conn.cursor()
+                c.execute("SELECT sync_key FROM notebook_notes WHERE id = ?",
+                          (note_id,))
+                row = c.fetchone()
                 c.execute("DELETE FROM notebook_notes WHERE id = ?", (note_id,))
                 removed = c.rowcount > 0
+                if removed and row and row[0]:
+                    # Tombstone so the deletion reaches the other devices.
+                    arxistant_sync.add_tombstone(conn, "notebook_notes", row[0])
                 conn.commit()
             finally:
                 conn.close()
+            if removed:
+                arxistant_sync.schedule_auto_sync()
             self._send_json({"success": True, "removed": removed})
 
         elif path == "/api/custom-positive":
@@ -5841,6 +5916,10 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
             .tag-input-row button { padding:4px 10px; background:#00796b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
             .tag-ghost { position:absolute; z-index:0; left:0; top:0; padding:4px 8px; font-size:0.8em; line-height:normal; white-space:pre; color:#aaa; pointer-events:none; }
             .tag-ghost-prefix { color:transparent; }
+            .tag-complete { position:absolute; right:3px; top:50%; transform:translateY(-50%); z-index:2; border:none; background:#00796b; color:white; border-radius:4px; padding:3px 9px; font-size:0.72em; line-height:1.4; cursor:pointer; display:none; }
+            .tag-complete:hover { opacity:0.9; }
+            .tag-input-wrap.suggesting .tag-complete { display:inline-block; }
+            .tag-input-wrap.suggesting input { padding-right:46px; }
         `;
         document.head.appendChild(style);
     }
@@ -6010,12 +6089,14 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
         editor.className = 'tag-editor';
         editor.innerHTML =
             '<div class="tag-chips"></div>' +
-            '<div class="tag-input-row"><div class="tag-input-wrap"><div class="tag-ghost"></div><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"></div><button class="tag-add">Add</button></div>';
+            '<div class="tag-input-row"><div class="tag-input-wrap"><div class="tag-ghost"></div><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button type="button" class="tag-complete" title="Complete with the suggested tag" aria-label="Complete with the suggested tag">Tab</button></div><button class="tag-add">Add</button></div>';
 
         const working = (savedTags[meta.arxivId] || []).slice();
         const chips = editor.querySelector('.tag-chips');
         const input = editor.querySelector('input');
         const suggestion = editor.querySelector('.tag-ghost');
+        const completeBtn = editor.querySelector('.tag-complete');
+        const inputWrap = editor.querySelector('.tag-input-wrap');
         let suggestedTag = '';
         const onchange = () => persistTags(meta.arxivId, working);
         renderChips(chips, working, onchange);
@@ -6023,6 +6104,9 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
         const updateSuggestion = () => {
             suggestedTag = closestExistingTag(input.value, working);
             suggestion.innerHTML = '';
+            // The tappable Tab button appears only while a suggestion is
+            // showing, so it never covers the typed text otherwise.
+            inputWrap.classList.toggle('suggesting', Boolean(suggestedTag));
             if (suggestedTag) {
                 const prefix = document.createElement('span');
                 prefix.className = 'tag-ghost-prefix'; prefix.textContent = input.value;
@@ -6046,6 +6130,16 @@ document.addEventListener('DOMContentLoaded', window.arxistantAttachSaveButtons)
             updateSuggestion();
         };
         editor.querySelector('.tag-add').onclick = addFromInput;
+        // Touch completion (issue #13): Android soft keyboards have no Tab
+        // key, so the same completion is one tap away on the Tab button.
+        // Refocusing keeps the caret (and on desktop, the keyboard) in the
+        // input, ready to add the tag.
+        completeBtn.onclick = () => {
+            if (!suggestedTag) return;
+            input.value = suggestedTag;
+            updateSuggestion();
+            input.focus();
+        };
         input.oninput = updateSuggestion;
         input.onkeydown = (e) => {
             if (e.key === 'Tab' && suggestedTag) {
@@ -7315,7 +7409,7 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
     .edge-handle:hover { background: #8a1515; }
     .edge-handle.right { right: 2px; }
     .layout:not(.right-hidden) .edge-handle.right { right: calc(var(--chat-w) + 14px); }
-    .resizer-right { flex-shrink: 0; width: 14px; cursor: col-resize; position: relative; }
+    .resizer-right { flex-shrink: 0; width: 14px; cursor: col-resize; position: relative; touch-action: none; }
     .resizer-right::after { content: ''; position: absolute; top: 0; bottom: 0; left: 6px; width: 2px; background: #e0e0e0; border-radius: 1px; transition: background 0.15s ease; }
     .resizer-right:hover::after, .resizer-right.active::after { background: #b31b1b; }
     .layout.right-hidden .resizer-right { display: none; }
@@ -7669,7 +7763,12 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       try {
         const saved = JSON.parse(localStorage.getItem('chatPaneStateV2') || '{}');
         if (typeof saved.right === 'boolean') state.right = saved.right;
-        if (saved.chatW) $('layout').style.setProperty('--chat-w', saved.chatW + 'px');
+        if (saved.chatW) {
+          // Clamp on restore too, so a stale or hand-edited value can't pin
+          // the chat pane outside the 280–820 drag range (issue #12).
+          const w = Math.max(280, Math.min(820, parseInt(saved.chatW) || 400));
+          $('layout').style.setProperty('--chat-w', w + 'px');
+        }
       } catch (e) {}
       $('layout').classList.toggle('right-hidden', state.right);
       updateToggleUI();
@@ -7681,31 +7780,48 @@ CHAT_PAGE_HTML = """<!DOCTYPE html>
       const resizer = $('chatResizer');
       const right = $('paneRight');
       if (!resizer || !right) return;
-      let dragging = false, startX = 0, startW = 0;
-      resizer.addEventListener('mousedown', e => {
+      let dragging = false, startX = 0, startW = 0, pointerId = null;
+      // Pointer capture keeps the whole drag on the resizer: with plain
+      // mousemove on the window, crossing the text/PDF iframe in the left
+      // pane hands the events to the iframe and the drag stalls mid-motion
+      // (issue #12). Capturing redirects every move/up to the resizer no
+      // matter what the cursor travels over; touch-action:none on the
+      // resizer makes touch drags work the same way.
+      resizer.addEventListener('pointerdown', e => {
+        if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
         dragging = true;
+        pointerId = e.pointerId;
         startX = e.clientX;
         startW = right.getBoundingClientRect().width;
         resizer.classList.add('active');
         layout.classList.add('resizing');
         document.body.style.userSelect = 'none';
         document.body.style.cursor = 'col-resize';
+        try { resizer.setPointerCapture(e.pointerId); } catch (err) {}
         e.preventDefault();
       });
-      window.addEventListener('mousemove', e => {
-        if (!dragging) return;
+      resizer.addEventListener('pointermove', e => {
+        if (!dragging || e.pointerId !== pointerId) return;
         const w = Math.max(280, Math.min(820, startW - (e.clientX - startX)));
         layout.style.setProperty('--chat-w', w + 'px');
       });
-      window.addEventListener('mouseup', () => {
+      const endDrag = e => {
         if (!dragging) return;
+        if (e && e.pointerId !== undefined && e.pointerId !== pointerId) return;
         dragging = false;
+        pointerId = null;
         resizer.classList.remove('active');
         layout.classList.remove('resizing');
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
         savePaneState();
-      });
+      };
+      // pointercancel covers interrupted drags (tab switch, touch stolen by
+      // a scroll); lostpointercapture is the safety net if the capture is
+      // dropped any other way, so the pane never sticks in resize mode.
+      resizer.addEventListener('pointerup', endDrag);
+      resizer.addEventListener('pointercancel', endDrag);
+      resizer.addEventListener('lostpointercapture', endDrag);
     }
 
     // ---------- LLM status ----------

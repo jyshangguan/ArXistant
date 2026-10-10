@@ -41,6 +41,23 @@ META = {
 }
 
 
+def _run_payload(pathname, payload, host="arxiv.org", scripts=SCRIPTS):
+    """Run the real content scripts with a raw harness payload.
+
+    The notebook tests need fixtures beyond meta/click/saved (folder
+    snapshots, relay failures, staged typing), so they build the payload
+    themselves and call this.
+    """
+    args = [NODE, str(HARNESS),
+            ",".join(str(EXT / n) for n in scripts.split(",")),
+            pathname, host, json.dumps(payload)]
+    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr or result.stdout
+    data = json.loads(result.stdout)
+    assert not data.get("fatal"), f"content script threw: {data.get('fatal')}"
+    return data
+
+
 def _run(pathname, meta=META, click=None, saved=None,
          host="arxiv.org", scripts=SCRIPTS):
     """Run the real content scripts against a stub page.
@@ -55,14 +72,7 @@ def _run(pathname, meta=META, click=None, saved=None,
         payload["__click"] = click
     if saved:
         payload["__savedIds"] = saved
-    args = [NODE, str(HARNESS),
-            ",".join(str(EXT / n) for n in scripts.split(",")),
-            pathname, host, json.dumps(payload)]
-    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr or result.stdout
-    data = json.loads(result.stdout)
-    assert not data.get("fatal"), f"content script threw: {data.get('fatal')}"
-    return data
+    return _run_payload(pathname, payload, host=host, scripts=scripts)
 
 
 def _run_with_tags(click=".arx-tag-add", saved=None, tags_by_id=None,
@@ -295,6 +305,175 @@ class ArxivPanelBehaviourTests(unittest.TestCase):
         self.assertNotIn("deletePaper", out["messages"])
 
 
+@unittest.skipIf(NODE is None, "node not installed")
+class NotebookPanelTests(unittest.TestCase):
+    """The 📓 button files the paper into a Notebook folder.
+
+    The server half of the feature (folder rows, /api/notebook* endpoints) is
+    covered by tests/test_notebook.py; these tests cover the browsing-panel
+    half — the button state, the folder picker, and the relay payloads the
+    background worker turns into /api/notebook writes.
+    """
+
+    FOLDERS = [
+        {"id": 1, "name": "To read", "notes": []},
+        {"id": 2, "name": "AGN", "notes": [{"paper_id": "2401.00001"}]},
+    ]
+
+    def _run(self, folders=None, click=None, **extra):
+        payload = {"meta": dict(META)}
+        payload["__notebookFolders"] = self.FOLDERS if folders is None else folders
+        if click:
+            payload["__click"] = click
+        payload.update(extra)
+        return _run_payload("/abs/1802.08364", payload)
+
+    def test_the_notebook_button_renders_next_to_save_and_chat(self):
+        out = self._run()
+        self.assertIn("arx-notebook", out["panelHtml"])
+        self.assertIn("📓 Notebook", out["panelHtml"])
+        # The folder snapshot loads with the library, so its state is known.
+        self.assertIn("notebookFolders", out["messages"])
+
+    def test_opening_the_picker_lists_every_folder(self):
+        out = self._run(click=".arx-notebook")
+        html = out["panelHtml"]
+        self.assertIn("To read", html)
+        self.assertIn("AGN", html)
+        # One Add button per folder, plus the new-folder row.
+        self.assertEqual(html.count("arx-nb-add"), 2)
+        self.assertIn("New folder name", html)
+        self.assertIn("Create &amp; add", html)
+
+    def test_adding_to_a_folder_sends_the_storage_key(self):
+        out = self._run(click=".arx-notebook,.arx-nb-add")
+        self.assertIn("notebookNoteAdd", out["messages"])
+        payload = out["notebookNoteAddPayload"]
+        self.assertEqual(payload["folderId"], 1)
+        # The version-less arXiv ID — the same key the Daily page files under.
+        self.assertEqual(payload["paper"]["id"], "1802.08364")
+        self.assertEqual(payload["paper"]["title"], META["citation_title"])
+        self.assertEqual(payload["url"], "https://arxiv.org/abs/1802.08364")
+        # A notebook row stands on its own: no save is needed first.
+        self.assertNotIn("savePaper", out["messages"])
+        self.assertIn("Added to “To read” ✓", out["statusHtml"])
+
+    def test_adding_flips_the_button_and_the_folder_row(self):
+        out = self._run(click=".arx-notebook,.arx-nb-add")
+        html = out["panelHtml"]
+        self.assertIn("✓ Notebook", html)
+        self.assertIn("arx-in-notebook", html)
+        # The folder the paper was filed into now shows the added state.
+        self.assertIn("✓ Added", html)
+        self.assertIn('disabled', html)
+        # The other folder still offers Add.
+        self.assertEqual(html.count('class="arx-nb-add">Add<'), 1)
+
+    def test_a_paper_already_in_a_folder_is_marked_without_opening(self):
+        folders = [{"id": 2, "name": "AGN",
+                    "notes": [{"paper_id": "1802.08364"}]}]
+        out = self._run(folders=folders)
+        self.assertIn("✓ Notebook", out["panelHtml"])
+        # Opening it still works: the row shows where it already is.
+        out = self._run(folders=folders, click=".arx-notebook")
+        self.assertIn("✓ Added", out["panelHtml"])
+
+    def test_creating_a_folder_adds_the_paper_in_two_writes(self):
+        out = self._run(folders=[],
+                        __open=".arx-notebook",
+                        __type={"selector": ".arx-nb-new-input",
+                                "value": "Quasar feeds"},
+                        __click=".arx-nb-new-add")
+        self.assertIn("notebookFolderAdd", out["messages"])
+        self.assertEqual(out["notebookFolderAddName"], "Quasar feeds")
+        payload = out["notebookNoteAddPayload"]
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["paper"]["id"], "1802.08364")
+        self.assertIn("Added to “Quasar feeds” ✓", out["statusHtml"])
+        # The box is cleared on success and the new folder row shows Added.
+        self.assertEqual(out["nbInputValue"], "")
+        self.assertIn("Quasar feeds", out["panelHtml"])
+
+    def test_filing_keeps_the_paper_out_of_the_library(self):
+        # The whole point of the 📓 button: a notebook-only paper must not
+        # land in saved_papers, because saves retrain the arXiv ranker and
+        # schedule cloud sync. No notebook interaction may send a save.
+        for extra in (
+            {"__click": ".arx-notebook,.arx-nb-add"},
+            {"__open": ".arx-notebook",
+             "__type": {"selector": ".arx-nb-new-input", "value": "Maybe"},
+             "__click": ".arx-nb-new-add"},
+        ):
+            out = self._run(**extra)
+            self.assertNotIn("savePaper", out["messages"], extra)
+            self.assertNotIn("updateTags", out["messages"], extra)
+            # The Save button still offers Save — the paper is unsaved.
+            self.assertIn("💾 Save", out["panelHtml"])
+            self.assertNotIn("✓ Saved", out["panelHtml"])
+
+    def test_enter_in_the_new_folder_input_creates_it(self):
+        out = self._run(folders=[],
+                        __open=".arx-notebook",
+                        __type={"selector": ".arx-nb-new-input",
+                                "value": "AGN follow-up", "key": "Enter"})
+        self.assertEqual(out["notebookFolderAddName"], "AGN follow-up")
+        self.assertIn("notebookNoteAdd", out["messages"])
+        # Focus stays in the box, like the tag input after Enter.
+        self.assertEqual(out["focusedClass"], "arx-nb-new-input")
+
+    def test_a_folder_name_collision_reuses_the_existing_folder(self):
+        # The server answers 409 when the name exists; re-typing an existing
+        # name (even in different case) must reuse it, not fail.
+        out = self._run(__open=".arx-notebook",
+                        __type={"selector": ".arx-nb-new-input",
+                                "value": "to READ"},
+                        __folderAddFails=True,
+                        __click=".arx-nb-new-add")
+        payload = out["notebookNoteAddPayload"]
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["folderId"], 1)
+        self.assertIn("Added to “To read” ✓", out["statusHtml"])
+        # The reuse re-reads the folder list rather than trusting a stale one.
+        self.assertGreaterEqual(out["messages"].count("notebookFolders"), 2)
+
+    def test_an_empty_notebook_invites_creating_a_folder(self):
+        out = self._run(folders=[], click=".arx-notebook")
+        self.assertIn("No folders yet", out["panelHtml"])
+        self.assertIn("arx-nb-new-input", out["panelHtml"])
+
+    def test_an_unreachable_notebook_degrades_gracefully(self):
+        # Every read fails: the rest of the panel must keep working, the
+        # picker shows the relayed reason with a Retry button, and the 📓
+        # button stays neutral instead of guessing a state.
+        out = self._run(__notebookFails=True, click=".arx-notebook")
+        self.assertIn("arx-nb-msg", out["panelHtml"])
+        self.assertIn("Retry", out["panelHtml"])
+        self.assertIn("arx-notebook", out["panelHtml"])
+        self.assertNotIn("✓ Notebook", out["panelHtml"])
+        self.assertIn("💾 Save", out["panelHtml"])
+
+    def test_opening_the_picker_retries_a_failed_load(self):
+        # The first read failed; opening the picker retries and succeeds.
+        out = self._run(__notebookFailsOnce=True, click=".arx-notebook")
+        self.assertEqual(out["notebookFoldersCalls"], 2)
+        self.assertIn("To read", out["panelHtml"])
+        self.assertNotIn("arx-nb-retry", out["panelHtml"])
+
+    def test_the_picker_toggles_closed(self):
+        # A second click on the 📓 button puts it away again, so it does not
+        # block the tag input or the status line.
+        out = self._run(click=".arx-notebook,.arx-notebook")
+        self.assertNotIn("arx-nb-folders", out["panelHtml"])
+        self.assertIn("arx-notebook", out["panelHtml"])
+
+    def test_route_change_closes_the_picker(self):
+        # The ✓-rows describe one paper, so SPA navigation to the next paper
+        # must close the picker (the harness cannot navigate mid-run, so the
+        # reset is checked in the source next to the other per-paper state).
+        reset = PANEL_JS.split("state.tags = [];", 1)[1]
+        self.assertIn("state.notebookOpen = false;", reset.split("log(", 1)[0])
+
+
 class BackgroundRelayTests(unittest.TestCase):
     def test_arxiv_relay_normalises_the_identifier(self):
         # The fallback must strip a version suffix before matching, and must
@@ -307,6 +486,23 @@ class BackgroundRelayTests(unittest.TestCase):
         block = block.split("case '", 1)[0]
         self.assertIn("/api/arxiv/search", block)
         self.assertNotIn("/api/scix/resolve", block)
+
+    def test_notebook_relays_target_the_notebook_api(self):
+        # Three writes the panel needs: list folders, create one, file the
+        # paper. All go through the worker — a page script cannot fetch the
+        # local server from an https page (mixed content / PNA).
+        block = BACKGROUND_JS.split("case 'notebookFolders':", 1)[1]
+        self.assertIn("/api/notebook'", block)
+        self.assertIn("/api/notebook/folder/add", block)
+        self.assertIn("/api/notebook/note/add", block)
+
+    def test_notebook_add_sends_the_storage_key_as_paper_id(self):
+        block = BACKGROUND_JS.split("case 'notebookNoteAdd':", 1)[1]
+        block = block.split("case '", 1)[0]
+        self.assertIn("paper_id: p.id", block)
+        # The row stores the page URL so the Notebook page can link back to
+        # journal-only records that have no arXiv landing page.
+        self.assertIn("url: String(message.url", block)
 
 
 if __name__ == "__main__":

@@ -467,6 +467,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return { success: false, error: error.message };
         }
       }
+      // Notebook relays. The folder list doubles as the membership lookup —
+      // every note carries its paper_id — so the panel can mark the 📓 button
+      // for papers already filed, like the Daily page's notebook button does.
+      case 'notebookFolders': {
+        const settings = await getSettings();
+        try {
+          return await fetchJson(serverApiUrl(settings.serverUrl, '/api/notebook'));
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'notebookFolderAdd': {
+        const settings = await getSettings();
+        try {
+          return await fetchJson(serverApiUrl(settings.serverUrl, '/api/notebook/folder/add'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: String(message.name || '').slice(0, 80) })
+          });
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
+      case 'notebookNoteAdd': {
+        const settings = await getSettings();
+        // Same field caps the server applies, so an over-long title or author
+        // list is trimmed here rather than rejected there.
+        const p = message.paper || {};
+        try {
+          return await fetchJson(serverApiUrl(settings.serverUrl, '/api/notebook/note/add'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              folder_id: message.folderId,
+              paper_id: p.id,
+              title: String(p.title || '').slice(0, 500),
+              authors: String(Array.isArray(p.authors) ? p.authors.join(', ') : (p.authors || '')).slice(0, 2000),
+              url: String(message.url || '').slice(0, 2000)
+            })
+          });
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      }
 
       // ── ADS / SciX token settings ──
       case 'getAdsToken': {

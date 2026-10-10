@@ -423,6 +423,296 @@ class NotebookApiTests(unittest.TestCase):
                          ["2501.00011", "2501.00010"])
 
 
+class NotebookIsolationTests(unittest.TestCase):
+    """Filing a paper must stay out of the library and the ranker pipeline.
+
+    The browsing panel's 📓 button is deliberately usable without saving: a
+    saved paper changes the ML ranker's training data (saved_papers, the
+    retraining change counter), and a notebook-only paper must not — the
+    Notebook is a reading list, not a preference signal. Since the Notebook
+    joined cloud sync (issue #14) its own mutations do schedule a sync — that
+    is how folders and notes reach the other devices — but nothing here may
+    ever touch saved_papers or the training counter. These tests pin that
+    boundary at the handler level.
+    """
+
+    PAPER = {
+        "paper_id": "1802.08364",
+        "title": "On the Gas Content and Efficiency of AGN Feedback",
+        "authors": "Shangguan, Jinyi; Ho, Luis C.",
+        "url": "https://arxiv.org/abs/1802.08364",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.db_path = os.path.join(cls.tmp.name, "arxiv_papers.db")
+        cls.sync_spy = mock.Mock()
+        cls.training_spy = mock.Mock()
+        cls.patchers = [
+            mock.patch.object(server, "DB_PATH", cls.db_path),
+            mock.patch.object(server, "PUBLICATIONS_JSON",
+                              os.path.join(cls.tmp.name, "nope.json")),
+            mock.patch.object(sync, "schedule_auto_sync", cls.sync_spy),
+            mock.patch.object(server, "record_training_change",
+                              cls.training_spy),
+        ]
+        for p in cls.patchers:
+            p.start()
+        server.init_db()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        for p in cls.patchers:
+            p.stop()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        self.sync_spy.reset_mock()
+        self.training_spy.reset_mock()
+
+    def _post(self, path, payload):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def _saved_rows(self, paper_id):
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT arxiv_id FROM saved_papers WHERE arxiv_id = ?",
+            (paper_id,)).fetchall()
+        conn.close()
+        return rows
+
+    def test_filing_a_paper_never_saves_it(self):
+        # The full payload the extension relay sends, metadata included: it
+        # must land in notebook_notes only, never in saved_papers.
+        status, folder = self._post("/api/notebook/folder/add",
+                                    {"name": "Maybe later"})
+        self.assertEqual(status, 200)
+        status, body = self._post("/api/notebook/note/add",
+                                  dict(self.PAPER,
+                                       folder_id=folder["folder"]["id"]))
+        self.assertEqual(status, 200)
+        self.assertTrue(body["added"])
+        self.assertEqual(self._saved_rows(self.PAPER["paper_id"]), [])
+        # The row itself did land, with its metadata snapshot.
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT title, authors, url FROM notebook_notes "
+            "WHERE paper_id = ?", (self.PAPER["paper_id"],)).fetchone()
+        conn.close()
+        self.assertEqual(row, (self.PAPER["title"], self.PAPER["authors"],
+                               self.PAPER["url"]))
+        # No preference signal: the ranker's change counter is a /api/save
+        # side effect and must not fire here. Notebook mutations do schedule
+        # a cloud sync now (issue #14) — that is expected, and it is the
+        # only side effect allowed.
+        self.training_spy.assert_not_called()
+        self.sync_spy.assert_called()
+
+    def test_re_filing_an_existing_note_still_touches_nothing_else(self):
+        status, folder = self._post("/api/notebook/folder/add",
+                                    {"name": "Second pass"})
+        folder_id = folder["folder"]["id"]
+        self._post("/api/notebook/note/add", dict(self.PAPER, folder_id=folder_id))
+        # Re-adding with a note refreshes the note text (the INSERT OR IGNORE
+        # update path) — still no library or ranker side effects.
+        status, body = self._post("/api/notebook/note/add",
+                                  dict(self.PAPER, folder_id=folder_id,
+                                       note="check the feedback section"))
+        self.assertEqual(status, 200)
+        self.assertFalse(body["added"])
+        self.assertEqual(self._saved_rows(self.PAPER["paper_id"]), [])
+        self.training_spy.assert_not_called()
+        self.sync_spy.assert_called()
+
+    def test_folder_creation_touches_nothing_else(self):
+        status, body = self._post("/api/notebook/folder/add",
+                                  {"name": "Reading queue"})
+        self.assertEqual(status, 200)
+        conn = sqlite3.connect(self.db_path)
+        saved = conn.execute("SELECT COUNT(*) FROM saved_papers").fetchone()[0]
+        conn.close()
+        self.assertEqual(saved, 0)
+        self.training_spy.assert_not_called()
+        self.sync_spy.assert_called()
+
+
+class NotebookSyncStampTests(unittest.TestCase):
+    """Notebook mutations stamp what cloud sync needs (issue #14).
+
+    Every mutation writes the ``updated_at`` LWW timestamp and the stable
+    ``sync_key`` (notes derive theirs from folder key + paper id), and
+    deletions write tombstones so they propagate to the other devices.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.db_path = os.path.join(cls.tmp.name, "arxiv_papers.db")
+        cls.patchers = [
+            mock.patch.object(server, "DB_PATH", cls.db_path),
+            mock.patch.object(server, "PUBLICATIONS_JSON",
+                              os.path.join(cls.tmp.name, "nope.json")),
+            mock.patch.object(sync, "schedule_auto_sync", lambda *a, **k: None),
+            mock.patch.object(server, "record_training_change", lambda: {}),
+        ]
+        for p in cls.patchers:
+            p.start()
+        server.init_db()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        for p in cls.patchers:
+            p.stop()
+        cls.tmp.cleanup()
+
+    def _post(self, path, payload):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+
+    def _row(self, sql, params=()):
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(sql, params).fetchone()
+        conn.close()
+        return row
+
+    def _tombstones(self, table):
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT record_key FROM sync_tombstones WHERE table_name = ?",
+            (table,)).fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+
+    def test_seeded_folder_uses_deterministic_key(self):
+        # Both devices seed the same key, so their first sync merges the
+        # "To read" folders instead of duplicating them.
+        row = self._row("SELECT sync_key FROM notebook_folders "
+                        "WHERE name = 'To read'")
+        self.assertEqual(row[0], server.NOTEBOOK_SEED_KEY)
+
+    def test_folder_add_and_rename_stamp_sync_fields(self):
+        status, body = self._post("/api/notebook/folder/add",
+                                  {"name": "Galaxies"})
+        self.assertEqual(status, 200)
+        folder_id = body["folder"]["id"]
+        key, updated = self._row(
+            "SELECT sync_key, updated_at FROM notebook_folders WHERE id = ?",
+            (folder_id,))
+        self.assertTrue(key)
+        self.assertNotEqual(key, server.NOTEBOOK_SEED_KEY)
+        self.assertTrue(updated and updated != sync.EPOCH)
+
+        status, _ = self._post("/api/notebook/folder/rename",
+                               {"folder_id": folder_id, "name": "AGN"})
+        self.assertEqual(status, 200)
+        key2, updated2 = self._row(
+            "SELECT sync_key, updated_at FROM notebook_folders WHERE id = ?",
+            (folder_id,))
+        # Rename keeps the identity, only the timestamp moves.
+        self.assertEqual(key2, key)
+        self.assertGreater(updated2, updated)
+
+    def test_note_add_derives_sync_key_from_folder_and_paper(self):
+        _, folder = self._post("/api/notebook/folder/add", {"name": "Stars"})
+        folder_id = folder["folder"]["id"]
+        self._post("/api/notebook/note/add",
+                   {"folder_id": folder_id, "paper_id": "2501.00011",
+                    "title": "A paper"})
+        folder_key = self._row(
+            "SELECT sync_key FROM notebook_folders WHERE id = ?",
+            (folder_id,))[0]
+        note_key, note_updated = self._row(
+            "SELECT sync_key, updated_at FROM notebook_notes "
+            "WHERE paper_id = '2501.00011'")
+        self.assertEqual(
+            note_key, sync.notebook_note_sync_key(folder_key, "2501.00011"))
+        self.assertTrue(note_updated and note_updated != sync.EPOCH)
+
+    def test_folder_delete_tombstones_folder_and_its_notes(self):
+        _, folder = self._post("/api/notebook/folder/add", {"name": "Doomed"})
+        folder_id = folder["folder"]["id"]
+        self._post("/api/notebook/note/add",
+                   {"folder_id": folder_id, "paper_id": "2403.00001",
+                    "title": "Doomed paper"})
+        folder_key = self._row(
+            "SELECT sync_key FROM notebook_folders WHERE id = ?",
+            (folder_id,))[0]
+        note_key = self._row(
+            "SELECT sync_key FROM notebook_notes WHERE paper_id = '2403.00001'")[0]
+
+        status, body = self._post("/api/notebook/folder/delete",
+                                  {"folder_id": folder_id})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["removed"])
+        self.assertIn(folder_key, self._tombstones("notebook_folders"))
+        self.assertIn(note_key, self._tombstones("notebook_notes"))
+
+    def test_note_delete_tombstones_the_note(self):
+        _, folder = self._post("/api/notebook/folder/add", {"name": "Gone"})
+        folder_id = folder["folder"]["id"]
+        _, body = self._post("/api/notebook/note/add",
+                             {"folder_id": folder_id, "paper_id": "2402.00002",
+                              "title": "Vanishing"})
+        note_key = self._row(
+            "SELECT sync_key FROM notebook_notes WHERE paper_id = '2402.00002'")[0]
+
+        status, body = self._post("/api/notebook/note/delete",
+                                  {"note_id": body["note_id"]})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["removed"])
+        self.assertIn(note_key, self._tombstones("notebook_notes"))
+        # The folder itself is untouched by a note deletion (other tests in
+        # this class may have tombstoned their own folders).
+        folder_key = self._row(
+            "SELECT sync_key FROM notebook_folders WHERE id = ?",
+            (folder_id,))[0]
+        self.assertNotIn(folder_key, self._tombstones("notebook_folders"))
+
+    def test_note_update_stamps_updated_at(self):
+        _, folder = self._post("/api/notebook/folder/add", {"name": "Notes"})
+        folder_id = folder["folder"]["id"]
+        _, body = self._post("/api/notebook/note/add",
+                             {"folder_id": folder_id, "paper_id": "2401.00003",
+                              "title": "Keep"})
+        note_id = body["note_id"]
+        before = self._row("SELECT updated_at FROM notebook_notes "
+                           "WHERE id = ?", (note_id,))[0]
+
+        status, _ = self._post("/api/notebook/note/update",
+                               {"note_id": note_id, "note": "read it"})
+        self.assertEqual(status, 200)
+        after = self._row("SELECT updated_at FROM notebook_notes "
+                          "WHERE id = ?", (note_id,))[0]
+        self.assertGreater(after, before)
+
+
 class NotebookButtonScriptTests(unittest.TestCase):
     """The per-paper 📓 button script injected into the daily/recent/search pages."""
 

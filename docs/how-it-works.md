@@ -289,9 +289,18 @@ ID before insertion into SQLite.
 ## Cloud sync
 
 Cloud sync is optional and local-first. The server exports the paper database
-(saved papers, publications, and custom keywords) to a versioned JSON snapshot,
-uploads it to a provider, and merges remote snapshots back in using per-record
-`updated_at` timestamps (last-write-wins) plus deletion tombstones.
+(saved papers, publications, custom keywords, and the Notebook's folders and
+notes) to a versioned JSON snapshot, uploads it to a provider, and merges
+remote snapshots back in using per-record `updated_at` timestamps
+(last-write-wins) plus deletion tombstones.
+
+The Notebook merge keeps cross-device identity without syncing the
+device-local autoincrement ids: each folder carries a stable `sync_key` (a
+rename keeps its key, so renames propagate as renames), each note's key is
+derived from `(folder key, paper id)` so the same paper filed on two devices
+merges into one note, and a remote folder that arrives under a local folder's
+name adopts the local row (the seeded "To read" folder on two installs is one
+folder, not two).
 
 The default provider is Nutstore over WebDAV (`https://dav.jianguoyun.com/dav/`),
 authenticated with the account email and a dedicated app password. The password
@@ -300,10 +309,11 @@ is stored in the operating-system keychain via `keyring` — never in
 a local folder so the user can carry it with Dropbox/iCloud/OneDrive or the
 Nutstore desktop app.
 
-Saving or deleting a paper stamps a timestamp or tombstone and schedules a
-debounced sync when enabled; a manual **Connect** and a sync at server startup
-are also available. The ML model and generated pages are not synced — each
-device retrains from its local copy of the shared database.
+Saving or deleting a paper — or creating, renaming, deleting, or filing into a
+Notebook folder — stamps a timestamp or tombstone and schedules a debounced
+sync when enabled; a manual **Connect** and a sync at server startup are also
+available. The ML model and generated pages are not synced — each device
+retrains from its local copy of the shared database.
 
 ## Platform startup
 

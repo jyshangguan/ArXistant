@@ -27,7 +27,7 @@ def _fetch_url(url, timeout=45, attempts=3):
     for attempt in range(1, attempts + 1):
         try:
             request = urllib.request.Request(
-                url, headers={'User-Agent': 'ArXistant/0.4.6 (personal arXiv reader)'}
+                url, headers={'User-Agent': 'ArXistant/0.4.7 (personal arXiv reader)'}
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = response.read()
@@ -209,6 +209,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             .tag-input-row button { padding:4px 10px; background:#00796b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.75em; }
             .tag-ghost { position:absolute; z-index:0; left:0; top:0; padding:4px 8px; font-size:0.8em; line-height:normal; white-space:pre; color:#aaa; pointer-events:none; }
             .tag-ghost-prefix { color:transparent; }
+            .tag-complete { position:absolute; right:3px; top:50%; transform:translateY(-50%); z-index:2; border:none; background:#00796b; color:white; border-radius:4px; padding:3px 9px; font-size:0.72em; line-height:1.4; cursor:pointer; display:none; }
+            .tag-complete:hover { opacity:0.9; }
+            .tag-input-wrap.suggesting .tag-complete { display:inline-block; }
+            .tag-input-wrap.suggesting input { padding-right:46px; }
         `;
         document.head.appendChild(style);
     }
@@ -369,12 +373,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         editor.className = 'tag-editor';
         editor.innerHTML =
             '<div class="tag-chips"></div>' +
-            '<div class="tag-input-row"><div class="tag-input-wrap"><div class="tag-ghost"></div><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"></div><button class="tag-add">Add</button></div>';
+            '<div class="tag-input-row"><div class="tag-input-wrap"><div class="tag-ghost"></div><input type="text" maxlength="60" placeholder="Add a tag (e.g. JWST, black holes)…"><button type="button" class="tag-complete" title="Complete with the suggested tag" aria-label="Complete with the suggested tag">Tab</button></div><button class="tag-add">Add</button></div>';
 
         const working = (savedTags[meta.arxivId] || []).slice();
         const chips = editor.querySelector('.tag-chips');
         const input = editor.querySelector('input');
         const suggestion = editor.querySelector('.tag-ghost');
+        const completeBtn = editor.querySelector('.tag-complete');
+        const inputWrap = editor.querySelector('.tag-input-wrap');
         let suggestedTag = '';
         const onchange = () => persistTags(meta.arxivId, working);
         renderChips(chips, working, onchange);
@@ -382,6 +388,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const updateSuggestion = () => {
             suggestedTag = closestExistingTag(input.value, working);
             suggestion.innerHTML = '';
+            // The tappable Tab button appears only while a suggestion is
+            // showing, so it never covers the typed text otherwise.
+            inputWrap.classList.toggle('suggesting', Boolean(suggestedTag));
             if (suggestedTag) {
                 const prefix = document.createElement('span');
                 prefix.className = 'tag-ghost-prefix'; prefix.textContent = input.value;
@@ -405,6 +414,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateSuggestion();
         };
         editor.querySelector('.tag-add').onclick = addFromInput;
+        // Touch completion (issue #13): Android soft keyboards have no Tab
+        // key, so the same completion is one tap away on the Tab button.
+        // Refocusing keeps the caret (and on desktop, the keyboard) in the
+        // input, ready to add the tag.
+        completeBtn.onclick = () => {
+            if (!suggestedTag) return;
+            input.value = suggestedTag;
+            updateSuggestion();
+            input.focus();
+        };
         input.oninput = updateSuggestion;
         input.onkeydown = (e) => {
             if (e.key === 'Tab' && suggestedTag) {

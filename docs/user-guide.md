@@ -361,6 +361,10 @@ and the date you added it. The paper itself stays wherever it already lives
   paper listing your folders; click **Add** next to one, or type a new folder
   name and **Create & add**. The button turns green once that paper is in your
   Notebook.
+- **Add while browsing** — the same **📓 Notebook** button in the extension's
+  page panel on [scixplorer.org](https://scixplorer.org/) and
+  [arxiv.org](https://arxiv.org/) opens the same picker, so a paper can be
+  filed while you are still reading its abstract page.
 - **Edit a note** — click the note text on any entry, then Save (⌘/Ctrl+Enter
   works too). **✕** removes the entry from the folder.
 - **Manage folders** — **＋ New** creates a folder; hover a folder and use ✏️
@@ -371,15 +375,19 @@ and the date you added it. The paper itself stays wherever it already lives
 
 Notes added by bare arXiv ID keep showing the ID until the paper is saved to
 your library — once it is, the entry picks up the real title and authors
-automatically. Like uploaded PDFs, the Notebook is local to each device and is
-not part of cloud sync.
+automatically. Filing a paper never adds it to your library: the Notebook is a
+reading list, not a preference signal, so notebook-only papers do not affect
+the ML ranking of your daily feed. Your folders and notes travel with the rest
+of your database through [cloud sync](#cloud-sync), including to the Android
+app — while uploaded local PDFs stay on the device that imported them.
 
 ## Cloud sync
 
-ArXistant can mirror your paper database (saved papers, publications, and custom
-keywords) to Nutstore over WebDAV, so several devices share the same library.
-It stays local-first: every device keeps its own SQLite database, and the cloud
-only carries a mergeable JSON snapshot between devices.
+ArXistant can mirror your paper database (saved papers, publications, custom
+keywords, and the Notebook's folders and notes) to Nutstore over WebDAV, so
+several devices share the same library. It stays local-first: every device
+keeps its own SQLite database, and the cloud only carries a mergeable JSON
+snapshot between devices.
 
 ### Set up Nutstore WebDAV
 
@@ -393,8 +401,9 @@ only carries a mergeable JSON snapshot between devices.
    first sync immediately.
 
 Once enabled, ArXistant also syncs automatically in the background on server
-start and a few seconds after you save or remove a paper. Use **Disconnect** to
-turn sync off and remove the stored app password.
+start and a few seconds after you save or remove a paper or change the
+Notebook. Use **Disconnect** to turn sync off and remove the stored app
+password.
 
 On the first sync, ArXistant creates an `ArXistant` folder in Nutstore and
 uploads the snapshot. On a second device, repeat the same steps: the first sync
@@ -406,9 +415,10 @@ ArXistant file. Use **Disconnect** to remove it and turn sync off.
 ### What is and is not synced
 
 Synced and merged (last-write-wins): saved papers with notes, tags, and
-highlights, publications, and custom keywords. Not synced: the Notebook's
-folders and notes, uploaded local PDFs and manuscript workspaces, the ML model, and generated daily/recent
-pages, which each device keeps or rebuilds locally.
+highlights, publications, custom keywords, and the Notebook's folders and
+notes. Not synced: uploaded local PDFs and manuscript workspaces, the ML
+model, and generated daily/recent pages, which each device keeps or rebuilds
+locally.
 
 The **Local folder** provider is an alternative that writes the snapshot into a
 folder you already sync with Dropbox/iCloud/OneDrive or the Nutstore desktop app.
@@ -506,6 +516,18 @@ panel in the bottom-right corner. It deliberately does not repeat the abstract
 - **💬 Chat** — opens the paper in the Chat reader on your local server.
   Journal-only papers get an abstract-only reader you can highlight and
   annotate; papers with an arXiv version load the full text as usual.
+- **📓 Notebook / ✓ Notebook** — files the paper into a reading-list folder
+  without leaving the page (see [Notebook](#notebook)). Clicking it expands a
+  picker below the buttons: one **Add** per existing folder — papers already
+  filed show **✓ Added** — plus a **New folder name… / Create & add** row for
+  a folder that does not exist yet. Typing a name that already exists (even in
+  different case) reuses that folder. The button turns green once the paper is
+  in any folder. Filing a paper does not save it first: the folder row stores
+  the paper's identifier, title, authors, and the page URL on its own, so it
+  works for papers you do not intend to keep in your library. Unlike saving,
+  filing is not a preference signal — notebook-only papers never enter the ML
+  ranker's training data, never bump its retraining counter, and are not part
+  of cloud sync.
 - **–** in the header collapses the panel out of the way.
 
 **On scixplorer.org** the panel appears on paper pages — `/abs/<bibcode>` and
