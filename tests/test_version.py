@@ -10,7 +10,15 @@ running server is current enough to keep or must be killed and replaced. If
 those three drift apart, either a stale server looks healthy while missing new
 endpoints, or a perfectly good server is reported as outdated.
 
-Bumping a release means editing the three constants below.
+The release version is announced at /api/health too, and start_server.sh
+compares it as well: the API version only moves when the endpoint contract
+changes, so it cannot tell that a process left over from an older release is
+still serving the old files after an upgrade. The launcher therefore also
+declares the release version, and the server constant backing the health
+announcement is asserted against the one below.
+
+Bumping a release means editing the three constants below (plus the matching
+release version inside the server and the launcher, which the tests catch).
 """
 
 import json
@@ -113,6 +121,33 @@ class ApiVersionHandshakeTests(unittest.TestCase):
             httpd.shutdown()
         self.assertTrue(data["success"])
         self.assertEqual(data["api_version"], API_VERSION)
+        # The release version has to be announced as well, or the launcher
+        # cannot tell this process from one left running by an older release.
+        self.assertEqual(data["version"], VERSION)
+
+
+class ReleaseVersionHandshakeTests(unittest.TestCase):
+    """The release version must agree where the stale-server check reads it."""
+
+    def test_server_constant(self):
+        self.assertEqual(server.VERSION, VERSION)
+
+    def test_launcher_agrees_with_the_server(self):
+        script = (PROJECT_ROOT / "start_server.sh").read_text(encoding="utf-8")
+        m = re.search(r'SERVER_VERSION="([0-9.]+)"', script)
+        self.assertIsNotNone(
+            m, "start_server.sh no longer declares SERVER_VERSION")
+        self.assertEqual(m.group(1), server.VERSION)
+
+    def test_launcher_requires_both_versions_to_keep_a_running_server(self):
+        # Guarding on the API version alone let an outdated process from an
+        # older release look healthy and keep serving old code.
+        script = (PROJECT_ROOT / "start_server.sh").read_text(encoding="utf-8")
+        self.assertIn("server_is_current()", script)
+        self.assertIn('\\"api_version\\": $SERVER_API_VERSION', script)
+        self.assertIn('\\"version\\": \\"$SERVER_VERSION\\"', script)
+        self.assertLess(script.index("server_is_current() {"),
+                        script.index("server_is_current; then"))
 
 
 if __name__ == "__main__":

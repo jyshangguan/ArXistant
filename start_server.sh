@@ -9,6 +9,7 @@ PYTHON="${ARXISTANT_PYTHON:-/usr/bin/python3}"
 LOG_FILE="$PROJECT_ROOT/local/server.log"
 SERVER_SCRIPT="$PROJECT_ROOT/src/arxiv_db_server.py"
 SERVER_API_VERSION="5"
+SERVER_VERSION="0.4.7"
 SERVER_PORT="${ARXISTANT_PORT:-8765}"
 
 # Platform tooling. macOS wraps Python in `arch` to force the hardware-native
@@ -37,13 +38,26 @@ cd "$PROJECT_ROOT" || exit 1
 # on a fresh clone; create it before the nohup redirect below.
 mkdir -p "$PROJECT_ROOT/local" || exit 1
 
-# Return immediately when the running server has the API expected by the
-# extension. A successful page request alone is not sufficient because an old
-# process can keep serving files after the source code has been upgraded.
-if [ -n "$CURL" ] && [ -n "$GREP" ] && \
-  "$CURL" --silent --fail --max-time 1 \
-  "http://localhost:${SERVER_PORT}/api/health" 2> /dev/null | \
-  "$GREP" --quiet "\"api_version\": $SERVER_API_VERSION"; then
+# Is the process answering on the port the code in this checkout? Both the API
+# version and this checkout's release version have to match. The API version
+# alone is not enough: it tracks only the endpoint contract, so a process
+# started from older code keeps announcing it — and keeps serving the old
+# files — after the source in this checkout has been upgraded. Comparing the
+# announced release version catches exactly that, because the launcher always
+# ships beside the source it launches.
+server_is_current() {
+  [ -n "$CURL" ] && [ -n "$GREP" ] || return 1
+  local body
+  body="$("$CURL" --silent --fail --max-time 1 \
+    "http://localhost:${SERVER_PORT}/api/health" 2> /dev/null)" || return 1
+  printf '%s' "$body" | \
+    "$GREP" --quiet "\"api_version\": $SERVER_API_VERSION" || return 1
+  printf '%s' "$body" | \
+    "$GREP" --quiet "\"version\": \"$SERVER_VERSION\"" || return 1
+}
+
+# Return immediately when the running server already is this checkout.
+if server_is_current; then
   echo "Server is already running"
   exit 0
 fi
@@ -119,10 +133,7 @@ echo "$NEW_PID"
 # dependency, an occupied port that could not be inspected, etc.) is reported
 # instead of printing the PID of a process that already died.
 for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if [ -n "$CURL" ] && [ -n "$GREP" ] && \
-    "$CURL" --silent --fail --max-time 1 \
-    "http://localhost:${SERVER_PORT}/api/health" 2> /dev/null | \
-    "$GREP" --quiet "\"api_version\": $SERVER_API_VERSION"; then
+  if server_is_current; then
     exit 0
   fi
   if ! /bin/kill -0 "$NEW_PID" 2> /dev/null; then

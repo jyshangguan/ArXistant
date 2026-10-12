@@ -299,22 +299,34 @@ with `apt` over the existing version, then restart the user service.
 ### Chrome reports that the server is offline
 
 Open [http://localhost:8765/api/health](http://localhost:8765/api/health). A
-running server returns JSON containing `"success": true`.
+running server returns JSON containing `"success": true`, the `api_version` the
+extension requires, and the release `version` the process was started from.
 
 - macOS: inspect `local/server.log` and run `/bin/bash start_server.sh`.
 - Linux package: run `systemctl --user status arxistant.service` and inspect
   `journalctl --user -u arxistant.service`.
 - Manual setup: look for the traceback in the terminal running the server.
 
+### The app or extension is missing a feature you just upgraded to
+
+A server started before the upgrade keeps running the old code — new pages and
+new behaviour appear only after it restarts. Compare the `version` in
+`/api/health` with the checkout, then run `/bin/bash start_server.sh`: the
+launcher treats a process left over from another release as stale and replaces
+it. (A process whose `version` differs but that the launcher does not recognise
+as this checkout's own is never killed; stop that one yourself.) This also
+applies to behaviour that has no new endpoint to announce it — notebook cloud
+sync, for example, changed how the existing `/api/cloud/sync` carries data.
+
 ### NumPy architecture errors on Apple Silicon
 
 If training, feature-page regeneration, or the daily refresh fails with an
 `ImportError` mentioning "incompatible architecture (have 'arm64', need
-'x86_64')", the server is running as x86_64 while NumPy is arm64. Stop servers
-launched by an older checkout and run `/bin/bash start_server.sh` again — the
-launcher explicitly starts ARM64 Python, and ArXistant now also forces its
-worker subprocesses to ARM64 so they match the installed NumPy wheels. Restart
-the server after updating so the fix takes effect.
+'x86_64')", the server is running as x86_64 while NumPy is arm64. Run
+`/bin/bash start_server.sh`: a server left over from an older checkout announces
+a different release `version` and is replaced. The launcher explicitly starts
+ARM64 Python, and ArXistant now also forces its worker subprocesses to ARM64 so
+they match the installed NumPy wheels.
 
 ### Port 8765 is already in use
 

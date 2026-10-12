@@ -326,6 +326,16 @@ the script explicitly starts ARM64 Python, and the server also forces its worker
 subprocesses to ARM64 so they match the installed NumPy wheels. The same footer
 button reads **Stop Server** when the server is running.
 
+The launcher keeps a running server only when `/api/health` announces **both**
+the API version it expects and this checkout's own release version. The API
+version moves only when the endpoint contract changes, so on its own it would
+let a process started from an older release keep serving the old files after an
+upgrade; the release version, which the launcher ships beside, is what catches
+that. On a mismatch the process is treated as stale and replaced — the launcher
+only ever terminates a listener whose command line is this checkout's own
+`src/arxiv_db_server.py`, so an unrelated program holding the port is reported
+instead of killed.
+
 ### Debian and Ubuntu
 
 The package installs `/usr/bin/arxistant-server` and a systemd user unit. The

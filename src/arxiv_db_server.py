@@ -55,6 +55,12 @@ DEFAULT_RETRAIN_AFTER_CHANGES = 5
 # v5: Notebook page (/notebook.html) with reading-list folders and the
 # /api/notebook* endpoints. The extension popup gates on this exact value.
 SERVER_API_VERSION = 5
+# The release this server was started from, announced at /api/health beside
+# the API version. The API version tracks only the endpoint contract, so it
+# stays put when behavior changes underneath unchanged endpoints; comparing
+# this release version is how a launcher (start_server.sh) tells the code in
+# the checkout from an outdated process still serving the old files.
+VERSION = "0.4.7"
 RETRAIN_STATE_LOCK = threading.Lock()
 MANUSCRIPT_SERVICE_LOCK = threading.Lock()
 MANUSCRIPT_SERVICES = {}
@@ -3329,6 +3335,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "success": True,
                 "api_version": SERVER_API_VERSION,
+                "version": VERSION,
                 "data_dir": DATA_DIR,
             })
 
